@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { streamChat } from '../utils/api';
 import type { ChatMessage } from '../utils/api';
-import { ROCKY_SYSTEM_PROMPT, ROCKY_GREETING, ROCKY_FAREWELL } from '../prompts/rocky';
+import { getRockySystemPrompt, getRockyGreeting, getRockyFarewell, getLastTurnHint } from '../prompts/rocky';
+import type { Lang } from '../i18n';
 
 export interface DisplayMessage {
   id: string;
@@ -12,12 +13,12 @@ export interface DisplayMessage {
 
 const MAX_TURNS = 10;
 
-export function useChat() {
+export function useChat(lang: Lang) {
   const [messages, setMessages] = useState<DisplayMessage[]>([
     {
       id: 'greeting',
       role: 'assistant',
-      content: ROCKY_GREETING,
+      content: getRockyGreeting(lang),
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -25,6 +26,19 @@ export function useChat() {
   const [userTurns, setUserTurns] = useState(0);
   const [isEnded, setIsEnded] = useState(false);
   const abortRef = useRef(false);
+
+  // Update greeting when lang changes (only if no user messages yet)
+  useEffect(() => {
+    if (userTurns === 0) {
+      setMessages([
+        {
+          id: 'greeting',
+          role: 'assistant',
+          content: getRockyGreeting(lang),
+        },
+      ]);
+    }
+  }, [lang, userTurns]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -38,7 +52,7 @@ export function useChat() {
         setMessages((prev) => [
           ...prev,
           { id: `user-${Date.now()}`, role: 'user', content: text },
-          { id: `farewell-${Date.now()}`, role: 'assistant', content: ROCKY_FAREWELL },
+          { id: `farewell-${Date.now()}`, role: 'assistant', content: getRockyFarewell(lang) },
         ]);
         setIsEnded(true);
         return;
@@ -60,9 +74,9 @@ export function useChat() {
       setUserTurns(newTurnCount);
 
       // Build API messages
-      let systemContent = ROCKY_SYSTEM_PROMPT;
+      let systemContent = getRockySystemPrompt(lang);
       if (newTurnCount === MAX_TURNS) {
-        systemContent += '\n\n【重要】这是最后一轮对话了。请在回复的最后自然地用角色内的方式暗示通讯能源快耗尽了，但不要太突兀，先正常回答用户的问题。';
+        systemContent += getLastTurnHint(lang);
       }
 
       const apiMessages: ChatMessage[] = [
@@ -73,7 +87,7 @@ export function useChat() {
       const history = [...messages, userMsg];
       for (const msg of history) {
         if (msg.id === 'greeting') {
-          apiMessages.push({ role: 'assistant', content: ROCKY_GREETING });
+          apiMessages.push({ role: 'assistant', content: getRockyGreeting(lang) });
         } else {
           apiMessages.push({ role: msg.role, content: msg.content });
         }
@@ -112,7 +126,7 @@ export function useChat() {
         }
       );
     },
-    [messages, isLoading, isEnded, userTurns]
+    [messages, isLoading, isEnded, userTurns, lang]
   );
 
   const turnsLeft = Math.max(0, MAX_TURNS - userTurns);

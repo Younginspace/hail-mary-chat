@@ -31,14 +31,15 @@ export default function RockyModel({ isSpeaking }: Props) {
     renderer.setClearColor(0x000000, 0);
     container.appendChild(renderer.domElement);
 
-    // OrbitControls — zoom + manual rotate, no auto spin
+    // OrbitControls — zoom + manual rotate + slow auto spin
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
     controls.minDistance = 0.5;
     controls.maxDistance = 50;
-    controls.autoRotate = false;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 1.2;
     controls.minPolarAngle = Math.PI * 0.25;
     controls.maxPolarAngle = Math.PI * 0.75;
     // Track if user is interacting
@@ -179,11 +180,13 @@ export default function RockyModel({ isSpeaking }: Props) {
         rockyPivot.add(innerGroup);
         scene.add(rockyPivot);
 
-        // Camera
+        // Camera — closer on mobile for bigger Rocky
         const maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z);
         const fov = camera.fov * (Math.PI / 180);
-        const dist = (maxDim / 2) / Math.tan(fov / 2) * 1.5;
-        camera.position.set(0, modelSize.y * 0.15, dist);
+        const isMobile = width < 600;
+        const distMult = isMobile ? 1.05 : 1.25;
+        const dist = (maxDim / 2) / Math.tan(fov / 2) * distMult;
+        camera.position.set(0, modelSize.y * 0.1, dist);
         camera.lookAt(0, 0, 0);
         controls.target.set(0, 0, 0);
         controls.update();
@@ -255,38 +258,27 @@ export default function RockyModel({ isSpeaking }: Props) {
 
       // Rocky faces you — like a video call
       if (rockyPivot) {
-        // Gentle floating bob (alive, not static)
-        rockyPivot.position.y = Math.sin(t * 0.6) * modelSize.y * 0.015;
+        // Floating bob — visible hovering effect
+        rockyPivot.position.y = Math.sin(t * 0.6) * modelSize.y * 0.03
+                              + Math.sin(t * 1.1) * modelSize.y * 0.008;
 
-        // Subtle living micro-movements: weight shifting, breathing tilt
-        const idleTiltX = Math.sin(t * 0.35) * 0.015 + Math.sin(t * 0.83) * 0.008;
-        const idleTiltZ = Math.cos(t * 0.28) * 0.012 + Math.cos(t * 0.67) * 0.006;
-        // Occasional bigger shift (like adjusting posture) every ~8 seconds
-        const shiftCycle = t * 0.125;
-        const postureShift = Math.sin(shiftCycle) * Math.sin(shiftCycle * 3.7) * 0.02;
+        // Living micro-movements: weight shifting, breathing tilt
+        const idleTiltX = Math.sin(t * 0.35) * 0.03 + Math.sin(t * 0.83) * 0.015;
+        const idleTiltZ = Math.cos(t * 0.28) * 0.025 + Math.cos(t * 0.67) * 0.012;
+        // Occasional bigger shift (like adjusting posture) every ~6 seconds
+        const shiftCycle = t * 0.17;
+        const postureShift = Math.sin(shiftCycle) * Math.sin(shiftCycle * 3.7) * 0.04;
 
         rockyPivot.rotation.x = idleTiltX;
         rockyPivot.rotation.z = idleTiltZ + postureShift;
 
-        // Very slight Y rotation — not spinning, just natural head-turn-like sway
-        const idleYaw = Math.sin(t * 0.2) * 0.06;
-        rockyPivot.rotation.y = idleYaw;
-
-        // If user dragged the view, slowly drift back to face-forward after 3 seconds
-        if (!userInteracting && lastInteractTime > 0) {
+        // Pause auto-rotate while user is dragging, resume after 3s
+        if (userInteracting) {
+          controls.autoRotate = false;
+        } else if (lastInteractTime > 0) {
           const elapsed = (performance.now() - lastInteractTime) / 1000;
           if (elapsed > 3) {
-            // Gently reset azimuthal angle toward 0 (face forward)
-            const azimuth = controls.getAzimuthalAngle();
-            if (Math.abs(azimuth) > 0.01) {
-              const resetSpeed = 0.02;
-              const targetAzimuth = azimuth * (1 - resetSpeed);
-              controls.minAzimuthAngle = targetAzimuth;
-              controls.maxAzimuthAngle = targetAzimuth;
-              controls.update();
-              controls.minAzimuthAngle = -Infinity;
-              controls.maxAzimuthAngle = Infinity;
-            }
+            controls.autoRotate = true;
           }
         }
       }
