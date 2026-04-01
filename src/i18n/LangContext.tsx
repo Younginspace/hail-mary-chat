@@ -7,12 +7,12 @@ interface LangContextValue {
 }
 
 const LangContext = createContext<LangContextValue>({
-  lang: 'zh',
+  lang: 'en',
   setLang: () => {},
 });
 
 export function LangProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>('zh');
+  const [lang, setLangState] = useState<Lang>('en');
 
   const setLang = useCallback((l: Lang) => {
     setLangState(l);

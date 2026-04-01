@@ -20,6 +20,10 @@ function parseRockyMessage(content: string, lang: Lang) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    // Skip mood/special tags — not shown in UI
+    if (/^\[MOOD:\w+\]$/.test(trimmed)) continue;
+    if (/^\[(INTRO|LIKE|DIRTY)\]$/.test(trimmed)) continue;
+
     // Music notes line (mostly ♫♩♪ characters)
     if (/^[♫♩♪❗\s]{3,}$/.test(trimmed)) {
       parts.push({ type: 'notes', content: trimmed });

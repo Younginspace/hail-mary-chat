@@ -3,6 +3,16 @@ import Starfield from './Starfield';
 import LangSwitcher from './LangSwitcher';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
+import { unlockAudio } from '../utils/rockyAudio';
+import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQuotaExceeded, formatResetTime, getRemainingPlays, markShared, getShareUrl } from '../utils/playLimit';
+import ShareModal from './ShareModal';
+import type { ChatMode } from '../utils/playLimit';
+
+const TTS_API_URL = import.meta.env.VITE_TTS_API_URL || 'https://api.minimaxi.com';
+const TTS_API_KEY = import.meta.env.VITE_API_KEY || '';
+const TTS_MODEL = import.meta.env.VITE_TTS_MODEL || 'speech-2.8-hd';
+const TTS_VOICE_ID = import.meta.env.VITE_TTS_VOICE_ID || 'rocky_hailmary_v2';
+const CHAT_API_URL = import.meta.env.VITE_API_URL || 'https://api.minimax.chat';
 
 type Phase = 'idle' | 'connecting' | 'connected';
 
@@ -17,15 +27,101 @@ const CONNECTION_STEPS = [
 ];
 
 interface StartScreenProps {
-  onConnected: () => void;
+  onConnected: (mode: ChatMode) => void;
 }
 
 export default function StartScreen({ onConnected }: StartScreenProps) {
   const { lang } = useLang();
   const [phase, setPhase] = useState<Phase>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
+  const [selectedMode, setSelectedMode] = useState<ChatMode>('text');
+  const [ttsDisabled, setTtsDisabled] = useState(isTtsQuotaExceeded());
+  const [chatDisabled, setChatDisabled] = useState(isChatQuotaExceeded());
+  const [resetTime, setResetTime] = useState(formatResetTime());
+  const textDailyUsed = getRemainingPlays('text') <= 0;
+  const voiceDailyUsed = getRemainingPlays('voice') <= 0;
+  const textBtnDisabled = chatDisabled; // API 不可用才真正禁用；次数用完可通过分享获取
+  const voiceBtnDisabled = ttsDisabled || voiceDailyUsed;
+  const [textShared, setTextShared] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareMode, setShareMode] = useState<ChatMode>('text');
 
-  const handleCall = useCallback(() => {
+  const handleOpenShare = useCallback(async (mode: ChatMode) => {
+    setShareMode(mode);
+    // 手机：优先触发系统原生分享面板（微信/小红书等）
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: t('share.title', lang),
+          text: t('share.text', lang),
+          url: getShareUrl(),
+        });
+        markShared(mode);
+        if (mode === 'text') setTextShared(true);
+        return;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+      }
+    }
+    // 桌面 fallback：显示二维码弹窗
+    setShowShareModal(true);
+  }, [lang]);
+
+  const handleShareDone = useCallback(() => {
+    markShared(shareMode);
+    if (shareMode === 'text') setTextShared(true);
+    setShowShareModal(false);
+  }, [shareMode]);
+
+  // 探测 TTS 额度
+  useEffect(() => {
+    if (ttsDisabled || !TTS_API_KEY || localStorage.getItem('rocky_skip_tts_probe')) return;
+    fetch(`${TTS_API_URL}/v1/t2a_v2`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TTS_API_KEY}` },
+      body: JSON.stringify({
+        model: TTS_MODEL, text: '.', voice_setting: { voice_id: TTS_VOICE_ID },
+        audio_setting: { format: 'mp3', sample_rate: 22050, bitrate: 32000, channel: 1 },
+      }),
+    }).then(res => res.json()).then(json => {
+      const code = json.base_resp?.status_code;
+      if (code === 1002 || code === 1008 || code === 2056) {
+        setTtsQuotaExceeded();
+        setTtsDisabled(true);
+      }
+    }).catch(() => {});
+  }, [ttsDisabled]);
+
+  // 探测 Chat 额度：直连 + proxy 都试，任一返回 429 即标记
+  useEffect(() => {
+    if (chatDisabled) return;
+    const probeBody = JSON.stringify({
+      model: import.meta.env.VITE_MODEL || 'MiniMax-M2.7',
+      messages: [{ role: 'user', content: '.' }],
+      max_tokens: 1,
+    });
+    const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TTS_API_KEY}` };
+    const markDisabled = () => { setChatQuotaExceeded(); setChatDisabled(true); };
+    // 直连 MiniMax
+    fetch(`${CHAT_API_URL}/v1/chat/completions`, { method: 'POST', headers, body: probeBody })
+      .then(res => { if (res.status === 429) markDisabled(); })
+      .catch(() => {});
+    // 也走 server proxy（覆盖 mock 场景）
+    fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: probeBody })
+      .then(res => { if (res.status === 429) markDisabled(); })
+      .catch(() => {});
+  }, [chatDisabled]);
+
+  // 每分钟刷新倒计时
+  useEffect(() => {
+    if (!ttsDisabled && !chatDisabled) return;
+    const timer = setInterval(() => setResetTime(formatResetTime()), 60000);
+    return () => clearInterval(timer);
+  }, [ttsDisabled, chatDisabled]);
+
+  const handleCall = useCallback((mode: ChatMode) => {
+    unlockAudio();
+    setSelectedMode(mode);
     setPhase('connecting');
   }, []);
 
@@ -52,9 +148,9 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
   // Once connected, wait a beat then transition to chat
   useEffect(() => {
     if (phase !== 'connected') return;
-    const timer = setTimeout(() => onConnected(), 600);
+    const timer = setTimeout(() => onConnected(selectedMode), 600);
     return () => clearTimeout(timer);
-  }, [phase, onConnected]);
+  }, [phase, onConnected, selectedMode]);
 
   return (
     <div className="immersive-root">
@@ -78,19 +174,63 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
               </div>
             </div>
 
-            <button className="call-btn" onClick={handleCall}>
-              <div className="call-btn-ring" />
-              <div className="call-btn-ring call-btn-ring-2" />
-              <div className="call-btn-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
-                </svg>
-              </div>
-              <span className="call-btn-text">{t('start.callBtn', lang)}</span>
-            </button>
+            <div className="start-mode-buttons">
+              {/* 文字通话 */}
+              <button
+                className={`mode-btn ${textBtnDisabled ? 'mode-btn-disabled' : textDailyUsed && !textShared ? 'mode-btn-share' : ''}`}
+                onClick={() => {
+                  if (textBtnDisabled) return;
+                  if (textDailyUsed && !textShared) { handleOpenShare('text'); return; }
+                  handleCall('text');
+                }}
+                disabled={textBtnDisabled}
+              >
+                <div className="mode-btn-icon">
+                  {textDailyUsed && !textShared && !textBtnDisabled ? (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                  )}
+                </div>
+                <div className="mode-btn-body">
+                  <span className="mode-btn-label">{t('start.textBtn', lang)}</span>
+                  <span className={`mode-btn-hint ${(textBtnDisabled || (textDailyUsed && !textShared)) ? 'mode-btn-hint-warn' : ''}`}>
+                    {chatDisabled
+                      ? t('start.textDisabled', lang)
+                      : textDailyUsed && !textShared
+                        ? t('start.textDailyUsed', lang)
+                        : t('start.textHint', lang)}
+                  </span>
+                </div>
+              </button>
 
-            <div className="start-footer">
-              <span>{t('start.footer', lang)}</span>
+              {/* 语音通话 */}
+              <button
+                className={`mode-btn ${voiceBtnDisabled ? 'mode-btn-disabled' : ''}`}
+                onClick={() => !voiceBtnDisabled && handleCall('voice')}
+                disabled={voiceBtnDisabled}
+              >
+                <div className="mode-btn-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+                  </svg>
+                </div>
+                <div className="mode-btn-body">
+                  <span className="mode-btn-label">{t('start.voiceBtn', lang)}</span>
+                  <span className={`mode-btn-hint ${voiceBtnDisabled ? 'mode-btn-hint-warn' : ''}`}>
+                    {ttsDisabled
+                      ? t('start.voiceDisabled', lang, { time: resetTime })
+                      : voiceDailyUsed
+                        ? t('start.voiceDailyUsed', lang)
+                        : t('start.voiceHint', lang)}
+                  </span>
+                </div>
+              </button>
             </div>
           </div>
         )}
@@ -122,6 +262,14 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
           </div>
         )}
       </div>
+
+      {showShareModal && (
+        <ShareModal
+          url={getShareUrl()}
+          onShared={handleShareDone}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
     </div>
   );
 }

@@ -25,3 +25,24 @@ dist-ssr
 
 # env with API keys
 .env
+
+# Large media / reference assets (root level)
+/*.mov
+/*.MP3
+/*.mp3
+/*.wav
+/*.jpg
+/*.jpeg
+/*.png
+/*.avif
+/video/
+/rockyvoice_h/
+/rockyvoice_o/
+/server/*.wav
+
+/*.lrc
+
+# Build outputs & temp
+/outputs/
+/tmp/
+/screenshots/
