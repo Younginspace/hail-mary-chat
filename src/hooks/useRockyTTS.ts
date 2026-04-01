@@ -1,237 +1,357 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import type { Lang } from '../i18n';
+import {
+  playSharedAudio,
+  stopSharedAudio,
+  getGreetingAudioSequence,
+  getIntroAudioSequence,
+  getMoodAudio,
+  getLikeAudio,
+  getDirtyAudio,
+  type RockyMood,
+} from '../utils/rockyAudio';
+import { findDefaultAudioByReply } from '../utils/defaultDialogs';
 
-// ── Eridian music note mapping ──
-// Each symbol maps to a frequency range (pentatonic-ish alien scale)
-const NOTE_FREQ: Record<string, number> = {
-  '♫': 523.25,  // C5
-  '♩': 392.00,  // G4
-  '♪': 659.25,  // E5
-  '❗': 880.00,  // A5 (surprise)
-};
+// ── MiniMax TTS 直连 ──
+const TTS_API_URL = import.meta.env.VITE_TTS_API_URL || 'https://api.minimaxi.com';
+const TTS_API_KEY = import.meta.env.VITE_API_KEY || '';
+const TTS_MODEL = import.meta.env.VITE_TTS_MODEL || 'speech-2.8-hd';
+const TTS_VOICE_ID = import.meta.env.VITE_TTS_VOICE_ID || 'rocky_hailmary_v2';
 
-// Eridian "chord" intervals — alien harmony
-const ERIDIAN_INTERVALS = [1, 1.25, 1.5]; // root, major third-ish, fifth-ish
+const VALID_MOODS: RockyMood[] = ['happy', 'unhappy', 'question', 'inahurry', 'laugh', 'talk'];
 
 interface UseRockyTTSReturn {
-  speak: (text: string, lang: Lang) => void;
+  speak: (text: string, lang: Lang, msgId?: string) => void;
   stop: () => void;
   isSpeaking: boolean;
   isEnabled: boolean;
   toggle: () => void;
+  ttsQuotaExceeded: boolean;
 }
 
-export function useRockyTTS(): UseRockyTTSReturn {
+// ── 解析 LLM 回复，提取 mood + 特殊标记 + 正文 ──
+function parseRockyReply(content: string) {
+  const lines = content.split('\n');
+  let mood: RockyMood = 'talk';
+  let hasIntro = false;
+  let hasLike = false;
+  let hasDirty = false;
+  const textParts: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // [MOOD:happy] 标签
+    const moodMatch = trimmed.match(/^\[MOOD:(\w+)\]$/);
+    if (moodMatch) {
+      const m = moodMatch[1] as RockyMood;
+      if (VALID_MOODS.includes(m)) mood = m;
+      continue;
+    }
+
+    // [INTRO] 标签
+    if (trimmed === '[INTRO]') { hasIntro = true; continue; }
+    // [LIKE] 标签
+    if (trimmed === '[LIKE]') { hasLike = true; continue; }
+    // [DIRTY] 标签
+    if (trimmed === '[DIRTY]') { hasDirty = true; continue; }
+
+    // 跳过音符行
+    if (/^[♫♩♪❗\s]{3,}$/.test(trimmed)) continue;
+
+    // 提取翻译正文
+    if (/^\[(Translation|翻译|翻訳)\]/.test(trimmed)) {
+      let text = trimmed.replace(/^\[(Translation|翻译|翻訳)\]\s*/, '');
+      // 如果有 INTRO 标签，去掉开头的 "I am Rocky" 类内容，避免和预录音频重复
+      if (hasIntro) {
+        text = text.replace(/^I am Rocky[.!?,\s]*/i, '').replace(/^Rocky here[.!?,\s]*/i, '');
+      }
+      if (text) textParts.push(text);
+      continue;
+    }
+
+    // 其他文本行
+    if (!/^【Grace/.test(trimmed)) {
+      textParts.push(trimmed);
+    } else {
+      const graceText = trimmed.replace(/^【Grace[^】]*】\s*/, '');
+      if (graceText) textParts.push(graceText);
+    }
+  }
+
+  return { mood, hasIntro, hasLike, hasDirty, text: textParts.join(' ') };
+}
+
+export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isEnabled, setIsEnabled] = useState(true);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const activeNodesRef = useRef<OscillatorNode[]>([]);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [ttsQuotaExceeded, setTtsQuotaExceeded] = useState(false);
   const cancelledRef = useRef(false);
+  const abortCtrlRef = useRef<AbortController | null>(null);
 
-  // Lazy-init AudioContext (needs user gesture)
-  const getAudioCtx = useCallback(() => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext();
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
-    return audioCtxRef.current;
+  // ── 播放单个音频（可中断，用共享 Audio 元素） ──
+  const playInterruptible = useCallback((src: string): Promise<void> => {
+    if (cancelledRef.current) return Promise.resolve();
+    return playSharedAudio(src);
   }, []);
 
-  // ── Play alien tones for the music notes line ──
-  const playEridianNotes = useCallback((notesLine: string): Promise<void> => {
-    return new Promise((resolve) => {
-      const ctx = getAudioCtx();
-      const symbols = notesLine.split('').filter((c) => NOTE_FREQ[c]);
-      if (symbols.length === 0) { resolve(); return; }
+  // ── 依次播放音频序列（可中断） ──
+  const playSequenceInterruptible = useCallback(async (srcs: string[]) => {
+    for (const src of srcs) {
+      if (cancelledRef.current) return;
+      await playInterruptible(src);
+    }
+  }, [playInterruptible]);
 
-      const noteLen = 0.12;   // each note duration
-      const gap = 0.04;       // gap between notes
-      const totalTime = symbols.length * (noteLen + gap);
+  // ── TTS 专用 Audio 元素 ──
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
-      // Master gain with gentle compression
-      const masterGain = ctx.createGain();
-      masterGain.gain.value = 0.15;
-      masterGain.connect(ctx.destination);
+  // ── TTS：直连 MiniMax API，hex 解码后返回就绪的 Audio 元素 ──
+  const fetchTTS = useCallback((text: string, _lang: Lang): Promise<HTMLAudioElement | null> => {
+    if (skipTTS || !text.trim() || !TTS_API_KEY || ttsQuotaExceeded) return Promise.resolve(null);
 
-      // Reverb-like delay
-      const delay = ctx.createDelay();
-      delay.delayTime.value = 0.08;
-      const delayGain = ctx.createGain();
-      delayGain.gain.value = 0.3;
-      delay.connect(delayGain);
-      delayGain.connect(masterGain);
+    const abortCtrl = new AbortController();
+    abortCtrlRef.current = abortCtrl;
 
-      symbols.forEach((sym, i) => {
-        const baseFreq = NOTE_FREQ[sym]!;
-        const startTime = ctx.currentTime + i * (noteLen + gap);
-        // Add slight random detune for organic feel
-        const detune = (Math.random() - 0.5) * 30;
-
-        ERIDIAN_INTERVALS.forEach((interval, j) => {
-          const osc = ctx.createOscillator();
-          const env = ctx.createGain();
-
-          osc.type = j === 0 ? 'sine' : 'triangle';
-          osc.frequency.value = baseFreq * interval;
-          osc.detune.value = detune + j * 5;
-
-          // ADSR-ish envelope
-          env.gain.setValueAtTime(0, startTime);
-          env.gain.linearRampToValueAtTime(j === 0 ? 0.6 : 0.2, startTime + 0.015);
-          env.gain.exponentialRampToValueAtTime(0.001, startTime + noteLen);
-
-          osc.connect(env);
-          env.connect(masterGain);
-          env.connect(delay);
-
-          osc.start(startTime);
-          osc.stop(startTime + noteLen + 0.05);
-          activeNodesRef.current.push(osc);
+    return (async () => {
+      try {
+        const res = await fetch(`${TTS_API_URL}/v1/t2a_v2`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${TTS_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: TTS_MODEL,
+            text,
+            voice_setting: { voice_id: TTS_VOICE_ID, speed: 1.0, vol: 1.0, pitch: 0 },
+            audio_setting: { format: 'mp3', sample_rate: 44100, bitrate: 128000, channel: 1 },
+          }),
+          signal: abortCtrl.signal,
         });
-      });
 
-      setTimeout(() => {
-        activeNodesRef.current = [];
-        resolve();
-      }, totalTime * 1000 + 200);
-    });
-  }, [getAudioCtx]);
+        if (!res.ok) {
+          if (res.status === 429) { setTtsQuotaExceeded(true); return null; }
+          console.error('TTS HTTP error:', res.status);
+          return null;
+        }
 
-  // ── Speak the translation text using Web Speech API ──
-  const speakText = useCallback((text: string, lang: Lang): Promise<void> => {
-    return new Promise((resolve) => {
-      if (!('speechSynthesis' in window)) { resolve(); return; }
+        if (cancelledRef.current) return null;
 
-      // Cancel any previous
-      speechSynthesis.cancel();
+        const json = await res.json();
+        const statusCode = json.base_resp?.status_code;
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utteranceRef.current = utterance;
+        if (statusCode === 1002 || statusCode === 1008 || statusCode === 2056) {
+          setTtsQuotaExceeded(true);
+          return null;
+        }
+        if (statusCode !== 0) {
+          console.error('TTS API error:', json.base_resp);
+          return null;
+        }
 
-      // Language mapping
-      const langMap: Record<Lang, string> = {
-        zh: 'zh-CN',
-        en: 'en-US',
-        ja: 'ja-JP',
-      };
-      utterance.lang = langMap[lang];
+        const hexAudio = json.data?.audio;
+        if (!hexAudio || cancelledRef.current) return null;
 
-      // Rocky's voice: slightly lower pitch, moderate rate
-      utterance.pitch = 0.75;
-      utterance.rate = 0.92;
-      utterance.volume = 0.85;
+        // hex → binary → blob → Audio
+        const bytes = new Uint8Array(hexAudio.length / 2);
+        for (let i = 0; i < bytes.length; i++) {
+          bytes[i] = parseInt(hexAudio.substr(i * 2, 2), 16);
+        }
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
 
-      // Try to find a good voice
-      const voices = speechSynthesis.getVoices();
-      const preferredVoice = voices.find(
-        (v) => v.lang.startsWith(langMap[lang].split('-')[0]) && v.localService
-      );
-      if (preferredVoice) utterance.voice = preferredVoice;
+        // 加载 Audio 元素
+        const audio = new Audio();
+        audio.preload = 'auto';
 
-      utterance.onend = () => {
-        utteranceRef.current = null;
-        resolve();
-      };
-      utterance.onerror = () => {
-        utteranceRef.current = null;
-        resolve();
-      };
+        await new Promise<void>((resolve, reject) => {
+          audio.oncanplaythrough = () => { audio.oncanplaythrough = null; audio.onerror = null; resolve(); };
+          audio.onerror = () => { audio.oncanplaythrough = null; audio.onerror = null; reject(); };
+          audio.src = blobUrl;
+          audio.load();
+        });
 
-      speechSynthesis.speak(utterance);
-    });
-  }, []);
+        if (cancelledRef.current) { URL.revokeObjectURL(blobUrl); return null; }
 
-  // ── Parse Rocky message and extract parts ──
-  const parseForTTS = useCallback((content: string) => {
-    const lines = content.split('\n');
-    let notesLine = '';
-    const textParts: string[] = [];
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      if (/^[♫♩♪❗\s]{3,}$/.test(trimmed)) {
-        notesLine = trimmed;
-      } else if (/^\[(翻译|Translation|翻訳)\]/.test(trimmed)) {
-        const text = trimmed.replace(/^\[(翻译|Translation|翻訳)\]\s*/, '');
-        if (text) textParts.push(text);
-      } else if (/^【Grace/.test(trimmed)) {
-        // Grace's voice part — speak it too
-        const graceText = trimmed.replace(/^【Grace[^】]*】\s*/, '');
-        if (graceText) textParts.push(graceText);
-      } else {
-        textParts.push(trimmed);
+        (audio as HTMLAudioElement & { _blobUrl?: string })._blobUrl = blobUrl;
+        return audio;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return null;
+        console.error('TTS failed:', err);
+        return null;
+      } finally {
+        abortCtrlRef.current = null;
       }
-    }
+    })();
+  }, [skipTTS, ttsQuotaExceeded]);
 
-    return { notesLine, text: textParts.join(' ') };
+  // ── 播放已就绪的 TTS Audio 元素 ──
+  const playTTSAudio = useCallback((audio: HTMLAudioElement): Promise<void> => {
+    if (cancelledRef.current) {
+      const url = (audio as HTMLAudioElement & { _blobUrl?: string })._blobUrl;
+      if (url) URL.revokeObjectURL(url);
+      return Promise.resolve();
+    }
+    ttsAudioRef.current = audio;
+    return new Promise<void>((resolve) => {
+      const cleanup = () => {
+        const url = (audio as HTMLAudioElement & { _blobUrl?: string })._blobUrl;
+        if (url) URL.revokeObjectURL(url);
+        audio.onended = null;
+        audio.onerror = null;
+        ttsAudioRef.current = null;
+        resolve();
+      };
+      audio.onended = cleanup;
+      audio.onerror = cleanup;
+      audio.play().catch(cleanup);
+    });
   }, []);
 
-  // ── Main speak function ──
+  // ── 请求+播放一步到位 ──
+  const speakWithTTS = useCallback(async (text: string, lang: Lang): Promise<void> => {
+    const audio = await fetchTTS(text, lang);
+    if (audio) await playTTSAudio(audio);
+  }, [fetchTTS, playTTSAudio]);
+
+  // ── 主播放函数 ──
   const speak = useCallback(
-    async (content: string, lang: Lang) => {
+    async (content: string, lang: Lang, msgId?: string) => {
       if (!isEnabled) return;
       cancelledRef.current = false;
       setIsSpeaking(true);
 
-      const { notesLine, text } = parseForTTS(content);
-
-      // 1. Play alien tones
-      if (notesLine && !cancelledRef.current) {
-        await playEridianNotes(notesLine);
+      // === Greeting 特殊处理: hello音效 + sayhello + 预录音频 ===
+      if (msgId === 'greeting') {
+        await playSequenceInterruptible(getGreetingAudioSequence());
+        if (!cancelledRef.current) {
+          await new Promise((r) => setTimeout(r, 200));
+          await playInterruptible(`/audio/defaults/greeting_${lang}.mp3`);
+        }
+        setIsSpeaking(false);
+        return;
       }
 
-      // 2. Small pause between notes and speech
+      // === Farewell 特殊处理: mood音效 + 预录音频 ===
+      if (msgId?.startsWith('farewell-')) {
+        if (!cancelledRef.current) {
+          await playInterruptible(getMoodAudio('unhappy'));
+        }
+        if (!cancelledRef.current) {
+          await new Promise((r) => setTimeout(r, 200));
+          await playInterruptible(`/audio/defaults/farewell_${lang}.mp3`);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      // === 预置对话: mood 音频 + 本地预录 TTS ===
+      if (msgId?.startsWith('default-')) {
+        const { mood, hasLike } = parseRockyReply(content);
+        const defaultAudio = findDefaultAudioByReply(content, lang);
+        if (!cancelledRef.current) {
+          await playInterruptible(getMoodAudio(mood));
+        }
+        if (hasLike && !cancelledRef.current) {
+          await playInterruptible(getLikeAudio());
+        }
+        if (defaultAudio && !cancelledRef.current) {
+          await new Promise((r) => setTimeout(r, 200));
+          await playInterruptible(defaultAudio);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      const { mood, hasIntro, hasLike, hasDirty, text } = parseRockyReply(content);
+
+      // === Text 模式：自定义回复不播任何音频 ===
+      if (skipTTS) {
+        setIsSpeaking(false);
+        return;
+      }
+
+      // === DIRTY 警告 ===
+      if (hasDirty && !cancelledRef.current) {
+        await playInterruptible(getDirtyAudio());
+        // dirty 之后还播正文（警告内容）
+        if (text && !cancelledRef.current) {
+          await speakWithTTS(text, lang);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      // === 自我介绍 ===
+      if (hasIntro && !cancelledRef.current) {
+        await playSequenceInterruptible(getIntroAudioSequence());
+        if (text && !cancelledRef.current) {
+          await speakWithTTS(text, lang);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      // === 普通回复: mood 音频 + TTS 并行下载，串行播放 ===
+
+      // 1. 并行：mood 音效播放 + TTS 下载
+      const ttsPromise = text ? fetchTTS(text, lang) : Promise.resolve(null);
+
       if (!cancelledRef.current) {
-        await new Promise((r) => setTimeout(r, 300));
+        await playInterruptible(getMoodAudio(mood));
       }
 
-      // 3. Speak translation
-      if (text && !cancelledRef.current) {
-        await speakText(text, lang);
+      // 2. 如果有 LIKE 标签，播放 ilike
+      if (hasLike && !cancelledRef.current) {
+        await playInterruptible(getLikeAudio());
+      }
+
+      // 3. 等 TTS 加载就绪
+      const ttsAudio = await ttsPromise;
+
+      // 4. 播放 TTS
+      if (ttsAudio && !cancelledRef.current) {
+        await playTTSAudio(ttsAudio);
       }
 
       setIsSpeaking(false);
     },
-    [isEnabled, parseForTTS, playEridianNotes, speakText]
+    [isEnabled, playInterruptible, playSequenceInterruptible, speakWithTTS]
   );
 
   const stop = useCallback(() => {
     cancelledRef.current = true;
-    // Stop oscillators
-    activeNodesRef.current.forEach((osc) => {
-      try { osc.stop(); } catch { /* already stopped */ }
-    });
-    activeNodesRef.current = [];
-    // Stop speech
-    speechSynthesis.cancel();
-    utteranceRef.current = null;
+    abortCtrlRef.current?.abort();
+    stopSharedAudio();
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current.currentTime = 0;
+      const url = (ttsAudioRef.current as HTMLAudioElement & { _blobUrl?: string })._blobUrl;
+      if (url) URL.revokeObjectURL(url);
+      ttsAudioRef.current = null;
+    }
     setIsSpeaking(false);
   }, []);
 
   const toggle = useCallback(() => {
     setIsEnabled((prev) => {
-      if (prev) stop(); // turning off → stop any current speech
+      if (prev) stop();
       return !prev;
     });
   }, [stop]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      speechSynthesis.cancel();
-      activeNodesRef.current.forEach((osc) => {
-        try { osc.stop(); } catch { /* */ }
-      });
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close();
+      abortCtrlRef.current?.abort();
+      stopSharedAudio();
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current.currentTime = 0;
+        ttsAudioRef.current = null;
       }
     };
   }, []);
 
-  return { speak, stop, isSpeaking, isEnabled, toggle };
+  return { speak, stop, isSpeaking, isEnabled, toggle, ttsQuotaExceeded };
 }
