@@ -1,16 +1,20 @@
 /**
- * Database Schema — P1
+ * Database Schema — P1 + P2
  *
- * Three tables for the memory system:
+ * P1 tables (raw log):
  *   - users       one row per device (later also per logged-in account)
  *   - sessions    one row per Rocky call
- *   - messages    one row per user/assistant message (raw log)
+ *   - messages    one row per user/assistant message
+ *
+ * P2 tables (consolidated memory):
+ *   - memories    atomic facts extracted from sessions, for later prompt injection
+ *   - rapport     per-user Rocky attitude (trust, warmth, notes)
  *
  * After changes: edgespark db generate && edgespark db migrate
  */
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
   "users",
@@ -58,6 +62,37 @@ export const messages = sqliteTable(
   },
   (t) => [index("idx_messages_session").on(t.session_id)]
 );
+
+export const memories = sqliteTable(
+  "memories",
+  {
+    id: text("id").primaryKey(), // uuid v4
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    kind: text("kind").notNull(), // 'fact' | 'preference' | 'topic' | 'emotion'
+    content: text("content").notNull(),
+    importance: real("importance").notNull().default(0.5), // 0..1
+    source_session: text("source_session").references(() => sessions.id),
+    created_at: integer("created_at").notNull(),
+    last_used_at: integer("last_used_at"),
+    // P3 will flip old memories to superseded when new info replaces them.
+    // Unused in P2 — column created now so migrations stay additive.
+    superseded_by: text("superseded_by"),
+  },
+  (t) => [index("idx_memories_user_imp").on(t.user_id, t.importance)]
+);
+
+export const rapport = sqliteTable("rapport", {
+  user_id: text("user_id")
+    .primaryKey()
+    .references(() => users.id),
+  trust: real("trust").notNull().default(0.3),
+  warmth: real("warmth").notNull().default(0.3),
+  last_mood: text("last_mood"),
+  notes: text("notes"),
+  updated_at: integer("updated_at").notNull(),
+});
 
 // Keep the sql import reachable so future migrations adding defaults type-check.
 export { sql };

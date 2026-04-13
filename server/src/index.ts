@@ -9,11 +9,12 @@
  * platform does not enforce row ownership automatically.
  */
 
-import { db, vars, secret } from "edgespark";
+import { db, vars, secret, ctx } from "edgespark";
 import { messages as messagesTable, sessions, users } from "@defs";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { consolidateSession } from "./consolidate";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -208,6 +209,16 @@ app.post("/api/public/session/end", async (c) => {
     .returning({ id: sessions.id });
 
   if (result.length === 0) return c.json({ error: "session not found" }, 404);
+
+  // P2: kick off consolidation in the background. The client gets its
+  // 200 immediately; the LLM extractor call can take a few seconds.
+  // consolidateSession() is idempotent and gates on turn_count/summary.
+  ctx.runInBackground(
+    consolidateSession(body.session_id).catch((err) =>
+      console.error("consolidate error", err)
+    )
+  );
+
   return c.json({ ok: true });
 });
 

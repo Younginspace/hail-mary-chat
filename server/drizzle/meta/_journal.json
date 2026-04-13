@@ -8,6 +8,13 @@
       "when": 1776063884639,
       "tag": "0000_new_sunspot",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1776066265496,
+      "tag": "0001_great_tinkerer",
+      "breakpoints": true
     }
   ]
 }
