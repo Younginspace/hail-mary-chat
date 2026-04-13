@@ -7,3 +7,7 @@ path = "server"
 path = "web"
 output_path = "web/dist"
 
+[db]
+# Allow migrations on the P1 branch during development.
+# Remove this override once the branch is merged to main.
+migration_branch = "feat/edgespark-migration"

@@ -4,50 +4,17 @@ import { useRockyTTS } from '../hooks/useRockyTTS';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { getDefaultQuestions } from '../utils/defaultDialogs';
-import { getRemainingPlays, canShareForBonus, markShared, getShareUrl, setTtsQuotaExceeded, setChatQuotaExceeded } from '../utils/playLimit';
-import { t as translate } from '../i18n';
+import { setTtsQuotaExceeded, setChatQuotaExceeded } from '../utils/playLimit';
+import { endSession, logMessage } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 import Starfield from './Starfield';
 import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
 import SuggestedQuestions from './SuggestedQuestions';
 import LangSwitcher from './LangSwitcher';
-import ShareModal from './ShareModal';
 
-function EndedPanel({ mode, quotaExceeded, onBack }: { mode: ChatMode; quotaExceeded: boolean; onBack: () => void }) {
+function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
-  const [unlocked, setUnlocked] = useState(false);
-  const [showShare, setShowShare] = useState(false);
-  const remaining = getRemainingPlays(mode);
-  const canShare = canShareForBonus(mode);
-  const canPlayAgain = remaining > 0;
-
-  const handleShareDone = () => {
-    markShared(mode);
-    setUnlocked(true);
-    setShowShare(false);
-  };
-
-  const handleShare = async () => {
-    // 手机：优先系统分享面板
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: translate('share.title', lang),
-          text: translate('share.text', lang),
-          url: getShareUrl(),
-        });
-        handleShareDone();
-        return;
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
-      }
-    }
-    // 桌面 fallback
-    setShowShare(true);
-  };
-
-  const handlePlayAgain = () => onBack();
 
   const quotaMsg: Record<string, string> = {
     zh: '今日通话的人太多了，资源不足，请改天再来吧！',
@@ -58,44 +25,10 @@ function EndedPanel({ mode, quotaExceeded, onBack }: { mode: ChatMode; quotaExce
   return (
     <div className="ended-panel">
       <div className="ended-line">{t('ended.line', lang)}</div>
-
       {quotaExceeded ? (
         <div className="ended-desc">{quotaMsg[lang]}</div>
-      ) : unlocked ? (
-        <>
-          <div className="ended-unlocked">{t('ended.unlocked', lang, { n: 0 })}</div>
-          <button className="ended-play-btn" onClick={handlePlayAgain}>{t('ended.callAgain', lang)}</button>
-        </>
-      ) : canPlayAgain ? (
-        <>
-          <div className="ended-desc">{t('ended.remaining', lang, { n: remaining })}</div>
-          <button className="ended-play-btn" onClick={handlePlayAgain}>{t('ended.callAgain', lang)}</button>
-          {canShare && (
-            <button className="ended-share-btn" onClick={handleShare}>
-              {t('ended.shareToRefuel', lang)}
-            </button>
-          )}
-        </>
-      ) : canShare ? (
-        <>
-          <div className="ended-desc">{t('ended.depleted', lang, { n: 1 })}</div>
-          <button className="ended-share-btn" onClick={handleShare}>
-            {t('ended.shareToRefuel', lang)}
-          </button>
-        </>
       ) : (
-        <>
-          <div className="ended-desc">{t('ended.dailyDepleted', lang)}</div>
-          <button className="ended-play-btn" onClick={handlePlayAgain}>{t('ended.callAgain', lang)}</button>
-        </>
-      )}
-
-      {showShare && (
-        <ShareModal
-          url={getShareUrl()}
-          onShared={handleShareDone}
-          onClose={() => setShowShare(false)}
-        />
+        <button className="ended-play-btn" onClick={onBack}>{t('ended.callAgain', lang)}</button>
       )}
     </div>
   );
@@ -103,10 +36,11 @@ function EndedPanel({ mode, quotaExceeded, onBack }: { mode: ChatMode; quotaExce
 
 interface ChatInterfaceProps {
   mode: ChatMode;
+  sessionId: string;
   onBack: () => void;
 }
 
-export default function ChatInterface({ mode, onBack }: ChatInterfaceProps) {
+export default function ChatInterface({ mode, sessionId, onBack }: ChatInterfaceProps) {
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
   const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded, usedSuggestions } = useChat(lang, mode);
@@ -115,6 +49,7 @@ export default function ChatInterface({ mode, onBack }: ChatInterfaceProps) {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
+  const loggedIdsRef = useRef<Set<string>>(new Set());
 
   // 当 quota 用完时，记到 localStorage
   useEffect(() => {
@@ -124,6 +59,38 @@ export default function ChatInterface({ mode, onBack }: ChatInterfaceProps) {
   useEffect(() => {
     if (isQuotaExceeded) setChatQuotaExceeded();
   }, [isQuotaExceeded]);
+
+  // Log each user/assistant message to backend (fire-and-forget).
+  // Skip the hard-coded greeting (id='greeting') — it's shown locally, not
+  // sent through LLM, so there's nothing meaningful to store yet. The
+  // server increments turn_count automatically for role='user' inserts.
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.id === 'greeting') continue;
+      if (msg.isStreaming) continue;
+      if (loggedIdsRef.current.has(msg.id)) continue;
+      loggedIdsRef.current.add(msg.id);
+      logMessage(sessionId, msg.role, msg.content);
+    }
+  }, [messages, sessionId]);
+
+  // Close session on unmount (back to start / tab closed).
+  useEffect(() => {
+    return () => {
+      endSession(sessionId);
+    };
+  }, [sessionId]);
+
+  // Also close on page visibility hidden (mobile tab swipe, browser close).
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') {
+        endSession(sessionId);
+      }
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    return () => document.removeEventListener('visibilitychange', onHidden);
+  }, [sessionId]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -238,7 +205,7 @@ export default function ChatInterface({ mode, onBack }: ChatInterfaceProps) {
         />
 
         {isEnded ? (
-          <EndedPanel mode={mode} quotaExceeded={isQuotaExceeded} onBack={onBack} />
+          <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
         ) : (
           <form className="input-area" onSubmit={handleSubmit}>
             <input
