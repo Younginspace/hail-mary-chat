@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# EdgeSpark local state
+.edgespark/
+server/package-lock.json
+web/package-lock.json
+
+# Env files (EdgeSpark workflow)
+.env.local
+.env.*.local
+.env.production
+.env.staging
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

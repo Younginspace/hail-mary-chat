@@ -8,11 +8,8 @@ import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQu
 import ShareModal from './ShareModal';
 import type { ChatMode } from '../utils/playLimit';
 
-const TTS_API_URL = import.meta.env.VITE_TTS_API_URL || 'https://api.minimaxi.com';
-const TTS_API_KEY = import.meta.env.VITE_API_KEY || '';
-const TTS_MODEL = import.meta.env.VITE_TTS_MODEL || 'speech-2.8-hd';
-const TTS_VOICE_ID = import.meta.env.VITE_TTS_VOICE_ID || 'rocky_hailmary_v2';
-const CHAT_API_URL = import.meta.env.VITE_API_URL || 'https://api.minimax.chat';
+// EdgeSpark proxy base URL — the worker owns MINIMAX_API_KEY server-side.
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 type Phase = 'idle' | 'connecting' | 'connected';
 
@@ -73,42 +70,26 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     setShowShareModal(false);
   }, [shareMode]);
 
-  // 探测 TTS 额度
+  // 探测 TTS 额度（GET /api/public/tts?text=.）
   useEffect(() => {
-    if (ttsDisabled || !TTS_API_KEY || localStorage.getItem('rocky_skip_tts_probe')) return;
-    fetch(`${TTS_API_URL}/v1/t2a_v2`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TTS_API_KEY}` },
-      body: JSON.stringify({
-        model: TTS_MODEL, text: '.', voice_setting: { voice_id: TTS_VOICE_ID },
-        audio_setting: { format: 'mp3', sample_rate: 22050, bitrate: 32000, channel: 1 },
-      }),
-    }).then(res => res.json()).then(json => {
-      const code = json.base_resp?.status_code;
-      if (code === 1002 || code === 1008 || code === 2056) {
-        setTtsQuotaExceeded();
-        setTtsDisabled(true);
-      }
-    }).catch(() => {});
+    if (ttsDisabled || localStorage.getItem('rocky_skip_tts_probe')) return;
+    fetch(`${API_BASE}/api/public/tts?text=.`, { method: 'GET' })
+      .then(res => { if (res.status === 429) { setTtsQuotaExceeded(); setTtsDisabled(true); } })
+      .catch(() => {});
   }, [ttsDisabled]);
 
-  // 探测 Chat 额度：直连 + proxy 都试，任一返回 429 即标记
+  // 探测 Chat 额度（POST /api/public/chat，单 token）
   useEffect(() => {
     if (chatDisabled) return;
-    const probeBody = JSON.stringify({
-      model: import.meta.env.VITE_MODEL || 'MiniMax-M2.7',
-      messages: [{ role: 'user', content: '.' }],
-      max_tokens: 1,
-    });
-    const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TTS_API_KEY}` };
-    const markDisabled = () => { setChatQuotaExceeded(); setChatDisabled(true); };
-    // 直连 MiniMax
-    fetch(`${CHAT_API_URL}/v1/chat/completions`, { method: 'POST', headers, body: probeBody })
-      .then(res => { if (res.status === 429) markDisabled(); })
-      .catch(() => {});
-    // 也走 server proxy（覆盖 mock 场景）
-    fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: probeBody })
-      .then(res => { if (res.status === 429) markDisabled(); })
+    fetch(`${API_BASE}/api/public/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '.' }],
+        max_tokens: 1,
+      }),
+    })
+      .then(res => { if (res.status === 429) { setChatQuotaExceeded(); setChatDisabled(true); } })
       .catch(() => {});
   }, [chatDisabled]);
 

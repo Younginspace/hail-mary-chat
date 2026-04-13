@@ -3,9 +3,9 @@ export interface ChatMessage {
   content: string;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || 'https://api.minimax.chat';
-const API_KEY = import.meta.env.VITE_API_KEY || '';
-const MODEL = import.meta.env.VITE_MODEL || 'MiniMax-M2.7';
+// Chat streams through the EdgeSpark worker proxy at /api/public/chat.
+// No API key in the browser — the proxy injects it server-side.
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export interface ChatConfig {
   temperature?: number;
@@ -29,19 +29,16 @@ export async function streamChat(
 ) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(`${API_BASE}/v1/chat/completions`, {
+      const response = await fetch(`${API_BASE}/api/public/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${API_KEY}`,
         },
         body: JSON.stringify({
-          model: MODEL,
           messages: messages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
-          stream: true,
           temperature: config?.temperature ?? 0.55,
           top_p: config?.top_p ?? 0.9,
           max_tokens: 1024,
