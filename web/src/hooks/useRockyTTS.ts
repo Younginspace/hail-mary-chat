@@ -12,11 +12,9 @@ import {
 } from '../utils/rockyAudio';
 import { findDefaultAudioByReply } from '../utils/defaultDialogs';
 
-// ── MiniMax TTS 直连 ──
-const TTS_API_URL = import.meta.env.VITE_TTS_API_URL || 'https://api.minimaxi.com';
-const TTS_API_KEY = import.meta.env.VITE_API_KEY || '';
-const TTS_MODEL = import.meta.env.VITE_TTS_MODEL || 'speech-2.8-hd';
-const TTS_VOICE_ID = import.meta.env.VITE_TTS_VOICE_ID || 'rocky_hailmary_v2';
+// ── TTS: 通过 EdgeSpark worker 代理（/api/public/tts）
+// 服务器端注入 MiniMax API key，浏览器不持有任何凭据
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const VALID_MOODS: RockyMood[] = ['happy', 'unhappy', 'question', 'inahurry', 'laugh', 'talk'];
 
@@ -107,27 +105,18 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   // ── TTS 专用 Audio 元素 ──
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ── TTS：直连 MiniMax API，hex 解码后返回就绪的 Audio 元素 ──
+  // ── TTS：走 EdgeSpark 代理（GET /api/public/tts?text=...），返回 audio/mpeg 二进制
   const fetchTTS = useCallback((text: string, _lang: Lang): Promise<HTMLAudioElement | null> => {
-    if (skipTTS || !text.trim() || !TTS_API_KEY || ttsQuotaExceeded) return Promise.resolve(null);
+    if (skipTTS || !text.trim() || ttsQuotaExceeded) return Promise.resolve(null);
 
     const abortCtrl = new AbortController();
     abortCtrlRef.current = abortCtrl;
 
     return (async () => {
       try {
-        const res = await fetch(`${TTS_API_URL}/v1/t2a_v2`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${TTS_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: TTS_MODEL,
-            text,
-            voice_setting: { voice_id: TTS_VOICE_ID, speed: 1.0, vol: 1.0, pitch: 0 },
-            audio_setting: { format: 'mp3', sample_rate: 44100, bitrate: 128000, channel: 1 },
-          }),
+        const url = `${API_BASE}/api/public/tts?text=${encodeURIComponent(text)}`;
+        const res = await fetch(url, {
+          method: 'GET',
           signal: abortCtrl.signal,
         });
 
@@ -139,26 +128,9 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
 
         if (cancelledRef.current) return null;
 
-        const json = await res.json();
-        const statusCode = json.base_resp?.status_code;
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (!bytes.byteLength || cancelledRef.current) return null;
 
-        if (statusCode === 1002 || statusCode === 1008 || statusCode === 2056) {
-          setTtsQuotaExceeded(true);
-          return null;
-        }
-        if (statusCode !== 0) {
-          console.error('TTS API error:', json.base_resp);
-          return null;
-        }
-
-        const hexAudio = json.data?.audio;
-        if (!hexAudio || cancelledRef.current) return null;
-
-        // hex → binary → blob → Audio
-        const bytes = new Uint8Array(hexAudio.length / 2);
-        for (let i = 0; i < bytes.length; i++) {
-          bytes[i] = parseInt(hexAudio.substr(i * 2, 2), 16);
-        }
         const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
 
         // 加载 Audio 元素
