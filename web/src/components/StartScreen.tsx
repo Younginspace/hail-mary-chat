@@ -4,8 +4,8 @@ import LangSwitcher from './LangSwitcher';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
-import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQuotaExceeded, formatResetTime, getRemainingPlays, markShared, getShareUrl } from '../utils/playLimit';
-import ShareModal from './ShareModal';
+import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQuotaExceeded, formatResetTime } from '../utils/playLimit';
+import { fetchQuota, startSession } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
 // EdgeSpark proxy base URL — the worker owns MINIMAX_API_KEY server-side.
@@ -24,7 +24,7 @@ const CONNECTION_STEPS = [
 ];
 
 interface StartScreenProps {
-  onConnected: (mode: ChatMode) => void;
+  onConnected: (mode: ChatMode, sessionId: string) => void;
 }
 
 export default function StartScreen({ onConnected }: StartScreenProps) {
@@ -32,43 +32,26 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [selectedMode, setSelectedMode] = useState<ChatMode>('text');
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [ttsDisabled, setTtsDisabled] = useState(isTtsQuotaExceeded());
   const [chatDisabled, setChatDisabled] = useState(isChatQuotaExceeded());
   const [resetTime, setResetTime] = useState(formatResetTime());
-  const textDailyUsed = getRemainingPlays('text') <= 0;
-  const voiceDailyUsed = getRemainingPlays('voice') <= 0;
-  const textBtnDisabled = chatDisabled; // API 不可用才真正禁用；次数用完可通过分享获取
-  const voiceBtnDisabled = ttsDisabled || voiceDailyUsed;
-  const [textShared, setTextShared] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [shareMode, setShareMode] = useState<ChatMode>('text');
 
-  const handleOpenShare = useCallback(async (mode: ChatMode) => {
-    setShareMode(mode);
-    // 手机：优先触发系统原生分享面板（微信/小红书等）
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: t('share.title', lang),
-          text: t('share.text', lang),
-          url: getShareUrl(),
-        });
-        markShared(mode);
-        if (mode === 'text') setTextShared(true);
-        return;
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
-      }
-    }
-    // 桌面 fallback：显示二维码弹窗
-    setShowShareModal(true);
-  }, [lang]);
+  // ── Daily-quota state (from EdgeSpark) ──
+  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null); // null = unknown
+  const [startError, setStartError] = useState<'quota' | 'server' | null>(null);
 
-  const handleShareDone = useCallback(() => {
-    markShared(shareMode);
-    if (shareMode === 'text') setTextShared(true);
-    setShowShareModal(false);
-  }, [shareMode]);
+  const dailyDepleted = dailyRemaining === 0;
+
+  const textBtnDisabled = chatDisabled || dailyDepleted;
+  const voiceBtnDisabled = ttsDisabled || dailyDepleted;
+
+  // ── On mount: fetch backend quota ──
+  useEffect(() => {
+    fetchQuota().then((q) => {
+      if (q) setDailyRemaining(q.remaining);
+    });
+  }, []);
 
   // 探测 TTS 额度（GET /api/public/tts?text=.）
   useEffect(() => {
@@ -95,16 +78,30 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
 
   // 每分钟刷新倒计时
   useEffect(() => {
-    if (!ttsDisabled && !chatDisabled) return;
+    if (!ttsDisabled && !chatDisabled && !dailyDepleted) return;
     const timer = setInterval(() => setResetTime(formatResetTime()), 60000);
     return () => clearInterval(timer);
-  }, [ttsDisabled, chatDisabled]);
+  }, [ttsDisabled, chatDisabled, dailyDepleted]);
 
-  const handleCall = useCallback((mode: ChatMode) => {
+  // ── Click handler: start session on backend, then play connect animation ──
+  const handleCall = useCallback(async (mode: ChatMode) => {
     unlockAudio();
+    setStartError(null);
+    const result = await startSession(lang, mode);
+    if (!result.ok) {
+      if (result.reason === 'quota_exceeded') {
+        setDailyRemaining(0);
+        setStartError('quota');
+      } else {
+        setStartError('server');
+      }
+      return;
+    }
+    setPendingSessionId(result.session_id);
+    setDailyRemaining(result.remaining);
     setSelectedMode(mode);
     setPhase('connecting');
-  }, []);
+  }, [lang]);
 
   // Connection steps animation
   useEffect(() => {
@@ -129,9 +126,16 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
   // Once connected, wait a beat then transition to chat
   useEffect(() => {
     if (phase !== 'connected') return;
-    const timer = setTimeout(() => onConnected(selectedMode), 600);
+    if (!pendingSessionId) return;
+    const timer = setTimeout(() => onConnected(selectedMode, pendingSessionId), 600);
     return () => clearTimeout(timer);
-  }, [phase, onConnected, selectedMode]);
+  }, [phase, onConnected, selectedMode, pendingSessionId]);
+
+  const dailyDepletedCopy = {
+    zh: '今日通话 20 次已用完，明日 00:00 再来（未来接入登录后可无限）',
+    en: 'Daily 20 calls used up, come back tomorrow 00:00 (login for unlimited — coming soon)',
+    ja: '本日の通話20回を使い切りました、明日00:00にまた（ログイン機能で無制限化予定）',
+  }[lang];
 
   return (
     <div className="immersive-root">
@@ -155,37 +159,39 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
               </div>
             </div>
 
+            {dailyDepleted && (
+              <div className="daily-depleted-bar">
+                {dailyDepletedCopy}
+              </div>
+            )}
+            {startError === 'server' && (
+              <div className="daily-depleted-bar">
+                {{
+                  zh: '通讯系统繁忙，请稍后再试',
+                  en: 'Comm system busy, please try again',
+                  ja: '通信システム混雑中、しばらくしてから再試行',
+                }[lang]}
+              </div>
+            )}
+
             <div className="start-mode-buttons">
               {/* 文字通话 */}
               <button
-                className={`mode-btn ${textBtnDisabled ? 'mode-btn-disabled' : textDailyUsed && !textShared ? 'mode-btn-share' : ''}`}
-                onClick={() => {
-                  if (textBtnDisabled) return;
-                  if (textDailyUsed && !textShared) { handleOpenShare('text'); return; }
-                  handleCall('text');
-                }}
+                className={`mode-btn ${textBtnDisabled ? 'mode-btn-disabled' : ''}`}
+                onClick={() => { if (!textBtnDisabled) handleCall('text'); }}
                 disabled={textBtnDisabled}
               >
                 <div className="mode-btn-icon">
-                  {textDailyUsed && !textShared && !textBtnDisabled ? (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
-                  )}
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
                 </div>
                 <div className="mode-btn-body">
                   <span className="mode-btn-label">{t('start.textBtn', lang)}</span>
-                  <span className={`mode-btn-hint ${(textBtnDisabled || (textDailyUsed && !textShared)) ? 'mode-btn-hint-warn' : ''}`}>
+                  <span className={`mode-btn-hint ${textBtnDisabled ? 'mode-btn-hint-warn' : ''}`}>
                     {chatDisabled
                       ? t('start.textDisabled', lang)
-                      : textDailyUsed && !textShared
-                        ? t('start.textDailyUsed', lang)
-                        : t('start.textHint', lang)}
+                      : t('start.textHint', lang)}
                   </span>
                 </div>
               </button>
@@ -193,7 +199,7 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
               {/* 语音通话 */}
               <button
                 className={`mode-btn ${voiceBtnDisabled ? 'mode-btn-disabled' : ''}`}
-                onClick={() => !voiceBtnDisabled && handleCall('voice')}
+                onClick={() => { if (!voiceBtnDisabled) handleCall('voice'); }}
                 disabled={voiceBtnDisabled}
               >
                 <div className="mode-btn-icon">
@@ -206,13 +212,21 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
                   <span className={`mode-btn-hint ${voiceBtnDisabled ? 'mode-btn-hint-warn' : ''}`}>
                     {ttsDisabled
                       ? t('start.voiceDisabled', lang, { time: resetTime })
-                      : voiceDailyUsed
-                        ? t('start.voiceDailyUsed', lang)
-                        : t('start.voiceHint', lang)}
+                      : t('start.voiceHint', lang)}
                   </span>
                 </div>
               </button>
             </div>
+
+            {dailyRemaining !== null && !dailyDepleted && (
+              <div className="daily-remaining-hint">
+                {{
+                  zh: `今日剩余 ${dailyRemaining} 次通话`,
+                  en: `${dailyRemaining} calls left today`,
+                  ja: `本日残り ${dailyRemaining} 回`,
+                }[lang]}
+              </div>
+            )}
           </div>
         )}
 
@@ -243,14 +257,6 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
           </div>
         )}
       </div>
-
-      {showShareModal && (
-        <ShareModal
-          url={getShareUrl()}
-          onShared={handleShareDone}
-          onClose={() => setShowShareModal(false)}
-        />
-      )}
     </div>
   );
 }
