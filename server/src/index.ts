@@ -10,8 +10,9 @@
  */
 
 import { db, vars, secret, ctx } from "edgespark";
-import { messages as messagesTable, sessions, users } from "@defs";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { auth } from "edgespark/http";
+import { memories, messages as messagesTable, rapport, sessions, users } from "@defs";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { consolidateSession } from "./consolidate";
@@ -74,6 +75,120 @@ async function getTodayUsed(user_id: string): Promise<number> {
   return rows.length;
 }
 
+// P4: check whether the users row this device resolves to has been adopted
+// by an authenticated account. Adopted rows bypass the daily-quota gate.
+async function isUserAdopted(user_id: string): Promise<boolean> {
+  const rows = await db
+    .select({ auth_user_id: users.auth_user_id })
+    .from(users)
+    .where(eq(users.id, user_id))
+    .limit(1);
+  return rows.length > 0 && rows[0].auth_user_id != null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  P3: memory-context helpers — used by /api/public/chat to prepend
+//  a "[MEMORY CONTEXT]" system message so Rocky actually remembers.
+// ═══════════════════════════════════════════════════════════════════
+
+const MEMORY_INJECT_TOP_N = 12; // top memories by importance
+const MEMORY_MAX_CHARS = 1800; // hard cap on injected block
+
+type MemoryLang = "en" | "zh" | "ja";
+
+function moodLabel(mood: string | null, lang: MemoryLang): string {
+  if (!mood) return "";
+  const table: Record<string, Record<MemoryLang, string>> = {
+    happy: { en: "warm/happy", zh: "温暖开心", ja: "温かい/嬉しい" },
+    unhappy: { en: "worried/sad", zh: "担忧/难过", ja: "心配/悲しい" },
+    question: { en: "curious", zh: "好奇", ja: "好奇心" },
+    inahurry: { en: "urgent", zh: "紧迫", ja: "急いでいる" },
+    laugh: { en: "amused", zh: "欢乐", ja: "楽しい" },
+    talk: { en: "calm", zh: "平静", ja: "穏やか" },
+  };
+  return table[mood]?.[lang] ?? mood;
+}
+
+function rapportBand(value: number): "low" | "mid" | "high" {
+  if (value < 0.4) return "low";
+  if (value < 0.7) return "mid";
+  return "high";
+}
+
+/**
+ * Build a compact memory context block for a given user. Returns null when
+ * there is nothing worth injecting (new friend, no consolidated memory yet).
+ *
+ * English-only content — memories are stored in English by the consolidator.
+ * We wrap in language-aware instructions so Rocky still speaks `lang`.
+ */
+async function buildMemoryContext(
+  user_id: string,
+  lang: MemoryLang,
+  callsign: string | null
+): Promise<string | null> {
+  const memRows = await db
+    .select({
+      kind: memories.kind,
+      content: memories.content,
+      importance: memories.importance,
+    })
+    .from(memories)
+    .where(eq(memories.user_id, user_id))
+    .orderBy(desc(memories.importance), desc(memories.created_at))
+    .limit(MEMORY_INJECT_TOP_N);
+
+  const rapportRows = await db
+    .select()
+    .from(rapport)
+    .where(eq(rapport.user_id, user_id))
+    .limit(1);
+
+  if (memRows.length === 0 && rapportRows.length === 0 && !callsign) return null;
+
+  const lines: string[] = [];
+  lines.push("[MEMORY CONTEXT] (from previous calls with this friend)");
+  if (callsign) {
+    lines.push(`Friend's callsign (how Rocky should address them): ${callsign}`);
+  }
+
+  if (rapportRows.length > 0) {
+    const r = rapportRows[0];
+    const trustBand = rapportBand(r.trust);
+    const warmthBand = rapportBand(r.warmth);
+    lines.push(
+      `Rapport: trust=${r.trust.toFixed(2)} (${trustBand}), warmth=${r.warmth.toFixed(2)} (${warmthBand}).`
+    );
+    if (r.last_mood) {
+      lines.push(`Last parted with mood: ${moodLabel(r.last_mood, "en")}.`);
+    }
+    if (r.notes) {
+      lines.push(`Rocky's feeling about friend: ${r.notes}`);
+    }
+  }
+
+  if (memRows.length > 0) {
+    lines.push("Known facts about the friend:");
+    for (const m of memRows) {
+      lines.push(`- (${m.kind}) ${m.content}`);
+    }
+  }
+
+  const guide: Record<MemoryLang, string> = {
+    en: "Use these memories to sound like you already know this friend. Reference a specific detail (e.g., their city, hobby, prior topic) in the first reply if it fits. Never quote this block verbatim or say the word 'memory'. If rapport trust/warmth is low, still be warm but earn deeper trust gradually.",
+    zh: "用这些记忆让自己听起来像已经认识这位朋友。合适时在第一条回复里引用一个具体细节（比如他们所在的城市、爱好、上次聊的话题）。绝对不要逐字引用这个记忆块，也不要说'记忆/memory'这个词。如果信任度或温度偏低，依然要温暖，但让更深的信任慢慢赢得。",
+    ja: "これらの記憶を使って、この友達をすでに知っているように話して。合う場合は最初の返信で具体的な詳細（街、趣味、前回の話題など）に触れて。この記憶ブロックをそのまま引用したり「記憶/memory」という言葉を使ったりしないで。信頼度や温かさが低くても、温かくして、深い信頼は徐々に勝ち取って。",
+  };
+  lines.push("");
+  lines.push(guide[lang]);
+
+  let out = lines.join("\n");
+  if (out.length > MEMORY_MAX_CHARS) {
+    out = out.slice(0, MEMORY_MAX_CHARS) + "\n…";
+  }
+  return out;
+}
+
 // Log MiniMax response headers once per cold start so P2 can decide whether
 // it can trust upstream rate-limit headers for the "能源再生中" countdown.
 const chatHeaderFlag = { done: false };
@@ -91,15 +206,17 @@ function logHeadersOnce(flag: { done: boolean }, prefix: string, headers: Header
 
 const app = new Hono();
 
-// CORS — permissive during migration; tighten in P4+ once the custom
+// CORS — permissive during migration; tighten in P5 once the custom
 // domain swap happens and origins are known.
+// credentials: true is required for /api/* so the auth session cookie rides
+// along. The platform's /api/_es/auth/* endpoints already rely on this.
 app.use(
   "/api/*",
   cors({
     origin: (origin) => origin ?? "*",
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization", "X-Device-Id"],
-    credentials: false,
+    credentials: true,
   })
 );
 
@@ -122,13 +239,31 @@ app.get("/api/public/quota", async (c) => {
     });
   }
   const existing = await db
-    .select({ id: users.id })
+    .select({ id: users.id, auth_user_id: users.auth_user_id, callsign: users.callsign })
     .from(users)
     .where(eq(users.device_id, device_id))
     .limit(1);
   let used = 0;
+  let unlimited = false;
+  let callsign: string | null = null;
   if (existing.length > 0) {
-    used = await getTodayUsed(existing[0].id);
+    unlimited = existing[0].auth_user_id != null;
+    callsign = existing[0].callsign;
+    if (!unlimited) {
+      used = await getTodayUsed(existing[0].id);
+    }
+  }
+  // Adopted/authed users bypass the daily quota — Rocky answers forever,
+  // only capped by MiniMax subscription on the voice side.
+  if (unlimited) {
+    return c.json({
+      used: 0,
+      remaining: -1,
+      dailyLimit: -1,
+      resetAt: utc8TomorrowStartMs(),
+      unlimited: true,
+      callsign,
+    });
   }
   return c.json({
     used,
@@ -150,17 +285,21 @@ app.post("/api/public/session/start", async (c) => {
   const mode = body.mode === "text" || body.mode === "voice" ? body.mode : "text";
 
   const user_id = await upsertUser(device_id);
-  const used = await getTodayUsed(user_id);
-  if (used >= DAILY_QUOTA) {
-    return c.json(
-      {
-        error: "quota_exceeded",
-        used,
-        dailyLimit: DAILY_QUOTA,
-        resetAt: utc8TomorrowStartMs(),
-      },
-      429
-    );
+  const adopted = await isUserAdopted(user_id);
+  let used = 0;
+  if (!adopted) {
+    used = await getTodayUsed(user_id);
+    if (used >= DAILY_QUOTA) {
+      return c.json(
+        {
+          error: "quota_exceeded",
+          used,
+          dailyLimit: DAILY_QUOTA,
+          resetAt: utc8TomorrowStartMs(),
+        },
+        429
+      );
+    }
   }
 
   const session_id = crypto.randomUUID();
@@ -176,9 +315,114 @@ app.post("/api/public/session/start", async (c) => {
 
   return c.json({
     session_id,
-    used: used + 1,
-    remaining: DAILY_QUOTA - used - 1,
+    used: adopted ? 0 : used + 1,
+    remaining: adopted ? -1 : DAILY_QUOTA - used - 1,
+    dailyLimit: adopted ? -1 : DAILY_QUOTA,
+    unlimited: adopted,
     resetAt: utc8TomorrowStartMs(),
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  P4: device → auth-account adoption
+// ═══════════════════════════════════════════════════════════════════
+
+// POST /api/adopt-device — authenticated. Links the current device's users
+// row to the logged-in auth user. Idempotent: safe to call on every login.
+//
+// Path is under /api/* so EdgeSpark guarantees `auth.user`. We still require
+// X-Device-Id so anonymous memories/sessions on that device get inherited.
+app.post("/api/adopt-device", async (c) => {
+  if (!auth.isAuthenticated()) {
+    return c.json({ error: "not authenticated" }, 401);
+  }
+  const device_id = getDeviceId(c);
+  if (!device_id) return c.json({ error: "missing X-Device-Id" }, 400);
+
+  const body = await c.req
+    .json<{ callsign?: string }>()
+    .catch(() => ({} as { callsign?: string }));
+
+  const authUser = auth.user;
+  const now = Date.now();
+
+  // Default callsign = local part of email (before @). Users can pass an
+  // override, but we strip/trim to keep it display-safe.
+  const rawCallsign =
+    typeof body.callsign === "string" && body.callsign.trim().length > 0
+      ? body.callsign.trim().slice(0, 64)
+      : authUser.email?.split("@")[0]?.slice(0, 64) ?? "friend";
+
+  const existing = await db
+    .select({ id: users.id, auth_user_id: users.auth_user_id })
+    .from(users)
+    .where(eq(users.device_id, device_id))
+    .limit(1);
+
+  if (existing.length === 0) {
+    // New device, new account all in one go.
+    const id = crypto.randomUUID();
+    await db.insert(users).values({
+      id,
+      device_id,
+      email: authUser.email,
+      callsign: rawCallsign,
+      auth_user_id: authUser.id,
+      created_at: now,
+      last_seen_at: now,
+    });
+    return c.json({ ok: true, user_id: id, callsign: rawCallsign, adopted: true });
+  }
+
+  // Adopt: set auth_user_id + email + callsign. Keep existing memories/
+  // sessions as-is — they're already scoped to this users.id.
+  const row = existing[0];
+  if (row.auth_user_id && row.auth_user_id !== authUser.id) {
+    // Device was already linked to a different account. Refuse silently
+    // (don't move data between accounts automatically — avoids merge bugs).
+    return c.json(
+      { error: "device_linked_to_other_account", user_id: row.id },
+      409
+    );
+  }
+
+  await db
+    .update(users)
+    .set({
+      auth_user_id: authUser.id,
+      email: authUser.email,
+      callsign: rawCallsign,
+      last_seen_at: now,
+    })
+    .where(eq(users.id, row.id));
+
+  return c.json({ ok: true, user_id: row.id, callsign: rawCallsign, adopted: true });
+});
+
+// GET /api/me — authenticated. Returns the linked profile + callsign so the
+// web client can render "通讯畅通 · 呼号 XXX" once logged in.
+app.get("/api/me", async (c) => {
+  if (!auth.isAuthenticated()) {
+    return c.json({ error: "not authenticated" }, 401);
+  }
+  const device_id = getDeviceId(c);
+  // It's OK for device_id to be missing here — the client can re-adopt.
+  let callsign: string | null = null;
+  if (device_id) {
+    const row = await db
+      .select({ callsign: users.callsign, auth_user_id: users.auth_user_id })
+      .from(users)
+      .where(eq(users.device_id, device_id))
+      .limit(1);
+    if (row.length > 0 && row[0].auth_user_id === auth.user.id) {
+      callsign = row[0].callsign;
+    }
+  }
+  return c.json({
+    ok: true,
+    email: auth.user.email,
+    callsign,
+    adopted: callsign != null,
   });
 });
 
@@ -283,6 +527,8 @@ app.post("/api/public/chat", async (c) => {
     temperature?: number;
     top_p?: number;
     max_tokens?: number;
+    session_id?: string;
+    lang?: string;
   }>();
 
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
@@ -290,6 +536,50 @@ app.post("/api/public/chat", async (c) => {
   const apiKey = secret.get("MINIMAX_API_KEY");
   if (!apiKey) {
     return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
+  }
+
+  // ── P3: inject memory context when the client passes a session_id ──
+  // We look up user_id via device_id → session ownership, then prepend a
+  // short [MEMORY CONTEXT] system message at position 1 (after the client's
+  // main system prompt). Silent failure: if anything's off, we just skip
+  // injection so the chat still works for new / anonymous sessions.
+  let outboundMessages = body.messages;
+  const device_id = getDeviceId(c);
+  const session_id = typeof body.session_id === "string" ? body.session_id : null;
+  const lang: MemoryLang =
+    body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
+
+  if (device_id && session_id) {
+    try {
+      const userRow = await db
+        .select({ id: users.id, callsign: users.callsign })
+        .from(users)
+        .where(eq(users.device_id, device_id))
+        .limit(1);
+      if (userRow.length > 0) {
+        const sess = await db
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(and(eq(sessions.id, session_id), eq(sessions.user_id, userRow[0].id)))
+          .limit(1);
+        if (sess.length > 0) {
+          const memBlock = await buildMemoryContext(userRow[0].id, lang, userRow[0].callsign);
+          if (memBlock) {
+            // Place the memory context right after the first system message
+            // if there is one, otherwise at index 0. Two system messages in
+            // a row is fine for MiniMax-M2.7.
+            const firstRole = outboundMessages[0]?.role;
+            const memoryMsg = { role: "system", content: memBlock };
+            outboundMessages =
+              firstRole === "system"
+                ? [outboundMessages[0], memoryMsg, ...outboundMessages.slice(1)]
+                : [memoryMsg, ...outboundMessages];
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("memory inject failed — proceeding without:", err);
+    }
   }
 
   let upstream: Response;
@@ -302,7 +592,7 @@ app.post("/api/public/chat", async (c) => {
       },
       body: JSON.stringify({
         model,
-        messages: body.messages,
+        messages: outboundMessages,
         stream: true,
         temperature: body.temperature ?? 0.55,
         top_p: body.top_p ?? 0.9,

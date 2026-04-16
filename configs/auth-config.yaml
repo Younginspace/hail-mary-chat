@@ -1,16 +1,18 @@
 # yaml-language-server: $schema=https://schemas.edgespark.dev/v1/auth-config.schema.json
 #
-# P0: auth UI disabled. No accounts, no sign-up. Rocky runs anonymously.
-# P4 will flip these back on (email + password, `requireEmailVerification: false`).
+# P4: email + password login enabled. Narrative: email = 呼号, password = 通讯口令.
+# Email verification intentionally off — EdgeSpark does not ship SMTP and we
+# don't want to add another vendor. Turnstile + rate-limit is the anti-abuse
+# story (to be wired if/when abuse shows up).
 
-disableSignUp: true
+disableSignUp: false
 providerEmailPassword:
   config:
     minPasswordLength: 8
     requireEmailVerification: false
     requirePasswordResetEmailVerification: false
     revokeSessionsOnPasswordReset: false
-  enabled: false
+  enabled: true
 providerGoogle:
   config: {}
   enabled: false
