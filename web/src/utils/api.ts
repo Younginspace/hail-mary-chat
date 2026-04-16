@@ -1,3 +1,5 @@
+import { getDeviceId } from './deviceId';
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -7,9 +9,21 @@ export interface ChatMessage {
 // No API key in the browser — the proxy injects it server-side.
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+function getDeviceIdHeader(): Record<string, string> {
+  try {
+    return { 'X-Device-Id': getDeviceId() };
+  } catch {
+    return {};
+  }
+}
+
 export interface ChatConfig {
   temperature?: number;
   top_p?: number;
+  /** If provided, server prepends a [MEMORY CONTEXT] system message for this session's user. */
+  session_id?: string;
+  /** Language hint for the memory-context localization. */
+  lang?: 'en' | 'zh' | 'ja';
 }
 
 const MAX_RETRIES = 2;
@@ -33,6 +47,7 @@ export async function streamChat(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(getDeviceIdHeader()),
         },
         body: JSON.stringify({
           messages: messages.map((m) => ({
@@ -42,6 +57,9 @@ export async function streamChat(
           temperature: config?.temperature ?? 0.55,
           top_p: config?.top_p ?? 0.9,
           max_tokens: 1024,
+          // P3: server uses these to inject memory context for the session.
+          session_id: config?.session_id,
+          lang: config?.lang,
         }),
       });
 

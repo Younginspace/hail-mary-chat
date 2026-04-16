@@ -15,6 +15,13 @@
       "when": 1776066265496,
       "tag": "0001_great_tinkerer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1776089850976,
+      "tag": "0002_workable_warhawk",
+      "breakpoints": true
     }
   ]
 }

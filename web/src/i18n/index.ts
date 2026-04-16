@@ -235,6 +235,98 @@ const translations = {
     ja: '友達に Rocky をシェアしてリレーを補充！（残り {n} 回シェア可能）',
   },
 
+  // ===== Login (P4: narrative — email=呼号, password=通讯口令) =====
+  'login.hookTitle': {
+    zh: '留个呼号，Rocky 下次记得你',
+    en: 'Give Rocky your callsign — he will remember you next time',
+    ja: 'コールサインを教えて、次回Rockyが覚えてる',
+  },
+  'login.hookDesc': {
+    zh: '登录后通讯无限时长，噬星体能源由 Hail Mary 号长期支持。',
+    en: 'Logged-in friends get unlimited comm time. Astrophage energy sponsored by the Hail Mary.',
+    ja: 'ログインすると通話時間無制限。アストロファージはHail Mary号が長期支援。',
+  },
+  'login.modeSignIn': {
+    zh: '已经有呼号',
+    en: 'I have a callsign',
+    ja: 'コールサインあり',
+  },
+  'login.modeSignUp': {
+    zh: '登记新呼号',
+    en: 'Register callsign',
+    ja: '新規コールサイン',
+  },
+  'login.callsignLabel': {
+    zh: '呼号邮箱',
+    en: 'Callsign (email)',
+    ja: 'コールサイン（メール）',
+  },
+  'login.passwordLabel': {
+    zh: '通讯口令',
+    en: 'Comm passphrase',
+    ja: '通信パスフレーズ',
+  },
+  'login.displayNameLabel': {
+    zh: '显示呼号（可选）',
+    en: 'Display name (optional)',
+    ja: '表示名（任意）',
+  },
+  'login.submitSignIn': {
+    zh: '连接',
+    en: 'CONNECT',
+    ja: '接続',
+  },
+  'login.submitSignUp': {
+    zh: '登记并连接',
+    en: 'REGISTER & CONNECT',
+    ja: '登録して接続',
+  },
+  'login.later': {
+    zh: '稍后再说',
+    en: 'Later',
+    ja: '後で',
+  },
+  'login.errorGeneric': {
+    zh: '通讯节点拒绝，请检查呼号与口令',
+    en: 'Relay rejected — check callsign and passphrase',
+    ja: 'リレー拒否、コールサインとパスを確認',
+  },
+  'login.welcome': {
+    zh: '通讯畅通 · 呼号 {callsign}',
+    en: 'Link stable · Callsign {callsign}',
+    ja: '通信安定 · コールサイン {callsign}',
+  },
+  'login.signOut': {
+    zh: '断开登录',
+    en: 'Sign out',
+    ja: 'ログアウト',
+  },
+  'login.successTitle': {
+    zh: '✓ 呼号登记成功',
+    en: '✓ Callsign registered',
+    ja: '✓ コールサイン登録完了',
+  },
+  'login.successDesc': {
+    zh: '通讯畅通 · 呼号 {callsign} · Rocky 从此记得你',
+    en: 'Link stable · Callsign {callsign} · Rocky will remember you',
+    ja: '通信安定 · コールサイン {callsign} · Rockyは今後あなたを覚えている',
+  },
+  'login.successContinue': {
+    zh: '继续通讯',
+    en: 'CONTINUE',
+    ja: '通信続行',
+  },
+  'version.badge': {
+    zh: 'v3.0 · 记忆系统已上线',
+    en: 'v3.0 · MEMORY SYSTEM ONLINE',
+    ja: 'v3.0 · メモリシステム稼働中',
+  },
+  'version.tagline': {
+    zh: 'Rocky 现在会记住每一位朋友',
+    en: 'Rocky now remembers every friend',
+    ja: 'Rockyは友達一人ひとりを覚えている',
+  },
+
   // ===== Share Content =====
   'share.title': {
     zh: '和外星人 Rocky 通话 — 挽救计划',

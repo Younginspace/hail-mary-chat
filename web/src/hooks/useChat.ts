@@ -15,7 +15,7 @@ export interface DisplayMessage {
   isDefault?: boolean;   // 预置对话标记，TTS 用本地音频
 }
 
-export function useChat(lang: Lang, mode: ChatMode = 'voice') {
+export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string) {
   const MAX_TURNS = mode === 'text' ? 50 : 10;
   const [messages, setMessages] = useState<DisplayMessage[]>([
     {
@@ -182,10 +182,10 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice') {
             refundPlay(mode);
           }
         },
-        ROCKY_API_CONFIG
+        { ...ROCKY_API_CONFIG, session_id: sessionId, lang }
       );
     },
-    [messages, isLoading, isEnded, userTurns, lang]
+    [messages, isLoading, isEnded, userTurns, lang, sessionId, mode]
   );
 
   const turnsLeft = Math.max(0, MAX_TURNS - userTurns);

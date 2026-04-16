@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useRockyTTS } from '../hooks/useRockyTTS';
+import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { getDefaultQuestions } from '../utils/defaultDialogs';
@@ -12,6 +13,7 @@ import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
 import SuggestedQuestions from './SuggestedQuestions';
 import LangSwitcher from './LangSwitcher';
+import LoginModal from './LoginModal';
 
 function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
@@ -43,13 +45,22 @@ interface ChatInterfaceProps {
 export default function ChatInterface({ mode, sessionId, onBack }: ChatInterfaceProps) {
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
-  const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded, usedSuggestions } = useChat(lang, mode);
+  const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded, usedSuggestions } = useChat(lang, mode, sessionId);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, isEnabled: ttsEnabled, toggle: toggleTTS, ttsQuotaExceeded } = useRockyTTS(mode === 'text');
+  const { isAuthenticated, me, signOut } = useAuthSession();
   const [input, setInput] = useState('');
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [hookDismissed, setHookDismissed] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
   const loggedIdsRef = useRef<Set<string>>(new Set());
+
+  // P4: 3-message hook — after the user's third message, prompt them to
+  // register a callsign. Not shown if already logged in or dismissed.
+  const userMessageCount = messages.filter((m) => m.role === 'user').length;
+  const showCallsignHook =
+    !isAuthenticated && !hookDismissed && userMessageCount >= 3 && !isEnded;
 
   // 当 quota 用完时，记到 localStorage
   useEffect(() => {
@@ -164,6 +175,19 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           )}
           <span className="delay">{t('chat.latency', lang)}</span>
           <span className="turns">{turnsLeft}/{maxTurns} {t('chat.remaining', lang)}</span>
+          {isAuthenticated && me?.callsign && (
+            <span className="account-chip" title={me.email ?? ''}>
+              ● {me.callsign}
+              <button
+                type="button"
+                className="account-logout"
+                onClick={() => signOut()}
+                title={t('login.signOut', lang)}
+              >
+                ✕
+              </button>
+            </span>
+          )}
           <LangSwitcher />
         </div>
 
@@ -198,10 +222,33 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           <div ref={chatEndRef} />
         </div>
 
+        {showCallsignHook && (
+          <div className="callsign-hook">
+            <span>{t('login.hookTitle', lang)}</span>
+            <button type="button" onClick={() => setLoginOpen(true)}>
+              {t('login.modeSignUp', lang)}
+            </button>
+            <button
+              type="button"
+              className="hook-dismiss"
+              onClick={() => setHookDismissed(true)}
+              title={t('login.later', lang)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         <SuggestedQuestions
           suggestions={remainingSuggestions}
           onSelect={handleSuggestion}
           visible={showSuggestions}
+        />
+
+        <LoginModal
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          onSuccess={() => setHookDismissed(true)}
         />
 
         {isEnded ? (

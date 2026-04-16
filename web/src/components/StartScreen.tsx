@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import Starfield from './Starfield';
+import MemoryConstellation from './MemoryConstellation';
+import SignalStreaks from './SignalStreaks';
 import LangSwitcher from './LangSwitcher';
+import LoginModal from './LoginModal';
+import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
-import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQuotaExceeded, formatResetTime } from '../utils/playLimit';
+import { isTtsQuotaExceeded, setTtsQuotaExceeded, isChatQuotaExceeded, setChatQuotaExceeded, formatResetTime, clearAllQuotaFlags } from '../utils/playLimit';
 import { fetchQuota, startSession } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
@@ -29,6 +33,7 @@ interface StartScreenProps {
 
 export default function StartScreen({ onConnected }: StartScreenProps) {
   const { lang } = useLang();
+  const { isAuthenticated, me, session, signOut } = useAuthSession();
   const [phase, setPhase] = useState<Phase>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [selectedMode, setSelectedMode] = useState<ChatMode>('text');
@@ -36,22 +41,41 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
   const [ttsDisabled, setTtsDisabled] = useState(isTtsQuotaExceeded());
   const [chatDisabled, setChatDisabled] = useState(isChatQuotaExceeded());
   const [resetTime, setResetTime] = useState(formatResetTime());
+  const [loginOpen, setLoginOpen] = useState(false);
 
   // ── Daily-quota state (from EdgeSpark) ──
-  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null); // null = unknown
+  // -1 means "unlimited" (authed). null is pre-fetch unknown.
+  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null);
+  const [unlimited, setUnlimited] = useState(false);
   const [startError, setStartError] = useState<'quota' | 'server' | null>(null);
 
-  const dailyDepleted = dailyRemaining === 0;
+  const dailyDepleted = !unlimited && dailyRemaining === 0;
 
   const textBtnDisabled = chatDisabled || dailyDepleted;
   const voiceBtnDisabled = ttsDisabled || dailyDepleted;
 
-  // ── On mount: fetch backend quota ──
+  // ── On mount & when auth state changes: fetch backend quota ──
+  // Quota endpoint returns {unlimited: true, remaining: -1} for adopted users.
+  // When the user just logged in, also clear the localStorage TTS/chat
+  // "quota exceeded" flags — otherwise the mode buttons stay disabled even
+  // though the backend has granted unlimited access.
   useEffect(() => {
+    if (isAuthenticated) {
+      clearAllQuotaFlags();
+      setTtsDisabled(false);
+      setChatDisabled(false);
+    }
     fetchQuota().then((q) => {
-      if (q) setDailyRemaining(q.remaining);
+      if (!q) return;
+      if ((q as { unlimited?: boolean }).unlimited) {
+        setUnlimited(true);
+        setDailyRemaining(null);
+      } else {
+        setUnlimited(false);
+        setDailyRemaining(q.remaining);
+      }
     });
-  }, []);
+  }, [isAuthenticated]);
 
   // 探测 TTS 额度（GET /api/public/tts?text=.）
   useEffect(() => {
@@ -99,6 +123,7 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     }
     setPendingSessionId(result.session_id);
     setDailyRemaining(result.remaining);
+    if ((result as { unlimited?: boolean }).unlimited) setUnlimited(true);
     setSelectedMode(mode);
     setPhase('connecting');
   }, [lang]);
@@ -132,14 +157,16 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
   }, [phase, onConnected, selectedMode, pendingSessionId]);
 
   const dailyDepletedCopy = {
-    zh: '今日通话 20 次已用完，明日 00:00 再来（未来接入登录后可无限）',
-    en: 'Daily 20 calls used up, come back tomorrow 00:00 (login for unlimited — coming soon)',
-    ja: '本日の通話20回を使い切りました、明日00:00にまた（ログイン機能で無制限化予定）',
+    zh: '今日 20 次通话已用完。登记呼号即可无限通讯，或明日 00:00 再来。',
+    en: 'Daily 20 calls used up. Register a callsign for unlimited comm, or come back at 00:00.',
+    ja: '本日の通話20回を使い切りました。コールサイン登録で無制限、または00:00にまた。',
   }[lang];
 
   return (
     <div className="immersive-root">
       <Starfield />
+      <MemoryConstellation />
+      <SignalStreaks />
 
       <div className="start-overlay">
         <div className="start-lang-corner">
@@ -148,6 +175,11 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
 
         {phase === 'idle' && (
           <div className="start-content">
+            <div className="version-badge">
+              <span className="version-badge-dot" />
+              <span className="version-badge-label">{t('version.badge', lang)}</span>
+            </div>
+
             <div className="start-title-group">
               <div className="start-subtitle">{t('start.subtitle', lang)}</div>
               <h1 className="start-title">
@@ -157,11 +189,24 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
               <div className="start-desc">
                 {t('start.desc', lang)}
               </div>
+              <div className="version-tagline">{t('version.tagline', lang)}</div>
             </div>
 
             {dailyDepleted && (
               <div className="daily-depleted-bar">
                 {dailyDepletedCopy}
+                {!isAuthenticated && (
+                  <>
+                    {'  '}
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: '#ffaa44', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}
+                      onClick={() => setLoginOpen(true)}
+                    >
+                      {t('login.modeSignUp', lang)}
+                    </button>
+                  </>
+                )}
               </div>
             )}
             {startError === 'server' && (
@@ -218,17 +263,46 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
               </button>
             </div>
 
-            {dailyRemaining !== null && !dailyDepleted && (
+            {isAuthenticated ? (
+              <div className="login-welcome-banner">
+                <span className="welcome-dot" />
+                <span>
+                  {t('login.welcome', lang, {
+                    callsign:
+                      me?.callsign ??
+                      (session?.user?.name as string | undefined) ??
+                      (session?.user?.email ?? '').split('@')[0] ??
+                      'friend',
+                  })}
+                </span>
+                <button
+                  type="button"
+                  className="welcome-logout"
+                  onClick={() => signOut()}
+                >
+                  {t('login.signOut', lang)}
+                </button>
+              </div>
+            ) : dailyRemaining !== null && !dailyDepleted ? (
               <div className="daily-remaining-hint">
                 {{
                   zh: `今日剩余 ${dailyRemaining} 次通话`,
                   en: `${dailyRemaining} calls left today`,
                   ja: `本日残り ${dailyRemaining} 回`,
                 }[lang]}
+                <button
+                  type="button"
+                  style={{ marginLeft: 10, background: 'none', border: 'none', color: '#00d4aa', cursor: 'pointer', fontSize: 11, textDecoration: 'underline' }}
+                  onClick={() => setLoginOpen(true)}
+                >
+                  {t('login.modeSignUp', lang)}
+                </button>
               </div>
-            )}
+            ) : null}
           </div>
         )}
+
+        <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
 
         {(phase === 'connecting' || phase === 'connected') && (
           <div className="connecting-content">

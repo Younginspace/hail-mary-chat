@@ -21,13 +21,19 @@ export const users = sqliteTable(
   {
     id: text("id").primaryKey(), // uuid v4
     device_id: text("device_id").notNull().unique(),
-    // P4 will add email + callsign; kept nullable so P1 migrations stay additive.
+    // P4: email + callsign populated when anonymous device adopts an account.
     email: text("email"),
     callsign: text("callsign"),
+    // P4: EdgeSpark auth user id — set when device is linked to a login.
+    // Rows where this is non-null bypass the daily quota.
+    auth_user_id: text("auth_user_id"),
     created_at: integer("created_at").notNull(), // unix ms
     last_seen_at: integer("last_seen_at").notNull(),
   },
-  (t) => [index("idx_users_device_id").on(t.device_id)]
+  (t) => [
+    index("idx_users_device_id").on(t.device_id),
+    index("idx_users_auth_user_id").on(t.auth_user_id),
+  ]
 );
 
 export const sessions = sqliteTable(

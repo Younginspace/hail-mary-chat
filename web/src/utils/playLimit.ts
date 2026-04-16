@@ -146,6 +146,14 @@ export function isChatQuotaExceeded(): boolean {
   return stored === getTodayUTC8();
 }
 
+// P4: clear all client-side quota flags. Called after a successful login so
+// the device's previous "quota exhausted" state doesn't keep the mode buttons
+// disabled when the server has already granted unlimited access.
+export function clearAllQuotaFlags() {
+  localStorage.removeItem(TTS_QUOTA_KEY);
+  localStorage.removeItem(CHAT_QUOTA_KEY);
+}
+
 // ── 兼容旧 API（供未迁移的代码使用） ──
 export function getShareUrl(): string {
   return window.location.origin + window.location.pathname;
