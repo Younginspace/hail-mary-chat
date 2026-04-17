@@ -9,7 +9,7 @@ import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
-import { startSession } from '../utils/sessionApi';
+import { startSession, type LevelUpPayload } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
 // P5 F1c: Landing layout priority order
@@ -33,7 +33,7 @@ const CONNECTION_STEPS = [
 ];
 
 interface StartScreenProps {
-  onConnected: (mode: ChatMode, sessionId: string) => void;
+  onConnected: (mode: ChatMode, sessionId: string, levelUp: LevelUpPayload | null) => void;
   onEcho: () => void;
   onFavorites: () => void;
 }
@@ -44,6 +44,7 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   const [phase, setPhase] = useState<Phase>('home');
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const [pendingLevelUp, setPendingLevelUp] = useState<LevelUpPayload | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const homeRef = useRef<HTMLDivElement>(null);
   const dialinRef = useRef<HTMLDivElement>(null);
@@ -84,6 +85,7 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
       return;
     }
     setPendingSessionId(result.session_id);
+    setPendingLevelUp(result.level_up);
     setPhase('connecting');
   }, [lang]);
 
@@ -105,14 +107,14 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
           opacity: 0,
           duration: 0.4,
           ease: 'power2.in',
-          onComplete: () => onConnected('text', pendingSessionId),
+          onComplete: () => onConnected('text', pendingSessionId, pendingLevelUp),
         });
       } else {
-        onConnected('text', pendingSessionId);
+        onConnected('text', pendingSessionId, pendingLevelUp);
       }
     }, 600);
     return () => clearTimeout(timer);
-  }, [phase, pendingSessionId, onConnected]);
+  }, [phase, pendingSessionId, pendingLevelUp, onConnected]);
 
   const handleDialIn = useCallback(() => {
     if (isAuthenticated) {
@@ -137,6 +139,9 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
       {phase === 'home' && isAuthenticated && me?.callsign && (
         <div className="hero-account-chip">
           <span className="hero-account-dot" />
+          {me.affinity_level != null && me.affinity_level > 1 && (
+            <span className={`level-badge lv-${me.affinity_level}`}>Lv{me.affinity_level}</span>
+          )}
           <span className="hero-account-name">{me.callsign}</span>
           <button
             type="button"

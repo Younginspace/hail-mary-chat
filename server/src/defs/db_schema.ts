@@ -33,6 +33,22 @@ export const users = sqliteTable(
     // (F6) grant bonuses. All mutations also land in voice_credit_ledger for
     // audit + debugging. Default 10 backfills existing rows at migration.
     voice_credits: integer("voice_credits").notNull().default(10),
+    // P5 F6: rapport-driven affinity. Level 1 = Earth Signal (fresh signup),
+    // 2 = Good Human, 3 = Friend, 4 = Fist My Bump. pending_level_up stores
+    // the newly-reached level so the next session/start can ceremony-welcome
+    // the user, then clear it.
+    affinity_level: integer("affinity_level").notNull().default(1),
+    pending_level_up: integer("pending_level_up"),
+    // Lv2/3/4 unlock gift budgets (image/music/video). Each milestone is
+    // a one-time grant; re-entering the same level from a rollback does
+    // not re-grant.
+    image_credits: integer("image_credits").notNull().default(0),
+    music_credits: integer("music_credits").notNull().default(0),
+    video_credits: integer("video_credits").notNull().default(0),
+    // Immutable: set once when the one-shot video gift is rendered. Used
+    // to honor the "one video per user, ever" commitment even after a
+    // cross-device merge.
+    video_used_at: integer("video_used_at"),
   },
   (t) => [
     index("idx_users_device_id").on(t.device_id),
@@ -158,6 +174,23 @@ export const daily_api_usage = sqliteTable(
     primaryKey({ columns: [t.date, t.api, t.scope] }),
     index("idx_usage_date_api").on(t.date, t.api),
   ]
+);
+
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F6 — Affinity thresholds (seed-seeded, editable at runtime)
+// ═══════════════════════════════════════════════════════════════════
+
+// Editable in-DB so we can recalibrate later without a redeploy
+// (plan calls for a P50/P75/P95 auto-tune after 500 real users). Seeded
+// with the beta values from the P5 review: Lv2 OR, Lv3/4 AND.
+export const rapport_thresholds = sqliteTable(
+  "rapport_thresholds",
+  {
+    level: integer("level").primaryKey(),       // 2, 3, 4
+    trust_min: real("trust_min").notNull(),
+    warmth_min: real("warmth_min").notNull(),
+    combinator: text("combinator").notNull(),   // 'AND' | 'OR'
+  }
 );
 
 // ═══════════════════════════════════════════════════════════════════

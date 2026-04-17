@@ -15,6 +15,7 @@ export interface AdoptedMe {
   email: string | null;
   callsign: string | null;
   adopted: boolean;
+  affinity_level?: number;
 }
 
 async function adoptDevice(callsign?: string): Promise<AdoptedMe | null> {
