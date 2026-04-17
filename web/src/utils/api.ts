@@ -42,9 +42,17 @@ export async function streamChat(
   onDone: () => void,
   onError: (error: Error) => void,
   config?: ChatConfig,
-  onGiftTrigger?: (payload: GiftTriggerPayload) => void
+  onGiftTrigger?: (payload: GiftTriggerPayload) => void,
+  signal?: AbortSignal
 ) {
+  // Honor caller-supplied AbortSignal: aborts the fetch, cancels the
+  // reader, and short-circuits the retry loop. Without this, navigating
+  // away mid-stream (or starting a new turn) leaves the previous fetch
+  // draining MiniMax in the background until the server closes.
+  if (signal?.aborted) return;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (signal?.aborted) return;
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
@@ -64,6 +72,7 @@ export async function streamChat(
           lang: config?.lang,
           last_turn: config?.last_turn,
         }),
+        signal,
       });
 
       if (!response.ok) {
@@ -90,57 +99,74 @@ export async function streamChat(
       // to 'message' (the default) after dispatch / blank line.
       let pendingEventType: string | null = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      // Propagate an external abort to the reader loop in case the
+      // fetch signal didn't unblock it synchronously.
+      const onAbort = () => {
+        reader.cancel().catch(() => {});
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            // blank line = SSE record boundary → reset event type
-            pendingEventType = null;
-            continue;
+      try {
+        while (true) {
+          if (signal?.aborted) {
+            reader.cancel().catch(() => {});
+            return;
           }
-          if (trimmed.startsWith('event: ')) {
-            pendingEventType = trimmed.slice(7).trim();
-            continue;
-          }
-          if (trimmed === 'data: [DONE]') continue;
-          if (!trimmed.startsWith('data: ')) continue;
+          const { done, value } = await reader.read();
+          if (done) break;
 
-          // Server-emitted gift_trigger carries a JSON payload shaped
-          // like { type, subtype, description } — dispatch and skip.
-          if (pendingEventType === 'gift_trigger') {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              // blank line = SSE record boundary → reset event type
+              pendingEventType = null;
+              continue;
+            }
+            if (trimmed.startsWith('event: ')) {
+              pendingEventType = trimmed.slice(7).trim();
+              continue;
+            }
+            if (trimmed === 'data: [DONE]') continue;
+            if (!trimmed.startsWith('data: ')) continue;
+
+            // Server-emitted gift_trigger carries a JSON payload shaped
+            // like { type, subtype, description } — dispatch and skip.
+            if (pendingEventType === 'gift_trigger') {
+              try {
+                const payload = JSON.parse(trimmed.slice(6)) as GiftTriggerPayload;
+                if (onGiftTrigger) onGiftTrigger(payload);
+              } catch {
+                // malformed — ignore
+              }
+              pendingEventType = null;
+              continue;
+            }
+
             try {
-              const payload = JSON.parse(trimmed.slice(6)) as GiftTriggerPayload;
-              if (onGiftTrigger) onGiftTrigger(payload);
+              const json = JSON.parse(trimmed.slice(6));
+              const text = json.choices?.[0]?.delta?.content;
+              if (!text) continue;
+
+              rawAccumulated += text;
+
+              const cleaned = stripThink(rawAccumulated);
+              if (cleaned) {
+                onChunk(cleaned);
+              }
             } catch {
-              // malformed — ignore
+              // skip malformed chunks
             }
-            pendingEventType = null;
-            continue;
-          }
-
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            const text = json.choices?.[0]?.delta?.content;
-            if (!text) continue;
-
-            rawAccumulated += text;
-
-            const cleaned = stripThink(rawAccumulated);
-            if (cleaned) {
-              onChunk(cleaned);
-            }
-          } catch {
-            // skip malformed chunks
           }
         }
+      } finally {
+        if (signal) signal.removeEventListener('abort', onAbort);
       }
+
+      if (signal?.aborted) return;
 
       const finalText = stripThink(rawAccumulated);
       if (!finalText) {
@@ -150,6 +176,11 @@ export async function streamChat(
       onDone();
       return;
     } catch (error) {
+      // An AbortError from a caller-supplied signal is not a failure —
+      // just exit quietly without surfacing to onError or retrying.
+      const name = error instanceof Error ? error.name : '';
+      if (name === 'AbortError' || signal?.aborted) return;
+
       if (attempt < MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, RETRY_DELAY * (attempt + 1)));
         continue;

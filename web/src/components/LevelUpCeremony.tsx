@@ -12,15 +12,35 @@ interface Props {
 export default function LevelUpCeremony({ payload, onClose }: Props) {
   const { lang } = useLang();
   const cardRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!cardRef.current) return;
-    gsap.fromTo(
-      cardRef.current,
-      { opacity: 0, scale: 0.92, y: 20 },
-      { opacity: 1, scale: 1, y: 0, duration: 0.55, ease: 'power3.out' }
-    );
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) {
+      gsap.set(cardRef.current, { opacity: 1, scale: 1, y: 0 });
+    } else {
+      gsap.fromTo(
+        cardRef.current,
+        { opacity: 0, scale: 0.92, y: 20 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.55, ease: 'power3.out' }
+      );
+    }
+    // Focus the close button so screen readers announce the dialog and
+    // keyboard users don't get dropped at the backdrop.
+    closeBtnRef.current?.focus();
   }, []);
+
+  // Dialog keyboard semantics: Esc closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const fromName = t(`level.${payload.from}.name` as TranslationKey, lang);
   const toName = t(`level.${payload.to}.name` as TranslationKey, lang);
@@ -30,6 +50,9 @@ export default function LevelUpCeremony({ payload, onClose }: Props) {
       <div
         ref={cardRef}
         className="levelup-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="levelup-title"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="levelup-sparkles" aria-hidden="true">
@@ -39,7 +62,7 @@ export default function LevelUpCeremony({ payload, onClose }: Props) {
           <span />
         </div>
         <div className="levelup-eyebrow">LV {payload.from} → LV {payload.to}</div>
-        <div className="levelup-title">{t('level.upTitle', lang)}</div>
+        <div className="levelup-title" id="levelup-title">{t('level.upTitle', lang)}</div>
         <div className="levelup-badge">
           <span className="levelup-badge-from">{fromName}</span>
           <span className="levelup-badge-arrow">→</span>
@@ -64,7 +87,12 @@ export default function LevelUpCeremony({ payload, onClose }: Props) {
           </li>
         </ul>
 
-        <button type="button" className="levelup-continue" onClick={onClose}>
+        <button
+          ref={closeBtnRef}
+          type="button"
+          className="levelup-continue"
+          onClick={onClose}
+        >
           {t('level.upContinue', lang)}
         </button>
       </div>

@@ -51,20 +51,35 @@ export function useAuthSession() {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [me, setMe] = useState<AdoptedMe | null>(null);
   const [loading, setLoading] = useState(true);
+  // Tracks whether /api/adopt-device has completed (or failed) for the
+  // current session. Consumers that need the server to have linked a
+  // users row (chat, session/start, memory) must gate on `ready`, not
+  // just `isAuthenticated` — otherwise a fast first-send can race the
+  // adoption round-trip and the server will see no user context yet.
+  const [adopted, setAdopted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const unsubscribe = esClient.auth.onSessionChange(async (next) => {
       if (cancelled) return;
-      setSession(next);
-      setLoading(false);
       if (next) {
-        // Always (re-)adopt on session change — idempotent on the backend.
+        // Keep isAuthenticated=false until adoption completes, so UI
+        // gated on `ready`/`isAuthenticated` can't fire chat before the
+        // server has our users row.
+        setAdopted(false);
         const adopted = await adoptDevice();
-        if (!cancelled && adopted) setMe(adopted);
-        else if (!cancelled) setMe(await fetchMe());
+        if (cancelled) return;
+        if (adopted) setMe(adopted);
+        else setMe(await fetchMe());
+        if (cancelled) return;
+        setSession(next);
+        setAdopted(true);
+        setLoading(false);
       } else {
+        setSession(null);
         setMe(null);
+        setAdopted(false);
+        setLoading(false);
       }
     });
     return () => {
@@ -80,7 +95,10 @@ export function useAuthSession() {
       // Synchronously adopt so the caller can show success UI with a real
       // callsign rather than waiting for onSessionChange to race.
       const adopted = await adoptDevice();
-      if (adopted) setMe(adopted);
+      if (adopted) {
+        setMe(adopted);
+        setAdopted(true);
+      }
     }
     return res;
   }, []);
@@ -104,7 +122,10 @@ export function useAuthSession() {
         return signInRes;
       }
       const adopted = await adoptDevice(callsign);
-      if (adopted) setMe(adopted);
+      if (adopted) {
+        setMe(adopted);
+        setAdopted(true);
+      }
       return res;
     },
     []
@@ -113,6 +134,7 @@ export function useAuthSession() {
   const signOut = useCallback(async () => {
     await esClient.auth.signOut();
     setMe(null);
+    setAdopted(false);
     // Clear the browser's anonymous device identity so the next account
     // registering on this device doesn't collide with the previous owner.
     resetDeviceId();
@@ -122,7 +144,12 @@ export function useAuthSession() {
     session,
     me,
     loading,
-    isAuthenticated: !!session,
+    // isAuthenticated flips true only after adoptDevice resolved, so
+    // any consumer gating on this can safely assume the server knows
+    // our users row.
+    isAuthenticated: !!session && adopted,
+    // Explicit alias in case a caller wants the distinction.
+    ready: !loading && (!session || adopted),
     signInEmail,
     signUpEmail,
     signOut,

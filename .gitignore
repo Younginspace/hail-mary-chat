@@ -14,8 +14,8 @@ dist-ssr
 
 # EdgeSpark local state
 .edgespark/
-server/package-lock.json
-web/package-lock.json
+# package-lock.json files are intentionally committed for reproducible
+# installs — do not re-add them to .gitignore.
 
 # Env files (EdgeSpark workflow)
 .env.local

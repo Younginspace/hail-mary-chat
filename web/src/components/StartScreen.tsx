@@ -62,28 +62,41 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   const dialinRef = useRef<HTMLDivElement>(null);
   const connectingRef = useRef<HTMLDivElement>(null);
 
-  // Fade/slide transitions between phases
+  // Fade/slide transitions between phases. Respects prefers-reduced-motion
+  // — we snap straight to the settled state rather than animating, so
+  // motion-sensitive users aren't forced through the transition.
   useEffect(() => {
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const settle = (el: HTMLElement) => gsap.set(el, { opacity: 1, y: 0 });
+
     if (phase === 'home' && homeRef.current) {
-      gsap.fromTo(
-        homeRef.current,
-        { opacity: 0, y: 16 },
-        { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
-      );
+      if (prefersReduced) settle(homeRef.current);
+      else
+        gsap.fromTo(
+          homeRef.current,
+          { opacity: 0, y: 16 },
+          { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
+        );
     }
     if (phase === 'dialin' && dialinRef.current) {
-      gsap.fromTo(
-        dialinRef.current,
-        { opacity: 0, y: 16 },
-        { opacity: 1, y: 0, duration: 0.45, ease: 'power2.out' }
-      );
+      if (prefersReduced) settle(dialinRef.current);
+      else
+        gsap.fromTo(
+          dialinRef.current,
+          { opacity: 0, y: 16 },
+          { opacity: 1, y: 0, duration: 0.45, ease: 'power2.out' }
+        );
     }
     if (phase === 'connecting' && connectingRef.current) {
-      gsap.fromTo(
-        connectingRef.current,
-        { opacity: 0 },
-        { opacity: 1, duration: 0.6, ease: 'power2.inOut' }
-      );
+      if (prefersReduced) settle(connectingRef.current);
+      else
+        gsap.fromTo(
+          connectingRef.current,
+          { opacity: 0 },
+          { opacity: 1, duration: 0.6, ease: 'power2.inOut' }
+        );
     }
   }, [phase]);
 

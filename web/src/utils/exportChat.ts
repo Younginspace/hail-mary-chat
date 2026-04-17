@@ -96,6 +96,21 @@ export function exportChatMarkdown(
 
 // ── PNG image (long screenshot) ─────────────────────────────────────
 
+// Max canvas pixel area before we bail to markdown. iOS Safari caps
+// total canvas pixels at ~16_777_216 on older devices and ~268M on
+// recent ones; many browsers silently return a blank canvas past their
+// implementation cap. Staying under the conservative iOS Safari
+// 16_777_216 (4096×4096) gives us the broadest compatibility.
+const CANVAS_PIXEL_CAP = 16_777_216;
+
+/** Thrown when the chat is too long to render as a single PNG. */
+export class ExportTooLargeError extends Error {
+  constructor(width: number, height: number, scale: number) {
+    super(`Chat too long to export as image (${width}x${height} @${scale}x).`);
+    this.name = 'ExportTooLargeError';
+  }
+}
+
 export async function exportChatImage(target: HTMLElement): Promise<void> {
   // Temporarily allow the chat-area to be as tall as its content so
   // html2canvas captures the entire history, not just the viewport slice.
@@ -110,9 +125,29 @@ export async function exportChatImage(target: HTMLElement): Promise<void> {
   }
 
   try {
+    // Pre-flight: if the chat is long enough that the resulting canvas
+    // would blow the browser's limit, bail early so the caller can
+    // surface a "too long" toast and fall back to markdown export.
+    // html2canvas rendering works in terms of CSS pixels × scale,
+    // rounded up.
+    const rect = target.getBoundingClientRect();
+    const requestedScale = Math.min(window.devicePixelRatio, 2);
+    const pxWidth = Math.ceil(rect.width * requestedScale);
+    const pxHeight = Math.ceil(rect.height * requestedScale);
+    let scale = requestedScale;
+    if (pxWidth * pxHeight > CANVAS_PIXEL_CAP) {
+      // Try dropping to 1x first — that rescues most medium-long chats.
+      const pxWidth1 = Math.ceil(rect.width);
+      const pxHeight1 = Math.ceil(rect.height);
+      if (pxWidth1 * pxHeight1 > CANVAS_PIXEL_CAP) {
+        throw new ExportTooLargeError(pxWidth, pxHeight, requestedScale);
+      }
+      scale = 1;
+    }
+
     const canvas = await html2canvas(target, {
       backgroundColor: '#0b1620',
-      scale: Math.min(window.devicePixelRatio, 2),
+      scale,
       useCORS: true,
       logging: false,
     });

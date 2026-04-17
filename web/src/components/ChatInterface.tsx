@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useCallback, FormEvent, KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useRockyTTS } from '../hooks/useRockyTTS';
 import { useAuthSession } from '../hooks/useAuthSession';
@@ -16,7 +17,7 @@ import {
 import { extractPlayableText, extractMood } from '../utils/messageCleanup';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
-import { exportChatMarkdown, exportChatImage } from '../utils/exportChat';
+import { exportChatMarkdown, exportChatImage, ExportTooLargeError } from '../utils/exportChat';
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 import Starfield from './Starfield';
@@ -64,7 +65,7 @@ export default function ChatInterface({
 }: ChatInterfaceProps) {
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
-  const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
+  const { messages, sendMessage, isLoading, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, ttsQuotaExceeded, ttsInsufficientCredits } = useRockyTTS(!voiceEnabled);
@@ -362,9 +363,21 @@ export default function ChatInterface({
       await exportChatImage(chatPaneRef.current);
     } catch (err) {
       console.error(err);
+      if (err instanceof ExportTooLargeError) {
+        // Long-chat rescue path: fall back to markdown export and tell
+        // the user why we couldn't render an image. Avoids a silent
+        // failure (or worse, an OOM on mobile Safari).
+        setExportError(t('chat.exportTooLong', lang));
+        try {
+          exportChatMarkdown(messages, me?.callsign ?? null, lang);
+        } catch (fallbackErr) {
+          console.error(fallbackErr);
+        }
+        return;
+      }
       setExportError(t('chat.exportFailed', lang));
     }
-  }, [lang]);
+  }, [lang, messages, me]);
 
   // Close export menu on outside click / ESC
   useEffect(() => {
@@ -549,8 +562,6 @@ export default function ChatInterface({
           )}
           <LangSwitcher />
         </div>
-
-        {error && <div className="error-bar">{error}</div>}
 
         <div className="mode-bar">
           <span className="mode-bar-label">{t('chat.latency', lang)}</span>
