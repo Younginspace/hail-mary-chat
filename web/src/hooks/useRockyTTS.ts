@@ -25,6 +25,7 @@ interface UseRockyTTSReturn {
   isEnabled: boolean;
   toggle: () => void;
   ttsQuotaExceeded: boolean;
+  ttsInsufficientCredits: boolean;
 }
 
 // ── 解析 LLM 回复，提取 mood + 特殊标记 + 正文 ──
@@ -85,6 +86,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isEnabled, setIsEnabled] = useState(true);
   const [ttsQuotaExceeded, setTtsQuotaExceeded] = useState(false);
+  const [ttsInsufficientCredits, setTtsInsufficientCredits] = useState(false);
   const cancelledRef = useRef(false);
   const abortCtrlRef = useRef<AbortController | null>(null);
 
@@ -105,16 +107,16 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   // ── TTS 专用 Audio 元素 ──
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ── TTS：走 EdgeSpark 代理（GET /api/public/tts?text=...），返回 audio/mpeg 二进制
-  const fetchTTS = useCallback((text: string, _lang: Lang): Promise<HTMLAudioElement | null> => {
-    if (skipTTS || !text.trim() || ttsQuotaExceeded) return Promise.resolve(null);
+  // ── TTS：走 EdgeSpark 代理（GET /api/tts?text=...），返回 audio/mpeg 二进制
+  const fetchTTS = useCallback((text: string, lang: Lang): Promise<HTMLAudioElement | null> => {
+    if (skipTTS || !text.trim() || ttsQuotaExceeded || ttsInsufficientCredits) return Promise.resolve(null);
 
     const abortCtrl = new AbortController();
     abortCtrlRef.current = abortCtrl;
 
     return (async () => {
       try {
-        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}`;
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}`;
         const res = await fetch(url, {
           method: 'GET',
           credentials: 'include',
@@ -122,6 +124,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
         });
 
         if (!res.ok) {
+          if (res.status === 402) { setTtsInsufficientCredits(true); return null; }
           if (res.status === 429) { setTtsQuotaExceeded(true); return null; }
           console.error('TTS HTTP error:', res.status);
           return null;
@@ -157,7 +160,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
         abortCtrlRef.current = null;
       }
     })();
-  }, [skipTTS, ttsQuotaExceeded]);
+  }, [skipTTS, ttsQuotaExceeded, ttsInsufficientCredits]);
 
   // ── 播放已就绪的 TTS Audio 元素 ──
   const playTTSAudio = useCallback((audio: HTMLAudioElement): Promise<void> => {
@@ -326,5 +329,5 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
     };
   }, []);
 
-  return { speak, stop, isSpeaking, isEnabled, toggle, ttsQuotaExceeded };
+  return { speak, stop, isSpeaking, isEnabled, toggle, ttsQuotaExceeded, ttsInsufficientCredits };
 }

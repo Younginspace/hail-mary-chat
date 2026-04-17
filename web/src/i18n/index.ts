@@ -144,6 +144,26 @@ const translations = {
     en: 'Export failed — please try again',
     ja: 'エクスポート失敗、もう一度試して',
   },
+  'chat.voiceEnable': {
+    zh: '开启 Rocky 语音',
+    en: 'Enable Rocky voice',
+    ja: 'Rocky音声をオン',
+  },
+  'chat.voiceDisable': {
+    zh: '关闭 Rocky 语音',
+    en: 'Mute Rocky voice',
+    ja: 'Rocky音声をオフ',
+  },
+  'chat.voiceCredits': {
+    zh: '语音额度 {n}',
+    en: '{n} voice plays',
+    ja: '音声残{n}',
+  },
+  'chat.voiceEmpty': {
+    zh: '语音额度已用完，今日听文字',
+    en: 'Voice credits used up',
+    ja: '音声残高ゼロ',
+  },
 
   // ===== Suggested Questions =====
   'suggest.1': {

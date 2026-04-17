@@ -14,7 +14,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
   "users",
@@ -29,6 +29,10 @@ export const users = sqliteTable(
     auth_user_id: text("auth_user_id"),
     created_at: integer("created_at").notNull(), // unix ms
     last_seen_at: integer("last_seen_at").notNull(),
+    // P5 F2: TTS credit balance. Registration grants 10; rapport milestones
+    // (F6) grant bonuses. All mutations also land in voice_credit_ledger for
+    // audit + debugging. Default 10 backfills existing rows at migration.
+    voice_credits: integer("voice_credits").notNull().default(10),
   },
   (t) => [
     index("idx_users_device_id").on(t.device_id),
@@ -99,6 +103,62 @@ export const rapport = sqliteTable("rapport", {
   notes: text("notes"),
   updated_at: integer("updated_at").notNull(),
 });
+
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F2 — Voice credits, TTS audio cache, daily global API accounting
+// ═══════════════════════════════════════════════════════════════════
+
+// Append-only record of every voice_credits mutation. Lets us answer
+// "why did my count drop" questions from user support, and survives a
+// users row wipe if we ever need to reconstruct balances.
+export const voice_credit_ledger = sqliteTable(
+  "voice_credit_ledger",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    delta: integer("delta").notNull(), // negative for consume, positive for grant
+    reason: text("reason").notNull(),  // 'consume_tts' | 'register_bonus' | 'level_up' | etc.
+    session_id: text("session_id"),    // optional link to the session that triggered consume
+    created_at: integer("created_at").notNull(),
+  },
+  (t) => [index("idx_ledger_user_ts").on(t.user_id, t.created_at)]
+);
+
+// SHA-256(text|lang|voice_id) → R2 object holding rendered audio. Lets
+// favorite-replay, Open Channel FAQ playback, and repeat visits skip the
+// MiniMax TTS call entirely.
+export const audio_cache = sqliteTable(
+  "audio_cache",
+  {
+    content_hash: text("content_hash").primaryKey(), // hex sha256
+    lang: text("lang").notNull(),
+    voice_id: text("voice_id").notNull(),
+    r2_key: text("r2_key").notNull(),     // path inside buckets.rocky_audio
+    byte_length: integer("byte_length").notNull(),
+    created_at: integer("created_at").notNull(),
+  }
+);
+
+// Global + per-user daily counters for external API quotas (TTS 11k/day,
+// music 100/day, image 120/day, Hailuo 2+2/day). Per-user row uses the
+// actual user_id; global row uses a sentinel '__global__' so the PK is
+// still a non-null string (SQLite lets NULL columns slip through PK).
+export const daily_api_usage = sqliteTable(
+  "daily_api_usage",
+  {
+    date: text("date").notNull(),    // YYYY-MM-DD in UTC+8
+    api: text("api").notNull(),      // 'tts' | 'tts_gift' | 'music' | 'image' | 'hailuo'
+    scope: text("scope").notNull(),  // user_id or '__global__'
+    count: integer("count").notNull().default(0),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.date, t.api, t.scope] }),
+    index("idx_usage_date_api").on(t.date, t.api),
+  ]
+);
 
 // Keep the sql import reachable so future migrations adding defaults type-check.
 export { sql };

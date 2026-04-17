@@ -4,7 +4,7 @@ import { useRockyTTS } from '../hooks/useRockyTTS';
 import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
-import { endSession, logMessage } from '../utils/sessionApi';
+import { endSession, logMessage, fetchVoiceCredits } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, exportChatImage } from '../utils/exportChat';
 import Starfield from './Starfield';
@@ -48,7 +48,9 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
   const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
-  const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, isEnabled: ttsEnabled, toggle: toggleTTS, ttsQuotaExceeded } = useRockyTTS(mode === 'text');
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
+  const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, ttsQuotaExceeded, ttsInsufficientCredits } = useRockyTTS(!voiceEnabled);
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [input, setInput] = useState('');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
@@ -119,6 +121,35 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
     lastSpokenIdRef.current = lastMsg.id;
     speak(lastMsg.content, lang, lastMsg.id);
   }, [messages, speak, lang]);
+
+  // F2: fetch voice credits on mount, refresh whenever Rocky finishes
+  // replying (TTS may have consumed one) or when the server reports
+  // insufficient credits.
+  useEffect(() => {
+    fetchVoiceCredits().then((res) => {
+      if (res) setVoiceCredits(res.remaining);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'assistant' || last.isStreaming) return;
+    fetchVoiceCredits().then((res) => {
+      if (!res) return;
+      setVoiceCredits(res.remaining);
+      if (res.remaining <= 0) {
+        setVoiceEnabled(false);
+      }
+    });
+  }, [messages, voiceEnabled]);
+
+  useEffect(() => {
+    if (ttsInsufficientCredits) {
+      setVoiceCredits(0);
+      setVoiceEnabled(false);
+    }
+  }, [ttsInsufficientCredits]);
 
   // Auto-focus the input when Rocky finishes replying — desktop only.
   // `(pointer: fine)` filters out touch devices, so mobile doesn't trigger
@@ -273,15 +304,33 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
             </div>
             <span>ERID-LINK v2.1</span>
           </div>
-          {mode === 'voice' && (
-            <button
-              className={`tts-toggle ${ttsEnabled ? 'tts-on' : 'tts-off'}`}
-              onClick={() => { toggleTTS(); }}
-              title={ttsEnabled ? 'Mute' : 'Unmute'}
-            >
-              {ttsEnabled ? '🔊' : '🔇'}
-            </button>
-          )}
+          <button
+            className={`tts-toggle ${voiceEnabled ? 'tts-on' : 'tts-off'}`}
+            onClick={() => {
+              if (!voiceEnabled && (voiceCredits ?? 0) <= 0) return;
+              setVoiceEnabled((v) => !v);
+              if (voiceEnabled) stopTTS();
+            }}
+            disabled={!voiceEnabled && (voiceCredits ?? 0) <= 0}
+            title={voiceEnabled ? t('chat.voiceDisable', lang) : t('chat.voiceEnable', lang)}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {voiceEnabled ? (
+                <>
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                  <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+                </>
+              ) : (
+                <>
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <line x1="22" y1="9" x2="16" y2="15" />
+                  <line x1="16" y1="9" x2="22" y2="15" />
+                </>
+              )}
+            </svg>
+            {voiceCredits != null && <span className="tts-credits">{voiceCredits}</span>}
+          </button>
           <span className="delay">{t('chat.latency', lang)}</span>
           <span className="turns">{turnsLeft}/{maxTurns} {t('chat.remaining', lang)}</span>
           <div className="export-wrap">

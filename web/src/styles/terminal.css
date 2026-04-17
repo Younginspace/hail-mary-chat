@@ -2612,3 +2612,44 @@ body {
   font-family: 'JetBrains Mono', monospace;
   border-radius: 4px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   P5 F2: voice toggle (replaces the emoji variant) + credits pill
+   ═══════════════════════════════════════════════════════════════ */
+
+.status-bar .tts-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  background: rgba(5, 14, 18, 0.65);
+  border: 1px solid rgba(0, 212, 170, 0.4);
+  border-radius: 12px;
+  color: var(--accent-cyan);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1;
+  transition: all 0.15s;
+}
+.status-bar .tts-toggle.tts-on {
+  background: rgba(0, 212, 170, 0.18);
+  border-color: #00d4aa;
+  color: #00d4aa;
+  box-shadow: 0 0 10px rgba(0, 212, 170, 0.35);
+}
+.status-bar .tts-toggle.tts-off {
+  color: rgba(214, 241, 233, 0.55);
+}
+.status-bar .tts-toggle:hover:not(:disabled) {
+  border-color: #00d4aa;
+}
+.status-bar .tts-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.status-bar .tts-toggle .tts-credits {
+  font-size: 10.5px;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
