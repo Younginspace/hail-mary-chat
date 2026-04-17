@@ -61,11 +61,24 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [userTurns, setUserTurns] = useState(0);
   const [isEnded, setIsEnded] = useState(false);
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
+  // UI-level gate so late streaming callbacks don't overwrite state after
+  // the user already moved on. Distinct from `streamAbortRef`, which
+  // aborts the underlying fetch/reader so no network drain lingers.
   const abortRef = useRef(false);
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  // Cancel any inflight stream on unmount so we don't leave a zombie
+  // fetch draining MiniMax in the background.
+  useEffect(() => {
+    return () => {
+      abortRef.current = true;
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = null;
+    };
+  }, []);
 
   // Update greeting when lang changes (only if no user messages yet)
   useEffect(() => {
@@ -85,7 +98,6 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
       if (isLoading || isEnded) return;
 
       const newTurnCount = userTurns + 1;
-      setError(null);
 
       // Check if this is the last turn
       if (newTurnCount > MAX_TURNS) {
@@ -145,6 +157,12 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
         }
       }
 
+      // Cancel the previous stream before starting a new one, so an
+      // overlapping double-send can't leave two drains in flight.
+      streamAbortRef.current?.abort();
+      const thisAbort = new AbortController();
+      streamAbortRef.current = thisAbort;
+
       abortRef.current = false;
       let accumulated = '';
       // The gift-trigger can arrive either from the server's dedicated
@@ -202,13 +220,20 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
         (cleanedFull) => {
           if (abortRef.current) return;
           accumulated = cleanedFull;
+          // Strip any partial [GIFT:...] tag from what we display, in
+          // case the server-side stripping failed and the tag leaked
+          // into the streamed text. We keep the full text in
+          // `accumulated` so the onDone fallback can still extract the
+          // gift; only the user-visible content is cleaned.
+          const { cleaned } = extractGift(accumulated);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, content: accumulated } : m
+              m.id === assistantId ? { ...m, content: cleaned } : m
             )
           );
         },
         () => {
+          if (thisAbort.signal.aborted) return;
           // Client-side regex fallback for GIFT tags, in case the
           // server-side SSE stripping didn't catch it (old deployment,
           // network hiccup, etc). Server event path is preferred.
@@ -225,6 +250,7 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
           if (gift) dispatchGift(gift);
         },
         (err) => {
+          if (thisAbort.signal.aborted) return;
           console.error('API error after retries:', err.message);
           const isQuotaExceeded = err.message === 'QUOTA_EXCEEDED';
           const msg = isQuotaExceeded
@@ -247,13 +273,15 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
         // Server-side gift_trigger event: preferred path. Fires mid-
         // stream as soon as the tag is fully received server-side.
         (payload) => {
+          if (thisAbort.signal.aborted) return;
           if (payload.type !== 'image' && payload.type !== 'music' && payload.type !== 'video') return;
           dispatchGift({
             type: payload.type,
             subtype: payload.subtype,
             description: payload.description,
           });
-        }
+        },
+        thisAbort.signal
       );
     },
     [messages, isLoading, isEnded, userTurns, lang, sessionId, mode]
@@ -261,5 +289,5 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
 
   const turnsLeft = Math.max(0, MAX_TURNS - userTurns);
 
-  return { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded };
+  return { messages, sendMessage, isLoading, turnsLeft, isEnded, isQuotaExceeded };
 }

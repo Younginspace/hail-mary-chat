@@ -19,7 +19,7 @@ import {
   users,
   voice_credit_ledger,
 } from "@defs";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 // How many attempts we'll give a single session before flagging the
 // job as failed (dead letter). 3 matches plan §7.
@@ -36,7 +36,7 @@ const EXTRACTION_SYSTEM_PROMPT = `You are the memory consolidator for a 3D alien
 
 You will receive:
 1. The conversation transcript.
-2. (Optionally) Rocky's existing memories about this friend, prefixed with [EXISTING MEMORIES].
+2. (Optionally) Rocky's existing memories about this friend, prefixed with [EXISTING MEMORIES]. Each memory is shown as [id] (kind) content. The id is opaque — copy it exactly when referencing a memory; do NOT invent ids.
 
 Return ONLY a JSON object matching this schema — no prose, no markdown fences, no explanation:
 
@@ -47,10 +47,10 @@ Return ONLY a JSON object matching this schema — no prose, no markdown fences,
       "kind": "fact" | "preference" | "topic" | "emotion",
       "content": "short English sentence Rocky should remember",
       "importance": 0.0 to 1.0,
-      "supersedes": "(optional) exact content string of an existing memory this fact replaces/updates"
+      "supersedes_id": "(optional) id of an existing memory this fact replaces/updates — copy the id exactly from [EXISTING MEMORIES]"
     }
   ],
-  "forget": ["(optional) exact content string of existing memories the friend asked Rocky to forget"],
+  "forget_ids": ["(optional) ids of existing memories the friend asked Rocky to forget"],
   "rapport_delta": {
     "trust": -0.2 to 0.2,
     "warmth": -0.2 to 0.2,
@@ -62,8 +62,8 @@ Return ONLY a JSON object matching this schema — no prose, no markdown fences,
 Rules:
 - Output at most 8 NEW facts. Prefer high-signal facts over trivia.
 - DEDUPLICATION: Do NOT repeat facts that already exist in [EXISTING MEMORIES]. Only extract genuinely new information from this conversation.
-- UPDATES: If the friend corrected or updated something from an existing memory (e.g., moved to a new city, changed job), include the new fact with "supersedes" set to the exact content string of the old memory it replaces.
-- FORGETTING: If the friend explicitly asked Rocky to forget, not remember, or stop mentioning something, add the exact content string(s) of the matching existing memory/memories to the "forget" array. Only do this for explicit requests — not for topic changes or mild discomfort.
+- UPDATES: If the friend corrected or updated something from an existing memory (e.g., moved to a new city, changed job), include the new fact with "supersedes_id" set to the exact id of the old memory it replaces.
+- FORGETTING: If the friend explicitly asked Rocky to forget, not remember, or stop mentioning something, add the exact id(s) of the matching memory/memories to "forget_ids". Only do this for explicit requests — not for topic changes or mild discomfort. Never invent an id — if no existing memory matches, omit.
 - Never invent facts the user did not state. If nothing substantive was said, return "facts": [] and small rapport delta.
 - Write everything in English, even if the conversation was Chinese / Japanese — memory is stored in a single language.
 - Facts should be written as Rocky-facing third-person statements about the friend.
@@ -74,14 +74,18 @@ interface ExtractedFact {
   kind: string;
   content: string;
   importance?: number;
-  /** Exact content string of an existing memory this fact replaces. */
+  /** ID of an existing memory this fact replaces. Preferred. */
+  supersedes_id?: string;
+  /** Legacy: exact content string of an existing memory this fact replaces. */
   supersedes?: string;
 }
 
 interface ExtractionResult {
   summary?: string;
   facts?: ExtractedFact[];
-  /** Exact content strings of existing memories the user asked to forget. */
+  /** IDs of existing memories the user asked to forget. Preferred. */
+  forget_ids?: string[];
+  /** Legacy: exact content strings of existing memories to forget. */
   forget?: string[];
   rapport_delta?: {
     trust?: number;
@@ -131,7 +135,7 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000]; // 3 retries on transient upstream e
 
 async function callExtractor(
   transcript: string,
-  existingMemories: Array<{ content: string; kind: string }>,
+  existingMemories: Array<{ id: string; content: string; kind: string }>,
 ): Promise<ExtractionResult | null> {
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
@@ -141,12 +145,14 @@ async function callExtractor(
     return null;
   }
 
-  // Prepend existing memories to the transcript so the LLM can dedup and detect updates.
+  // Prepend existing memories to the transcript so the LLM can dedup and
+  // detect updates. Include each memory's id so the LLM can reference it
+  // in supersedes_id / forget_ids without fragile content-string matching.
   let userContent = "";
   if (existingMemories.length > 0) {
     userContent += "[EXISTING MEMORIES]\n";
     for (const m of existingMemories) {
-      userContent += `- (${m.kind}) ${m.content}\n`;
+      userContent += `- [${m.id}] (${m.kind}) ${m.content}\n`;
     }
     userContent += "\n[CONVERSATION TRANSCRIPT]\n";
   }
@@ -286,15 +292,41 @@ export async function consolidateSession(session_id: string): Promise<void> {
     })
     .where(eq(sessions.id, session_id));
 
+  // Helper: resolve an extractor-provided reference (preferring id) to an
+  // existing memory row the caller is allowed to act on. Falls back to
+  // exact / case-insensitive content match for backward-compat with any
+  // in-flight extraction rounds before the prompt change rolled out.
+  const existingById = new Map(existingMems.map((m) => [m.id, m] as const));
+  const resolveRef = (id?: string | null, contentFallback?: string | null) => {
+    if (typeof id === "string" && id.trim().length > 0) {
+      const hit = existingById.get(id.trim());
+      if (hit) return hit;
+    }
+    if (typeof contentFallback === "string" && contentFallback.trim().length > 0) {
+      const needle = contentFallback.trim();
+      return existingMems.find(
+        (m) => m.content === needle || m.content.toLowerCase() === needle.toLowerCase()
+      );
+    }
+    return undefined;
+  };
+
   // 5a. Handle "forget" requests — mark matching memories as superseded.
-  const forgetPatterns = Array.isArray(result.forget) ? result.forget : [];
+  const forgetIds = Array.isArray(result.forget_ids) ? result.forget_ids : [];
+  const forgetContents = Array.isArray(result.forget) ? result.forget : [];
   let forgotCount = 0;
-  for (const pattern of forgetPatterns) {
-    if (typeof pattern !== "string" || pattern.trim().length === 0) continue;
-    // Find memory with exact or close content match.
-    const match = existingMems.find(
-      (m) => m.content === pattern || m.content.toLowerCase() === pattern.toLowerCase()
-    );
+  for (const id of forgetIds) {
+    const match = resolveRef(typeof id === "string" ? id : null, null);
+    if (match) {
+      await db
+        .update(memoriesTable)
+        .set({ superseded_by: `forget:${session_id}` })
+        .where(eq(memoriesTable.id, match.id));
+      forgotCount++;
+    }
+  }
+  for (const pattern of forgetContents) {
+    const match = resolveRef(null, typeof pattern === "string" ? pattern : null);
     if (match) {
       await db
         .update(memoriesTable)
@@ -311,17 +343,13 @@ export async function consolidateSession(session_id: string): Promise<void> {
   const rawFacts = Array.isArray(result.facts) ? result.facts : [];
   let supersededCount = 0;
   for (const f of rawFacts) {
-    if (typeof f.supersedes === "string" && f.supersedes.trim().length > 0) {
-      const match = existingMems.find(
-        (m) => m.content === f.supersedes || m.content.toLowerCase() === f.supersedes!.toLowerCase()
-      );
-      if (match) {
-        await db
-          .update(memoriesTable)
-          .set({ superseded_by: session_id })
-          .where(eq(memoriesTable.id, match.id));
-        supersededCount++;
-      }
+    const match = resolveRef(f.supersedes_id, f.supersedes);
+    if (match) {
+      await db
+        .update(memoriesTable)
+        .set({ superseded_by: session_id })
+        .where(eq(memoriesTable.id, match.id));
+      supersededCount++;
     }
   }
 
@@ -453,7 +481,11 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
   }
 
   const now = Date.now();
-  await db
+  // Pair the affinity/credit columns update with the ledger insert into a
+  // single batch so a write-failure between them can't leave the wallet
+  // out-of-sync with the ledger. db.batch is atomic in D1 — either both
+  // statements land or neither does.
+  const updateOp = db
     .update(users)
     .set({
       affinity_level: newLevel,
@@ -464,9 +496,8 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
       video_credits: sql`${users.video_credits} + ${videoBonus}`,
     })
     .where(eq(users.id, user_id));
-
   if (voiceBonus > 0) {
-    await db.insert(voice_credit_ledger).values({
+    const ledgerOp = db.insert(voice_credit_ledger).values({
       id: crypto.randomUUID(),
       user_id,
       delta: voiceBonus,
@@ -474,6 +505,9 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
       session_id,
       created_at: now,
     });
+    await db.batch([updateOp, ledgerOp] as unknown as Parameters<typeof db.batch>[0]);
+  } else {
+    await updateOp;
   }
 
   console.info(
@@ -548,9 +582,17 @@ export async function runConsolidationJob(session_id: string): Promise<void> {
 }
 
 // Cold-start retry: call from an admin endpoint or a periodic path to
-// sweep pending jobs with attempts < MAX that haven't been touched in
-// a while. Keeps the queue self-healing without requiring a proper
-// worker cron.
+// sweep pending OR orphaned-running jobs with attempts < MAX that
+// haven't been touched in a while. Keeps the queue self-healing
+// without requiring a proper worker cron.
+//
+// "Orphaned-running" means a worker set status='running' then crashed
+// or was evicted before writing 'done'/'pending'/'failed'. Without
+// this branch such rows live forever invisible to the sweeper — the
+// whole session's consolidation is silently lost. Picking them up and
+// re-running them is safe: consolidateSession rewrites session.summary
+// and upserts rapport, and memory inserts go through dedup via the
+// existingMems forget/supersedes pass in the same call.
 export async function retryStuckConsolidationJobs(
   olderThanMs = 10 * 60 * 1000,
   limit = 25
@@ -561,7 +603,7 @@ export async function retryStuckConsolidationJobs(
     .from(consolidation_jobs)
     .where(
       and(
-        eq(consolidation_jobs.status, "pending"),
+        inArray(consolidation_jobs.status, ["pending", "running"]),
         sql`${consolidation_jobs.attempts} < ${MAX_CONSOLIDATION_ATTEMPTS}`,
         sql`${consolidation_jobs.updated_at} < ${cutoff}`
       )

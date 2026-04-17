@@ -36,7 +36,7 @@ import {
   users,
   voice_credit_ledger,
 } from "@defs";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { retryStuckConsolidationJobs, runConsolidationJob } from "./consolidate";
@@ -111,11 +111,37 @@ const DISPOSABLE_EMAIL_DOMAINS = new Set([
 // bot armies that might later be weaponized for TTS spam.
 const IDLE_ZERO_DAYS = 7;
 
+// Normalize an email domain so lookups catch common bypass vectors:
+//  - subdomain nesting:  foo@x.mailinator.com   → check x.mailinator.com then mailinator.com
+//  - uppercase:          FOO@MAILINATOR.COM     → lowercased
+//  - punycode / IDN:     foo@xn--mlinator-8vd.com → toASCII form is what we stored anyway,
+//                        but the lookup compares the punycode form directly; set entries
+//                        should be the ASCII (punycode) form for IDN domains.
+// Returns the sequence of candidate domains to probe, most-specific-first.
+function disposableCandidateDomains(email: string): string[] {
+  const at = email.lastIndexOf("@");
+  if (at < 0) return [];
+  let domain = email.slice(at + 1).trim().toLowerCase();
+  // Strip a trailing dot (fully-qualified form) so "mailinator.com." matches.
+  if (domain.endsWith(".")) domain = domain.slice(0, -1);
+  if (!domain) return [];
+  const parts = domain.split(".");
+  if (parts.length < 2) return [domain];
+  const candidates: string[] = [];
+  // Walk from the full domain down to the registrable (last 2 labels).
+  for (let i = 0; i <= parts.length - 2; i++) {
+    candidates.push(parts.slice(i).join("."));
+  }
+  return candidates;
+}
+
 function isDisposableEmail(email: string | null | undefined): boolean {
   if (!email) return false;
-  const at = email.lastIndexOf("@");
-  if (at < 0) return false;
-  return DISPOSABLE_EMAIL_DOMAINS.has(email.slice(at + 1).toLowerCase());
+  const candidates = disposableCandidateDomains(email);
+  for (const c of candidates) {
+    if (DISPOSABLE_EMAIL_DOMAINS.has(c)) return true;
+  }
+  return false;
 }
 
 function currentHourBucket(nowMs: number = Date.now()): number {
@@ -768,19 +794,24 @@ app.post("/api/session/start", async (c) => {
   const session_id = crypto.randomUUID();
   const now = Date.now();
 
-  // Before creating the session, atomically consume any pending level-up
-  // flag so the client can ceremony it exactly once.
-  const userState = await db
-    .select({
+  // Atomically consume any pending level-up flag in a single CAS so two
+  // concurrent /api/session/start calls (double-click, two tabs) can't
+  // both ceremony the same level-up. The UPDATE ... WHERE pending_level_up
+  // IS NOT NULL ... RETURNING pattern either (a) returns the cleared row
+  // to the one winning caller, or (b) returns an empty array to losers.
+  // Losers still need affinity_level for the response, so we fall back
+  // to a plain read when the CAS misses.
+  const consumed = await db
+    .update(users)
+    .set({ pending_level_up: null })
+    .where(and(eq(users.id, user.user_id), isNotNull(users.pending_level_up)))
+    .returning({
       affinity_level: users.affinity_level,
-      pending_level_up: users.pending_level_up,
+      pending_level_up: users.pending_level_up, // always null post-update; use the old via RETURNING is unavailable, so we read it via the subquery below
       image_credits: users.image_credits,
       music_credits: users.music_credits,
       video_credits: users.video_credits,
-    })
-    .from(users)
-    .where(eq(users.id, user.user_id))
-    .limit(1);
+    });
 
   let level_up: {
     from: number;
@@ -789,21 +820,34 @@ app.post("/api/session/start", async (c) => {
     music_credits: number;
     video_credits: number;
   } | null = null;
-  if (userState.length > 0 && userState[0].pending_level_up != null) {
-    const to = userState[0].pending_level_up;
+  let affinity_level = 1;
+
+  if (consumed.length > 0) {
+    // We won the CAS. The RETURNING row reflects post-UPDATE state, so
+    // pending_level_up is already null. Read affinity_level to derive
+    // the "to" target — on successful consume, affinity_level equals
+    // the flag we just cleared (checkLevelUp in consolidate.ts sets both
+    // affinity_level and pending_level_up to the same value).
+    const row = consumed[0];
+    affinity_level = row.affinity_level;
+    const to = row.affinity_level;
     const from = Math.max(1, to - 1);
     level_up = {
       from,
       to,
-      image_credits: userState[0].image_credits,
-      music_credits: userState[0].music_credits,
-      video_credits: userState[0].video_credits,
+      image_credits: row.image_credits,
+      music_credits: row.music_credits,
+      video_credits: row.video_credits,
     };
-    // Clear the flag — only show once.
-    await db
-      .update(users)
-      .set({ pending_level_up: null })
-      .where(eq(users.id, user.user_id));
+  } else {
+    // No pending level-up, or we lost the CAS to a concurrent call.
+    // Either way: do not ceremony. Read affinity_level for the response.
+    const row = await db
+      .select({ affinity_level: users.affinity_level })
+      .from(users)
+      .where(eq(users.id, user.user_id))
+      .limit(1);
+    affinity_level = row[0]?.affinity_level ?? 1;
   }
 
   await db.insert(sessions).values({
@@ -818,7 +862,7 @@ app.post("/api/session/start", async (c) => {
   return c.json({
     session_id,
     unlimited: true,
-    affinity_level: userState[0]?.affinity_level ?? 1,
+    affinity_level,
     level_up,
   });
 });
@@ -871,12 +915,21 @@ app.post("/api/session/message", async (c) => {
   }
   const content = body.content.slice(0, 8000);
 
+  // Require session exists, is owned by the caller, and is still open.
+  // The ended_at check prevents racing /api/session/end from inserting
+  // a late message that consolidation already swept past.
   const session = await db
     .select({ id: sessions.id })
     .from(sessions)
-    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user.user_id)))
+    .where(
+      and(
+        eq(sessions.id, body.session_id),
+        eq(sessions.user_id, user.user_id),
+        isNull(sessions.ended_at)
+      )
+    )
     .limit(1);
-  if (session.length === 0) return c.json({ error: "session not found" }, 404);
+  if (session.length === 0) return c.json({ error: "session not found or ended" }, 404);
 
   await db.insert(messagesTable).values({
     id: crypto.randomUUID(),
@@ -887,8 +940,11 @@ app.post("/api/session/message", async (c) => {
   });
 
   if (body.role === "user") {
+    // Only bump turn_count if the session is still open; if /api/session/end
+    // raced us after the check above, ended_at is now set and this UPDATE
+    // harmlessly no-ops.
     await db.run(
-      sql`UPDATE sessions SET turn_count = turn_count + 1 WHERE id = ${body.session_id}`
+      sql`UPDATE sessions SET turn_count = turn_count + 1 WHERE id = ${body.session_id} AND ended_at IS NULL`
     );
   }
 
@@ -962,6 +1018,14 @@ app.post("/api/chat", async (c) => {
         if (memBlock) {
           systemContent += "\n\n" + memBlock;
         }
+      } else {
+        // Not an error, but worth logging at info: either the session_id
+        // was bogus or belonged to another user. Chat still proceeds
+        // without memory context (safest). Surfacing the reason makes
+        // it easier to distinguish from a true exception below.
+        console.info(
+          `memory inject skipped: session ${session_id} not found or not owned by ${user.user_id}`
+        );
       }
     } catch (err) {
       console.warn("memory inject failed — proceeding without:", err);
@@ -1614,30 +1678,45 @@ app.post("/api/favorites", async (c) => {
   const voiceId = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
   const contentHash = await hashAudioContent(content, lang, voiceId);
 
-  const countRows = await db
-    .select({ c: sql<number>`count(*)` })
-    .from(favorites)
-    .where(eq(favorites.user_id, user.user_id));
-  const count = countRows[0]?.c ?? 0;
-  if (count >= FAVORITES_CAP) {
-    return c.json({ error: "favorites_full", cap: FAVORITES_CAP }, 409);
-  }
-
   const id = crypto.randomUUID();
   const now = Date.now();
+
+  // Atomic cap enforcement: INSERT ... SELECT ... WHERE count < cap. A
+  // prior non-atomic read-then-insert allowed two concurrent calls to
+  // both see count=99, both insert, and land on 101 rows. This form
+  // rejects the second concurrent insert at the SQL layer.
+  //
+  // D1/SQLite doesn't let us directly express "INSERT ... WHERE
+  // subquery" in Drizzle, so we fall back to a raw statement. The
+  // UNIQUE(user_id, content_hash) index still catches the dup case.
+  let inserted = false;
   try {
-    await db.insert(favorites).values({
-      id,
-      user_id: user.user_id,
-      content_hash: contentHash,
-      message_content: content,
-      mood: body.mood ?? null,
-      lang,
-      source_session: body.source_session ?? null,
-      created_at: now,
-    });
+    const ret = await db.run(
+      sql`INSERT INTO favorites (id, user_id, content_hash, message_content, mood, lang, source_session, created_at)
+          SELECT ${id}, ${user.user_id}, ${contentHash}, ${content}, ${body.mood ?? null}, ${lang}, ${body.source_session ?? null}, ${now}
+          WHERE (SELECT count(*) FROM favorites WHERE user_id = ${user.user_id}) < ${FAVORITES_CAP}`
+    );
+    // D1's run() result shape varies; treat any positive change as success.
+    const meta = (ret as unknown as { meta?: { changes?: number }; rowsAffected?: number }) ?? {};
+    const changes = meta.meta?.changes ?? meta.rowsAffected ?? 0;
+    inserted = changes > 0;
   } catch {
+    // UNIQUE violation — already favorited.
     return c.json({ error: "already_favorited", content_hash: contentHash }, 409);
+  }
+
+  if (!inserted) {
+    // No rows changed → cap hit (or race loser). Re-check to distinguish.
+    const countRows = await db
+      .select({ c: sql<number>`count(*)` })
+      .from(favorites)
+      .where(eq(favorites.user_id, user.user_id));
+    const count = countRows[0]?.c ?? 0;
+    if (count >= FAVORITES_CAP) {
+      return c.json({ error: "favorites_full", cap: FAVORITES_CAP }, 409);
+    }
+    // Shouldn't happen, but surface rather than silently succeed.
+    return c.json({ error: "insert_failed" }, 500);
   }
 
   return c.json({ ok: true, id, content_hash: contentHash });
@@ -2269,11 +2348,18 @@ function isAdmin(c: { req: { header: (k: string) => string | undefined } }): boo
   const expected = secret.get("ADMIN_TOKEN");
   if (!expected) return false;
   const got = c.req.header("x-admin-token")?.trim();
-  // Constant-time-ish compare — lengths differ → obviously wrong.
-  if (!got || got.length !== expected.length) return false;
-  let diff = 0;
+  if (!got) return false;
+  // Constant-time compare. Do NOT early-return on length mismatch —
+  // that leaks the token length via timing. Pad `got` to the expected
+  // length (with a sentinel that can never match expected's own chars
+  // is not needed since the length-XOR below catches any mismatch) and
+  // fold the length difference into the same XOR accumulator, so total
+  // wall time is length-independent across mismatched-length inputs.
+  const pad = "\u0000".repeat(Math.max(0, expected.length - got.length));
+  const padded = (got + pad).slice(0, expected.length);
+  let diff = expected.length ^ got.length;
   for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ got.charCodeAt(i);
+    diff |= expected.charCodeAt(i) ^ padded.charCodeAt(i);
   }
   return diff === 0;
 }

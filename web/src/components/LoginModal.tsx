@@ -43,15 +43,30 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
     }
   }, [open]);
 
-  // Auto-close success after a few seconds as a safety net, even if the
-  // user forgets to click CONTINUE.
+  // Keyboard: Esc closes the modal from the form phase (during success
+  // the auto-close handles it). Scoped to `open` so we don't trap the
+  // global Esc handler when the modal isn't up.
   useEffect(() => {
-    if (phase !== 'success') return;
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && phase === 'form') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, phase, onClose]);
+
+  // Auto-close success after a few seconds as a safety net, even if the
+  // user forgets to click CONTINUE. `open` is in deps so that manually
+  // closing (parent sets open=false) fires the cleanup and cancels the
+  // pending timer — otherwise a late fire would onClose() on whatever
+  // modal instance was up next.
+  useEffect(() => {
+    if (!open || phase !== 'success') return;
     const timer = setTimeout(() => {
       onClose();
     }, AUTO_CLOSE_MS);
     return () => clearTimeout(timer);
-  }, [phase, onClose]);
+  }, [open, phase, onClose]);
 
   if (!open) return null;
 
@@ -88,11 +103,17 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
 
   return (
     <div className="login-backdrop" onClick={phase === 'form' ? onClose : undefined}>
-      <div className="login-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="login-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="login-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         {phase === 'form' ? (
           <>
             <div className="login-header">
-              <div className="login-title">{t('login.hookTitle', lang)}</div>
+              <div className="login-title" id="login-title">{t('login.hookTitle', lang)}</div>
               <div className="login-desc">{t('login.hookDesc', lang)}</div>
             </div>
 
@@ -172,7 +193,7 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
           </>
         ) : (
           <div className="login-success">
-            <div className="login-success-badge">{t('login.successTitle', lang)}</div>
+            <div className="login-success-badge" id="login-title">{t('login.successTitle', lang)}</div>
             <div className="login-success-desc">
               {t('login.successDesc', lang, { callsign: liveCallsign })}
             </div>

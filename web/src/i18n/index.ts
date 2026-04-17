@@ -152,6 +152,11 @@ const translations = {
     en: 'Export failed — please try again',
     ja: 'エクスポート失敗、もう一度試して',
   },
+  'chat.exportTooLong': {
+    zh: '对话太长，无法导出为图片。已帮你导出为 Markdown。',
+    en: 'Chat too long to export as image — saved as Markdown instead.',
+    ja: '会話が長すぎて画像にできない。Markdownで保存した。',
+  },
 
   // ===== Chat: favorites =====
   'chat.favorites': {
@@ -484,7 +489,13 @@ const translations = {
 export type TranslationKey = keyof typeof translations;
 
 export function t(key: TranslationKey, lang: Lang, vars?: Record<string, string | number>): string {
-  let text = translations[key]?.[lang] ?? translations[key]?.en ?? key;
+  const entry = translations[key];
+  if (!entry && import.meta.env.DEV) {
+    // Loudly flag missing keys in dev so we catch drift before prod.
+    // Prod silently falls through to the key name (old behavior).
+    console.warn(`[i18n] missing key: ${String(key)}`);
+  }
+  let text: string = entry?.[lang] ?? entry?.en ?? (key as string);
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       text = text.replaceAll(`{${k}}`, String(v));
