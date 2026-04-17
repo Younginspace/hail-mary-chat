@@ -100,21 +100,3 @@ export async function checkCallsign(q: string): Promise<CheckCallsignResult | nu
   }
 }
 
-export interface OpenChannelFaq {
-  id: string;
-  category: string;
-  question: string;
-  answer: string;
-}
-
-export async function fetchFaqs(lang: Lang): Promise<OpenChannelFaq[]> {
-  try {
-    const res = await fetch(`${API_BASE}/api/public/faqs?lang=${lang}`);
-    if (!res.ok) return [];
-    const json = (await res.json()) as { items: OpenChannelFaq[] };
-    return json.items ?? [];
-  } catch (err) {
-    console.warn('fetchFaqs failed', err);
-    return [];
-  }
-}

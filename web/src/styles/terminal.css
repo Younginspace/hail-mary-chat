@@ -2653,3 +2653,29 @@ body {
   letter-spacing: 0.3px;
   font-weight: 600;
 }
+
+/* Open Channel play button — plays pre-rendered mp3 from /audio/defaults */
+.channel-play {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 212, 170, 0.08);
+  border: 1px solid rgba(0, 212, 170, 0.45);
+  color: var(--accent-cyan);
+  border-radius: 50%;
+  cursor: pointer;
+  margin-right: 10px;
+  transition: all 0.15s;
+}
+.channel-play:hover {
+  background: rgba(0, 212, 170, 0.2);
+  border-color: #00d4aa;
+}
+.channel-play.playing {
+  background: #00d4aa;
+  color: #001018;
+  box-shadow: 0 0 12px rgba(0, 212, 170, 0.5);
+}

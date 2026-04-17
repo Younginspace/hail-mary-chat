@@ -166,6 +166,11 @@ export function getDefaultQuestions(lang: Lang): string[] {
   return DIALOGS_BY_LANG[lang]?.map((d) => d.question) ?? [];
 }
 
+/** 获取某语言的全部预置对话（Open Channel 用，直接显示 + 播放预录音频） */
+export function getDefaultDialogs(lang: Lang): DefaultDialog[] {
+  return DIALOGS_BY_LANG[lang] ?? [];
+}
+
 /** 通过回复内容反查预置音频文件路径 */
 export function findDefaultAudioByReply(reply: string, lang: Lang): string | null {
   const dialog = DIALOGS_BY_LANG[lang]?.find((d) => d.reply === reply);
