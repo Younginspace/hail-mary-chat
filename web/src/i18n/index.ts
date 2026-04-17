@@ -328,6 +328,41 @@ const translations = {
   },
 
   // ===== P5 F1: Open Channel + Dial In =====
+  'hero.title': {
+    zh: 'Rocky Chat',
+    en: 'Rocky Chat',
+    ja: 'Rocky Chat',
+  },
+  'hero.tagline': {
+    zh: '来自 40 Eridani 的信号已连通',
+    en: 'Signal from 40 Eridani — online',
+    ja: '40 Eridaniからの信号 — オンライン',
+  },
+  'hero.dialInCta': {
+    zh: '私人频道',
+    en: 'DIAL IN',
+    ja: 'ダイヤルイン',
+  },
+  'hero.dialInSub': {
+    zh: 'Rocky 记得你',
+    en: 'Rocky remembers you',
+    ja: 'Rockyが覚えてる',
+  },
+  'hero.openChannelCta': {
+    zh: '公共频道',
+    en: 'OPEN CHANNEL',
+    ja: '公共チャンネル',
+  },
+  'hero.openChannelSub': {
+    zh: '听 Rocky 广播',
+    en: 'Listen to broadcast',
+    ja: '放送を聞く',
+  },
+  'hero.closeChannel': {
+    zh: '收起频道',
+    en: 'Close channel',
+    ja: 'チャンネルを閉じる',
+  },
   'channel.title': {
     zh: 'OPEN CHANNEL · 公共频道',
     en: 'OPEN CHANNEL',

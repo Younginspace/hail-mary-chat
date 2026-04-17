@@ -13,17 +13,15 @@ import { unlockAudio } from '../utils/rockyAudio';
 import { startSession } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
-// P5 F1: StartScreen has four phases:
-//   - 'channel'    Open Channel FAQ view (passive, public)
-//   - 'dialin'     Register / sign-in form (private channel)
-//   - 'connecting' Handshake animation
-//   - 'connected'  Brief flash before onConnected fires
-//
-// Forced registration: anonymous users cannot skip to chat. Already-authed
-// users see the Open Channel with a "Reconnect" button that starts a session
-// without re-entering credentials.
+// P5 F1c: Landing layout priority order
+//   - Hero "Rocky Chat" title + tagline
+//   - Two parallel CTAs: DIAL IN (primary) | OPEN CHANNEL (secondary)
+//   - OPEN CHANNEL expands an inline FAQ drawer (no standalone view)
+//   - Dial In flow opens its own screen
+//   - Dynamic background overlays (aurora sweep, scan lines) on top of
+//     the three-js Starfield/Constellation/Signals.
 
-type Phase = 'channel' | 'dialin' | 'connecting' | 'connected';
+type Phase = 'home' | 'dialin' | 'connecting' | 'connected';
 
 const CONNECTION_STEPS = [
   { text: 'INITIALIZING ERID-LINK v2.1 ...', delay: 0 },
@@ -42,19 +40,21 @@ interface StartScreenProps {
 export default function StartScreen({ onConnected }: StartScreenProps) {
   const { lang } = useLang();
   const { isAuthenticated, me, signOut } = useAuthSession();
-  const [phase, setPhase] = useState<Phase>('channel');
+  const [phase, setPhase] = useState<Phase>('home');
+  const [channelOpen, setChannelOpen] = useState(false);
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
-  const channelRef = useRef<HTMLDivElement>(null);
+  const homeRef = useRef<HTMLDivElement>(null);
   const dialinRef = useRef<HTMLDivElement>(null);
   const connectingRef = useRef<HTMLDivElement>(null);
+  const channelDrawerRef = useRef<HTMLDivElement>(null);
 
-  // Fade/slide between channel ↔ dialin with GSAP.
+  // Fade/slide transitions between phases
   useEffect(() => {
-    if (phase === 'channel' && channelRef.current) {
+    if (phase === 'home' && homeRef.current) {
       gsap.fromTo(
-        channelRef.current,
+        homeRef.current,
         { opacity: 0, y: 16 },
         { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
       );
@@ -75,24 +75,30 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     }
   }, [phase]);
 
-  // Begin handshake animation + start a server session.
+  // Slide the channel drawer in/out
+  useEffect(() => {
+    if (!channelDrawerRef.current) return;
+    if (channelOpen) {
+      gsap.fromTo(
+        channelDrawerRef.current,
+        { opacity: 0, y: -12, height: 0 },
+        { opacity: 1, y: 0, height: 'auto', duration: 0.4, ease: 'power2.out' }
+      );
+    }
+  }, [channelOpen]);
+
   const beginConnection = useCallback(async () => {
     unlockAudio();
     setStartError(null);
     const result = await startSession(lang, 'text');
     if (!result.ok) {
-      setStartError(
-        result.reason === 'not_authenticated'
-          ? t('login.errorGeneric', lang)
-          : t('login.errorGeneric', lang)
-      );
+      setStartError(t('login.errorGeneric', lang));
       return;
     }
     setPendingSessionId(result.session_id);
     setPhase('connecting');
   }, [lang]);
 
-  // Auto-advance handshake steps
   useEffect(() => {
     if (phase !== 'connecting') return;
     const timers: ReturnType<typeof setTimeout>[] = [];
@@ -103,7 +109,6 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     return () => timers.forEach(clearTimeout);
   }, [phase]);
 
-  // Once connected, animate out and hand over to parent
   useEffect(() => {
     if (phase !== 'connected' || !pendingSessionId) return;
     const timer = setTimeout(() => {
@@ -121,73 +126,97 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     return () => clearTimeout(timer);
   }, [phase, pendingSessionId, onConnected]);
 
+  const handleDialIn = useCallback(() => {
+    if (isAuthenticated) {
+      void beginConnection();
+    } else {
+      setPhase('dialin');
+    }
+  }, [isAuthenticated, beginConnection]);
+
   return (
-    <div className="immersive-root">
+    <div className="immersive-root hero-root">
       <Starfield />
       <MemoryConstellation />
       <SignalStreaks />
+
+      {/* Dynamic overlays — pure CSS, no tool cost */}
+      <div className="hero-aurora" aria-hidden="true" />
+      <div className="hero-horizon" aria-hidden="true" />
+      <div className="hero-scan" aria-hidden="true" />
 
       <div className="start-overlay">
         <div className="start-lang-corner">
           <LangSwitcher />
         </div>
 
-        {phase === 'channel' && (
-          <div ref={channelRef} className="channel-panel">
-            <div className="version-badge">
-              <span className="version-badge-dot" />
-              <span className="version-badge-label">{t('version.badge', lang)}</span>
+        {phase === 'home' && (
+          <div ref={homeRef} className="hero-panel">
+            <div className="hero-badge">
+              <span className="hero-badge-dot" />
+              <span className="hero-badge-label">{t('hero.tagline', lang)}</span>
             </div>
 
-            <div className="channel-header">
-              <div className="channel-eyebrow">{t('start.subtitle', lang)}</div>
-              <h1 className="channel-title">{t('channel.title', lang)}</h1>
-              <div className="channel-desc">{t('channel.desc', lang)}</div>
-            </div>
+            <h1 className="hero-title">
+              <span className="hero-title-text">{t('hero.title', lang)}</span>
+              <span className="hero-title-underline" aria-hidden="true" />
+            </h1>
 
-            <OpenChannel />
+            <div className="hero-subtitle">{t('start.subtitle', lang)}</div>
 
-            <div className="channel-dialin">
-              <div className="channel-dialin-hint">
-                {isAuthenticated && me?.callsign
-                  ? t('login.welcome', lang, { callsign: me.callsign })
-                  : t('channel.dialInHint', lang)}
-              </div>
+            <div className="hero-ctas">
               <button
                 type="button"
-                className="channel-dialin-cta"
-                onClick={() => {
-                  if (isAuthenticated) {
-                    void beginConnection();
-                  } else {
-                    setPhase('dialin');
-                  }
-                }}
+                className="hero-cta hero-cta-primary"
+                onClick={handleDialIn}
               >
-                {t('channel.dialInCta', lang)}
+                <span className="hero-cta-icon" aria-hidden="true">📞</span>
+                <span className="hero-cta-label">{t('hero.dialInCta', lang)}</span>
+                <span className="hero-cta-sub">
+                  {isAuthenticated && me?.callsign
+                    ? t('login.welcome', lang, { callsign: me.callsign })
+                    : t('hero.dialInSub', lang)}
+                </span>
               </button>
-              {isAuthenticated && (
-                <button
-                  type="button"
-                  className="channel-logout"
-                  onClick={() => signOut()}
-                >
-                  {t('login.signOut', lang)}
-                </button>
-              )}
-              {startError && <div className="channel-error">{startError}</div>}
+
+              <button
+                type="button"
+                className={`hero-cta hero-cta-secondary ${channelOpen ? 'active' : ''}`}
+                onClick={() => setChannelOpen((v) => !v)}
+              >
+                <span className="hero-cta-icon" aria-hidden="true">📡</span>
+                <span className="hero-cta-label">
+                  {channelOpen ? t('hero.closeChannel', lang) : t('hero.openChannelCta', lang)}
+                </span>
+                <span className="hero-cta-sub">{t('hero.openChannelSub', lang)}</span>
+              </button>
             </div>
+
+            {isAuthenticated && (
+              <button
+                type="button"
+                className="hero-logout"
+                onClick={() => signOut()}
+              >
+                {t('login.signOut', lang)}
+              </button>
+            )}
+
+            {startError && <div className="hero-error">{startError}</div>}
+
+            {channelOpen && (
+              <div ref={channelDrawerRef} className="hero-channel-drawer">
+                <OpenChannel />
+              </div>
+            )}
           </div>
         )}
 
         {phase === 'dialin' && (
           <div ref={dialinRef} className="dialin-wrap">
             <DialInScreen
-              onBack={() => setPhase('channel')}
+              onBack={() => setPhase('home')}
               onSuccess={() => {
-                // A brief moment lets useAuthSession pick up the new session
-                // (adopt-device runs on session change). Then we start a real
-                // session on the server and kick off the handshake.
                 setTimeout(() => {
                   void beginConnection();
                 }, 500);
