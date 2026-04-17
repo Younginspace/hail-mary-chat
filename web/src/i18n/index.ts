@@ -124,6 +124,26 @@ const translations = {
     en: '[Translation]',
     ja: '[翻訳]',
   },
+  'chat.exportLabel': {
+    zh: '导出',
+    en: 'Export',
+    ja: 'エクスポート',
+  },
+  'chat.exportMarkdown': {
+    zh: '导出 Markdown',
+    en: 'Download as Markdown',
+    ja: 'Markdownでダウンロード',
+  },
+  'chat.exportImage': {
+    zh: '保存为图片',
+    en: 'Save as image',
+    ja: '画像として保存',
+  },
+  'chat.exportFailed': {
+    zh: '导出失败，请稍后再试',
+    en: 'Export failed — please try again',
+    ja: 'エクスポート失敗、もう一度試して',
+  },
 
   // ===== Suggested Questions =====
   'suggest.1': {
