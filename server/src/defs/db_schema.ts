@@ -194,6 +194,90 @@ export const rapport_thresholds = sqliteTable(
 );
 
 // ═══════════════════════════════════════════════════════════════════
+//  P5 F6 Phase 2 — Gifts, async media tasks, global API locks, fallback events
+// ═══════════════════════════════════════════════════════════════════
+
+// One row per gift Rocky sends. Synchronous types (image, music) insert
+// with status='ready'; asynchronous ones (video) start as 'pending' and
+// are updated by the poll handler.
+export const gifts = sqliteTable(
+  "gifts",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    // 'image' | 'music' | 'video' | 'postcard' (the video fallback)
+    type: text("type").notNull(),
+    // e.g. 'selfie' | 'memory_sketch' | 'sign' | 'bgm_only' | …
+    subtype: text("subtype"),
+    description: text("description"),   // Rocky's original desc from [GIFT:…]
+    r2_key: text("r2_key"),              // path inside buckets.rockyAudio (reused bucket)
+    r2_bucket: text("r2_bucket"),        // which bucket the object lives in
+    source_session: text("source_session"),
+    status: text("status").notNull().default("pending"), // pending | ready | failed
+    error: text("error"),
+    created_at: integer("created_at").notNull(),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_gifts_user_created").on(t.user_id, t.created_at)]
+);
+
+// For multi-step or async generations (notably I2V-01 video). Lets us keep
+// /api/generate-media responses snappy by returning a task handle and
+// letting the client poll.
+export const media_tasks = sqliteTable(
+  "media_tasks",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    gift_id: text("gift_id"),
+    type: text("type").notNull(), // 'image' | 'music' | 'video' | 'i2v_prep'
+    status: text("status").notNull().default("pending"), // pending | processing | done | failed
+    external_task_id: text("external_task_id"), // MiniMax task_id (video)
+    external_url: text("external_url"),          // OSS URL before R2 copy
+    error: text("error"),
+    created_at: integer("created_at").notNull(),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_media_tasks_user_created").on(t.user_id, t.created_at)]
+);
+
+// Composite-PK atomic lock for global per-API daily ceilings (Hailuo
+// video: 4/day overall). daily_api_usage with scope='__global__' covers
+// the same need for TTS; this table is the Hailuo analogue with an
+// explicit cap column.
+export const daily_global_locks = sqliteTable(
+  "daily_global_locks",
+  {
+    date: text("date").notNull(),   // YYYY-MM-DD in UTC+8
+    api: text("api").notNull(),     // 'hailuo_video' | …
+    used: integer("used").notNull().default(0),
+    limit: integer("limit").notNull(),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.date, t.api] })]
+);
+
+// User-facing record of what happened when a Lv4 video gift aged past
+// its 48h SLA — did they accept the postcard downgrade or keep waiting.
+// Product uses this to decide whether to upgrade the MiniMax plan.
+export const video_fallback_events = sqliteTable(
+  "video_fallback_events",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    gift_id: text("gift_id"),
+    choice: text("choice").notNull(), // 'postcard' | 'wait_longer'
+    created_at: integer("created_at").notNull(),
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════
 //  P5 F3 — Favorites (per user, capped at 100)
 // ═══════════════════════════════════════════════════════════════════
 

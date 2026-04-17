@@ -768,6 +768,235 @@ app.get("/api/voice-credits", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+//  P5 F6 Phase 2 — MiniMax API probe (one-off, auth-gated)
+//
+//  Hits plausible endpoint paths for each generation API with a minimal
+//  test prompt and returns the raw response shape. Lets us confirm
+//  actual URLs, request/response formats, and async vs sync behaviour
+//  before writing /api/generate-media. Any logged-in user can trigger
+//  it; call ?what=image|music|lyrics|video|all (default all).
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/probe-minimax", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+  const apiKey = secret.get("MINIMAX_API_KEY");
+  if (!apiKey) return c.json({ error: "no_key" }, 500);
+
+  const what = c.req.query("what") ?? "all";
+  const base = "https://api.minimaxi.com";
+
+  type ProbeResult = {
+    api: string;
+    url: string;
+    method: string;
+    status: number | null;
+    ok: boolean;
+    elapsed_ms: number;
+    body_preview: string;
+    request_body?: unknown;
+    error?: string;
+  };
+
+  async function hit(api: string, url: string, body: unknown, method: "POST" | "GET" = "POST"): Promise<ProbeResult> {
+    const t0 = Date.now();
+    try {
+      const init: RequestInit = {
+        method,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      };
+      if (method === "POST") init.body = JSON.stringify(body);
+      const res = await fetch(url, init);
+      const text = await res.text();
+      return {
+        api,
+        url,
+        method,
+        status: res.status,
+        ok: res.ok,
+        elapsed_ms: Date.now() - t0,
+        body_preview: text.slice(0, 2000),
+        request_body: body,
+      };
+    } catch (err) {
+      return {
+        api,
+        url,
+        method,
+        status: null,
+        ok: false,
+        elapsed_ms: Date.now() - t0,
+        body_preview: "",
+        request_body: body,
+        error: String(err),
+      };
+    }
+  }
+
+  const tasks: Array<Promise<ProbeResult>> = [];
+
+  if (what === "all" || what === "image") {
+    tasks.push(
+      hit("image-01", `${base}/v1/image_generation`, {
+        model: "image-01",
+        prompt: "a small red cube on a white background, studio lighting",
+        aspect_ratio: "1:1",
+        n: 1,
+        prompt_optimizer: true,
+      })
+    );
+  }
+
+  if (what === "all" || what === "lyrics") {
+    tasks.push(
+      hit("lyrics-01", `${base}/v1/lyrics_generation`, {
+        model: "lyrics-01",
+        prompt: "spring sunrise over a quiet field",
+      })
+    );
+  }
+
+  if (what === "all" || what === "music") {
+    tasks.push(
+      hit("music-2.6", `${base}/v1/music_generation`, {
+        model: "music-2.6",
+        lyrics: "Line one a morning light\nLine two a quiet field\nLine three the sun comes up",
+      })
+    );
+  }
+
+  if (what === "music-cover") {
+    tasks.push(
+      hit("music-cover", `${base}/v1/music_cover`, {
+        model: "music-cover",
+        lyrics: "Line one a morning light",
+        // Needs a reference audio URL or bytes — probe will likely 400 with
+        // a helpful "missing field" message telling us the shape.
+        refer_voice: "missing-for-probe",
+      })
+    );
+  }
+
+  if (what === "all" || what === "video" || what === "video-t2v") {
+    tasks.push(
+      hit("T2V-01", `${base}/v1/video_generation`, {
+        model: "T2V-01",
+        prompt: "a slow zoom over a starfield",
+      })
+    );
+  }
+  if (what === "video" || what === "video-director") {
+    tasks.push(
+      hit("T2V-01-Director", `${base}/v1/video_generation`, {
+        model: "T2V-01-Director",
+        prompt: "a slow zoom over a starfield",
+      })
+    );
+  }
+  if (what === "video" || what === "video-hailuo") {
+    tasks.push(
+      hit("MiniMax-Hailuo-02", `${base}/v1/video_generation`, {
+        model: "MiniMax-Hailuo-02",
+        prompt: "a slow zoom over a starfield",
+      })
+    );
+  }
+  if (what === "video" || what === "video-i2v") {
+    tasks.push(
+      hit("I2V-01", `${base}/v1/video_generation`, {
+        model: "I2V-01",
+        prompt: "a slow zoom",
+      })
+    );
+  }
+
+  // Vision retry — focused set after the first pass. M2.7 got a 529
+  // (overloaded, not a capability answer) so we retry it; abab6.5 family
+  // definitively said "not support img" so they're excluded here. Added
+  // MiniMax-VL-* + abab7 candidates.
+  if (what === "vision-retry") {
+    const testImageUrl = "https://ssl.gstatic.com/onebox/weather/64/sunny.png";
+    const multimodalBody = (model: string) => ({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What do you see in this image? One short sentence." },
+            { type: "image_url", image_url: { url: testImageUrl } },
+          ],
+        },
+      ],
+      max_tokens: 80,
+    });
+    const chatBase = "https://api.minimax.chat";
+    tasks.push(hit("v_M2.7_retry1", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-M2.7")));
+    tasks.push(hit("v_M2.7_retry2", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-M2.7")));
+    tasks.push(hit("v_VL-01", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-VL-01")));
+    tasks.push(hit("v_VL", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-VL")));
+    tasks.push(hit("v_abab7-chat", `${chatBase}/v1/chat/completions`, multimodalBody("abab7-chat")));
+    tasks.push(hit("v_abab7-preview", `${chatBase}/v1/chat/completions`, multimodalBody("abab7-preview")));
+    tasks.push(hit("v_MiniMax-M1", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-M1")));
+  }
+
+  // Multimodal vision — can Rocky "see" an image the user attaches?
+  // Try the current chat model plus a handful of candidate vision models.
+  if (what === "vision") {
+    const testImageUrl =
+      "https://teaching-collie-6315.edgespark.app/rocky.glb.png".length > 0
+        ? "https://ssl.gstatic.com/onebox/weather/64/sunny.png"
+        : "https://ssl.gstatic.com/onebox/weather/64/sunny.png";
+    const multimodalBody = (model: string) => ({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What do you see in this image? One short sentence." },
+            { type: "image_url", image_url: { url: testImageUrl } },
+          ],
+        },
+      ],
+      max_tokens: 80,
+    });
+    const chatBase = "https://api.minimax.chat";
+    tasks.push(hit("vision_M2.7", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-M2.7")));
+    tasks.push(hit("vision_abab6.5-chat", `${chatBase}/v1/chat/completions`, multimodalBody("abab6.5-chat")));
+    tasks.push(hit("vision_abab6.5s-chat", `${chatBase}/v1/chat/completions`, multimodalBody("abab6.5s-chat")));
+    tasks.push(hit("vision_abab6.5g-chat", `${chatBase}/v1/chat/completions`, multimodalBody("abab6.5g-chat")));
+    tasks.push(hit("vision_MiniMax-Text-01", `${chatBase}/v1/chat/completions`, multimodalBody("MiniMax-Text-01")));
+  }
+
+  // Lyrics variants — the first probe returned generic "invalid params"
+  // so the schema is wrong. Try a few more shapes.
+  if (what === "lyrics-alt") {
+    tasks.push(
+      hit("lyrics_gen_prompt_only", `${base}/v1/lyrics_generation`, {
+        prompt: "spring sunrise over a quiet field",
+      })
+    );
+    tasks.push(
+      hit("lyrics_gen_seed_lyrics", `${base}/v1/lyrics_generation`, {
+        seed_lyrics: "spring sunrise over a quiet field",
+      })
+    );
+    tasks.push(
+      hit("lyrics_gen_refer", `${base}/v1/lyrics_generation`, {
+        model: "lyrics-01",
+        refer_voice: "",
+        prompt: "spring sunrise over a quiet field",
+      })
+    );
+  }
+
+  const results = await Promise.all(tasks);
+  return c.json({ results, note: "what=all by default. Use ?what=image|music|lyrics|video|music-cover to isolate." });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 //  P5 F3 — Favorites (capped at 100 per user)
 // ═══════════════════════════════════════════════════════════════════
 
