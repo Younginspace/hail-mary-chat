@@ -5,7 +5,6 @@ import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { getDefaultQuestions } from '../utils/defaultDialogs';
-import { setTtsQuotaExceeded, setChatQuotaExceeded } from '../utils/playLimit';
 import { endSession, logMessage } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 import Starfield from './Starfield';
@@ -13,7 +12,6 @@ import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
 import SuggestedQuestions from './SuggestedQuestions';
 import LangSwitcher from './LangSwitcher';
-import LoginModal from './LoginModal';
 
 function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
@@ -49,27 +47,10 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, isEnabled: ttsEnabled, toggle: toggleTTS, ttsQuotaExceeded } = useRockyTTS(mode === 'text');
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [input, setInput] = useState('');
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [hookDismissed, setHookDismissed] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
   const loggedIdsRef = useRef<Set<string>>(new Set());
-
-  // P4: 3-message hook — after the user's third message, prompt them to
-  // register a callsign. Not shown if already logged in or dismissed.
-  const userMessageCount = messages.filter((m) => m.role === 'user').length;
-  const showCallsignHook =
-    !isAuthenticated && !hookDismissed && userMessageCount >= 3 && !isEnded;
-
-  // 当 quota 用完时，记到 localStorage
-  useEffect(() => {
-    if (ttsQuotaExceeded) setTtsQuotaExceeded();
-  }, [ttsQuotaExceeded]);
-
-  useEffect(() => {
-    if (isQuotaExceeded) setChatQuotaExceeded();
-  }, [isQuotaExceeded]);
 
   // Log each user/assistant message to backend (fire-and-forget).
   // Skip the hard-coded greeting (id='greeting') — it's shown locally, not
@@ -223,33 +204,10 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           <div ref={chatEndRef} />
         </div>
 
-        {showCallsignHook && (
-          <div className="callsign-hook">
-            <span>{t('login.hookTitle', lang)}</span>
-            <button type="button" onClick={() => setLoginOpen(true)}>
-              {t('login.modeSignUp', lang)}
-            </button>
-            <button
-              type="button"
-              className="hook-dismiss"
-              onClick={() => setHookDismissed(true)}
-              title={t('login.later', lang)}
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
         <SuggestedQuestions
           suggestions={remainingSuggestions}
           onSelect={handleSuggestion}
           visible={showSuggestions}
-        />
-
-        <LoginModal
-          open={loginOpen}
-          onClose={() => setLoginOpen(false)}
-          onSuccess={() => setHookDismissed(true)}
         />
 
         {isEnded ? (

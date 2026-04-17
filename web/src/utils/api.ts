@@ -1,21 +1,11 @@
-import { getDeviceId } from './deviceId';
-
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-// Chat streams through the EdgeSpark worker proxy at /api/public/chat.
-// No API key in the browser — the proxy injects it server-side.
+// P5 F1: chat is auth-required. Streams through /api/chat on the EdgeSpark
+// worker; the session cookie rides along via credentials: 'include'.
 const API_BASE = import.meta.env.VITE_API_URL || '';
-
-function getDeviceIdHeader(): Record<string, string> {
-  try {
-    return { 'X-Device-Id': getDeviceId() };
-  } catch {
-    return {};
-  }
-}
 
 export interface ChatConfig {
   temperature?: number;
@@ -45,11 +35,11 @@ export async function streamChat(
 ) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(`${API_BASE}/api/public/chat`, {
+      const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(getDeviceIdHeader()),
         },
         body: JSON.stringify({
           messages: messages.map((m) => ({
@@ -59,7 +49,6 @@ export async function streamChat(
           temperature: config?.temperature ?? 0.55,
           top_p: config?.top_p ?? 0.9,
           max_tokens: 1024,
-          // Server builds complete prompt (system + few-shots + memory + history)
           session_id: config?.session_id,
           lang: config?.lang,
           last_turn: config?.last_turn,
@@ -68,6 +57,10 @@ export async function streamChat(
 
       if (!response.ok) {
         const errorText = await response.text();
+        if (response.status === 401) {
+          onError(new Error('NOT_AUTHENTICATED'));
+          return;
+        }
         if (response.status === 429) {
           onError(new Error('QUOTA_EXCEEDED'));
           return;
@@ -102,7 +95,6 @@ export async function streamChat(
 
             rawAccumulated += text;
 
-            // 对完整累积文本做 think 剥离，然后整体推送
             const cleaned = stripThink(rawAccumulated);
             if (cleaned) {
               onChunk(cleaned);
@@ -113,7 +105,6 @@ export async function streamChat(
         }
       }
 
-      // 流结束，最终清理
       const finalText = stripThink(rawAccumulated);
       if (!finalText) {
         onChunk('[MOOD:talk]\n[Translation] Signal weak. Rocky try again. Ask one more time, question?');

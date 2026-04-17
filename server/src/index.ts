@@ -1,23 +1,33 @@
 /**
  * Hail Mary Chat — Rocky server.
  *
- * P0: proxy MiniMax chat + TTS (replaces old Express server).
- * P1: device_id anonymous identity + session/message logging + daily quota.
+ * P5 F1: forced registration. All chat / TTS / session endpoints now require
+ * an authenticated session. Anonymous daily-quota logic is removed.
  *
- * All /api/public/* routes; no login yet. P4 will move authenticated paths
- * to /api/*. Every DB mutation scopes by device_id-derived user_id — the
- * platform does not enforce row ownership automatically.
+ * Route layout:
+ *   - /api/public/faqs              — Open Channel content (public, FAQ list)
+ *   - /api/public/check-callsign    — Callsign availability (public, pre-register)
+ *   - /api/chat                     — MiniMax chat proxy (auth required)
+ *   - /api/tts                      — MiniMax TTS proxy (auth required)
+ *   - /api/session/*                — Session lifecycle (auth required)
+ *   - /api/me                       — Authed profile
+ *   - /api/adopt-device             — Link device to auth account + set callsign
+ *
+ * `device_id` is still accepted by the adoption flow for legacy migration
+ * (pre-F1 anon sessions keep their memories on first login). New users never
+ * have an anonymous-only state.
  */
 
-import { db, vars, secret, ctx } from "edgespark";
+import { db, secret, vars, ctx } from "edgespark";
 import { auth } from "edgespark/http";
 import { memories, messages as messagesTable, rapport, sessions, users } from "@defs";
-import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { consolidateSession } from "./consolidate";
 import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
 import type { Lang as RockyLang } from "./prompts/rocky";
+import { OPEN_CHANNEL_FAQS } from "./faqs";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -25,76 +35,67 @@ const DEFAULT_TTS_API_URL = "https://api.minimaxi.com";
 const DEFAULT_TTS_MODEL = "speech-2.8-hd";
 const DEFAULT_TTS_VOICE_ID = "rocky_hailmary_v2";
 
-const DAILY_QUOTA = 20;
-const UTC8_OFFSET_MS = 8 * 3600 * 1000;
+// ═══════════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════════
 
-// ── UTC+8 today-start helpers (for daily quota) ──
-function utc8TodayStartMs(now = Date.now()): number {
-  const utc8Now = now + UTC8_OFFSET_MS;
-  const utc8DayStart = Math.floor(utc8Now / 86_400_000) * 86_400_000;
-  return utc8DayStart - UTC8_OFFSET_MS;
-}
-
-function utc8TomorrowStartMs(now = Date.now()): number {
-  return utc8TodayStartMs(now) + 86_400_000;
-}
-
-// ── device_id helpers ──
 function getDeviceId(c: { req: { header: (k: string) => string | undefined } }): string | null {
   const raw = c.req.header("x-device-id")?.trim();
   if (!raw || raw.length > 128) return null;
-  // Accept any non-empty ID (UUIDv4, custom nanoid, etc.)
   if (!/^[A-Za-z0-9._\-]{8,128}$/.test(raw)) return null;
   return raw;
 }
 
-async function upsertUser(device_id: string): Promise<string> {
-  const now = Date.now();
-  const existing = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.device_id, device_id))
-    .limit(1);
-  if (existing.length > 0) {
-    await db.update(users).set({ last_seen_at: now }).where(eq(users.id, existing[0].id));
-    return existing[0].id;
-  }
-  const id = crypto.randomUUID();
-  await db.insert(users).values({
-    id,
-    device_id,
-    created_at: now,
-    last_seen_at: now,
-  });
-  return id;
-}
-
-async function getTodayUsed(user_id: string): Promise<number> {
+// Resolve the primary users row for the current authed session. Returns null
+// if the caller is not authenticated or hasn't adopted yet.
+async function getAuthedUser(): Promise<{
+  user_id: string;
+  callsign: string | null;
+} | null> {
+  if (!auth.isAuthenticated()) return null;
   const rows = await db
-    .select({ id: sessions.id })
-    .from(sessions)
-    .where(and(eq(sessions.user_id, user_id), gte(sessions.started_at, utc8TodayStartMs())));
-  return rows.length;
+    .select({ id: users.id, callsign: users.callsign })
+    .from(users)
+    .where(eq(users.auth_user_id, auth.user.id))
+    .orderBy(asc(users.created_at))
+    .limit(1);
+  if (rows.length === 0) return null;
+  return { user_id: rows[0].id, callsign: rows[0].callsign };
 }
 
-// P4: check whether the users row this device resolves to has been adopted
-// by an authenticated account. Adopted rows bypass the daily-quota gate.
-async function isUserAdopted(user_id: string): Promise<boolean> {
+// Application-layer uniqueness check for callsign. Case-insensitive match.
+// Optionally ignore a given auth_user_id (so a user doesn't see their own
+// callsign as "taken").
+async function isCallsignTaken(
+  callsign: string,
+  exceptAuthUserId: string | null = null
+): Promise<boolean> {
+  const normalized = callsign.trim();
+  if (!normalized) return true; // treat blank as taken — don't allow
   const rows = await db
     .select({ auth_user_id: users.auth_user_id })
     .from(users)
-    .where(eq(users.id, user_id))
-    .limit(1);
-  return rows.length > 0 && rows[0].auth_user_id != null;
+    .where(sql`LOWER(${users.callsign}) = LOWER(${normalized})`);
+  if (rows.length === 0) return false;
+  if (exceptAuthUserId == null) return true;
+  return rows.some((r) => r.auth_user_id !== exceptAuthUserId);
+}
+
+// Validate callsign format: 3-32 chars, alphanumeric + _ - space + common unicode letters.
+function isValidCallsign(raw: string): boolean {
+  if (typeof raw !== "string") return false;
+  const t = raw.trim();
+  if (t.length < 3 || t.length > 32) return false;
+  // Allow letters (any unicode), digits, underscore, hyphen, space.
+  return /^[\p{L}\p{N} _\-]+$/u.test(t);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  P3: memory-context helpers — used by /api/public/chat to prepend
-//  a "[MEMORY CONTEXT]" system message so Rocky actually remembers.
+//  Memory context — unchanged from P3
 // ═══════════════════════════════════════════════════════════════════
 
-const MEMORY_INJECT_TOP_N = 12; // top memories by importance
-const MEMORY_MAX_CHARS = 1800; // hard cap on injected block
+const MEMORY_INJECT_TOP_N = 12;
+const MEMORY_MAX_CHARS = 1800;
 
 type MemoryLang = "en" | "zh" | "ja";
 
@@ -117,22 +118,11 @@ function rapportBand(value: number): "low" | "mid" | "high" {
   return "high";
 }
 
-/**
- * Build a compact memory context block for a given user. Returns null when
- * there is nothing worth injecting (new friend, no consolidated memory yet).
- *
- * English-only content — memories are stored in English by the consolidator.
- * We wrap in language-aware instructions so Rocky still speaks `lang`.
- */
 async function buildMemoryContext(
   user_id: string,
   lang: MemoryLang,
   callsign: string | null
 ): Promise<string | null> {
-  // Time-decayed scoring: score = importance / (1 + age_days / 30)
-  // This gives a ~30-day half-life — newer facts of equal importance rank higher.
-  // Naturally resolves conflicts: "moved to Beijing" (2 days ago) beats
-  // "lives in Shanghai" (60 days ago) at the same importance level.
   const now = Date.now();
   const memRows = await db
     .select({
@@ -141,12 +131,7 @@ async function buildMemoryContext(
       importance: memories.importance,
     })
     .from(memories)
-    .where(
-      and(
-        eq(memories.user_id, user_id),
-        isNull(memories.superseded_by),
-      )
-    )
+    .where(and(eq(memories.user_id, user_id), isNull(memories.superseded_by)))
     .orderBy(
       desc(
         sql`(${memories.importance} * 1.0 / (1.0 + (${now} - ${memories.created_at}) / 86400000.0 / 30.0))`
@@ -207,35 +192,26 @@ async function buildMemoryContext(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Cross-device memory merge — called after adopt-device links a device
-//  to an auth account. Merges sessions, memories, and rapport from all
-//  user rows sharing the same auth_user_id into a single primary user.
-//  Idempotent: safe to call multiple times (e.g., device C logs in later).
+//  Cross-device merge — unchanged from P4
 // ═══════════════════════════════════════════════════════════════════
 
 async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
-  // 1. Find all user rows linked to this auth account.
   const allUsers = await db
     .select({ id: users.id, created_at: users.created_at })
     .from(users)
     .where(eq(users.auth_user_id, auth_user_id))
     .orderBy(asc(users.created_at));
 
-  if (allUsers.length <= 1) return; // Nothing to merge.
+  if (allUsers.length <= 1) return;
 
-  // 2. Pick the earliest-created user as the primary.
   const primaryId = allUsers[0].id;
   const secondaryIds = allUsers.slice(1).map((u) => u.id);
 
-  // 3. Re-parent sessions and memories to the primary user (atomic batch).
-  //    Messages are scoped to session_id, so they follow automatically.
   await db.batch([
     db.update(sessions).set({ user_id: primaryId }).where(inArray(sessions.user_id, secondaryIds)),
     db.update(memories).set({ user_id: primaryId }).where(inArray(memories.user_id, secondaryIds)),
   ]);
 
-  // 4. Merge rapport: take MAX trust/warmth, most recent last_mood,
-  //    concatenate notes. Then delete secondary rapport rows.
   const allRapport = await db
     .select()
     .from(rapport)
@@ -263,7 +239,6 @@ async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
 
     const primaryRapport = allRapport.find((r) => r.user_id === primaryId);
     if (primaryRapport) {
-      // Update existing primary rapport with merged values.
       await db
         .update(rapport)
         .set({
@@ -275,7 +250,6 @@ async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
         })
         .where(eq(rapport.user_id, primaryId));
     } else {
-      // Primary had no rapport yet — insert merged values.
       await db.insert(rapport).values({
         user_id: primaryId,
         trust: bestTrust,
@@ -286,7 +260,6 @@ async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
       });
     }
 
-    // Delete secondary rapport rows.
     if (secondaryIds.length > 0) {
       await db.delete(rapport).where(inArray(rapport.user_id, secondaryIds));
     }
@@ -297,8 +270,6 @@ async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
   );
 }
 
-// Log MiniMax response headers once per cold start so P2 can decide whether
-// it can trust upstream rate-limit headers for the "能源再生中" countdown.
 const chatHeaderFlag = { done: false };
 const ttsHeaderFlag = { done: false };
 
@@ -312,12 +283,12 @@ function logHeadersOnce(flag: { done: boolean }, prefix: string, headers: Header
   console.info(`${prefix} response headers (first call):`, JSON.stringify(entries));
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  App
+// ═══════════════════════════════════════════════════════════════════
+
 const app = new Hono();
 
-// CORS — permissive during migration; tighten in P5 once the custom
-// domain swap happens and origins are known.
-// credentials: true is required for /api/* so the auth session cookie rides
-// along. The platform's /api/_es/auth/* endpoints already rely on this.
 app.use(
   "/api/*",
   cors({
@@ -331,115 +302,38 @@ app.use(
 app.get("/api/public/health", (c) => c.json({ ok: true, service: "hail-mary-chat" }));
 
 // ═══════════════════════════════════════════════════════════════════
-//  P1: session + message + quota
+//  Public endpoints — no auth required
 // ═══════════════════════════════════════════════════════════════════
 
-// GET /api/public/quota — read today's usage, does not touch users table
-app.get("/api/public/quota", async (c) => {
-  const device_id = getDeviceId(c);
-  if (!device_id) {
-    return c.json({
-      used: 0,
-      remaining: DAILY_QUOTA,
-      dailyLimit: DAILY_QUOTA,
-      resetAt: utc8TomorrowStartMs(),
-      anonymous: true,
-    });
-  }
-  const existing = await db
-    .select({ id: users.id, auth_user_id: users.auth_user_id, callsign: users.callsign })
-    .from(users)
-    .where(eq(users.device_id, device_id))
-    .limit(1);
-  let used = 0;
-  let unlimited = false;
-  let callsign: string | null = null;
-  if (existing.length > 0) {
-    unlimited = existing[0].auth_user_id != null;
-    callsign = existing[0].callsign;
-    if (!unlimited) {
-      used = await getTodayUsed(existing[0].id);
-    }
-  }
-  // Adopted/authed users bypass the daily quota — Rocky answers forever,
-  // only capped by MiniMax subscription on the voice side.
-  if (unlimited) {
-    return c.json({
-      used: 0,
-      remaining: -1,
-      dailyLimit: -1,
-      resetAt: utc8TomorrowStartMs(),
-      unlimited: true,
-      callsign,
-    });
-  }
+// GET /api/public/faqs?lang=en — Open Channel FAQ list
+app.get("/api/public/faqs", (c) => {
+  const lang = c.req.query("lang");
+  const resolved: MemoryLang = lang === "zh" || lang === "ja" ? lang : "en";
   return c.json({
-    used,
-    remaining: Math.max(0, DAILY_QUOTA - used),
-    dailyLimit: DAILY_QUOTA,
-    resetAt: utc8TomorrowStartMs(),
+    lang: resolved,
+    items: OPEN_CHANNEL_FAQS.map((f) => ({
+      id: f.id,
+      category: f.category,
+      question: f.question[resolved],
+      answer: f.answer[resolved],
+    })),
   });
 });
 
-// POST /api/public/session/start — allocate session row, enforce quota
-app.post("/api/public/session/start", async (c) => {
-  const device_id = getDeviceId(c);
-  if (!device_id) return c.json({ error: "missing X-Device-Id" }, 400);
-
-  const body = await c.req
-    .json<{ lang?: string; mode?: string }>()
-    .catch(() => ({} as { lang?: string; mode?: string }));
-  const lang = body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
-  const mode = body.mode === "text" || body.mode === "voice" ? body.mode : "text";
-
-  const user_id = await upsertUser(device_id);
-  const adopted = await isUserAdopted(user_id);
-  let used = 0;
-  if (!adopted) {
-    used = await getTodayUsed(user_id);
-    if (used >= DAILY_QUOTA) {
-      return c.json(
-        {
-          error: "quota_exceeded",
-          used,
-          dailyLimit: DAILY_QUOTA,
-          resetAt: utc8TomorrowStartMs(),
-        },
-        429
-      );
-    }
+// GET /api/public/check-callsign?q=xxx — true when available
+app.get("/api/public/check-callsign", async (c) => {
+  const raw = c.req.query("q") ?? "";
+  if (!isValidCallsign(raw)) {
+    return c.json({ available: false, reason: "invalid_format" });
   }
-
-  const session_id = crypto.randomUUID();
-  const now = Date.now();
-  await db.insert(sessions).values({
-    id: session_id,
-    user_id,
-    lang,
-    mode,
-    started_at: now,
-    turn_count: 0,
-  });
-
-  return c.json({
-    session_id,
-    used: adopted ? 0 : used + 1,
-    remaining: adopted ? -1 : DAILY_QUOTA - used - 1,
-    dailyLimit: adopted ? -1 : DAILY_QUOTA,
-    unlimited: adopted,
-    resetAt: utc8TomorrowStartMs(),
-  });
+  const taken = await isCallsignTaken(raw);
+  return c.json({ available: !taken, callsign: raw.trim() });
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  P4: device → auth-account adoption
+//  Device adoption — auth required
 // ═══════════════════════════════════════════════════════════════════
 
-// POST /api/adopt-device — authenticated. Links the current device's users
-// row to the logged-in auth user. Idempotent: safe to call on every login.
-//
-// Path is under /api/* so EdgeSpark guarantees `auth.user`. We still require
-// X-Device-Id so anonymous memories/sessions on that device get inherited.
 app.post("/api/adopt-device", async (c) => {
   if (!auth.isAuthenticated()) {
     return c.json({ error: "not authenticated" }, 401);
@@ -454,35 +348,45 @@ app.post("/api/adopt-device", async (c) => {
   const authUser = auth.user;
   const now = Date.now();
 
-  // Default callsign = local part of email (before @). Users can pass an
-  // override, but we strip/trim to keep it display-safe.
-  const rawCallsign =
+  const requestedCallsign =
     typeof body.callsign === "string" && body.callsign.trim().length > 0
       ? body.callsign.trim().slice(0, 64)
-      : authUser.email?.split("@")[0]?.slice(0, 64) ?? "friend";
+      : null;
+
+  if (requestedCallsign && !isValidCallsign(requestedCallsign)) {
+    return c.json({ error: "invalid_callsign", detail: "3-32 chars, letters/numbers/spaces" }, 400);
+  }
+  if (requestedCallsign && (await isCallsignTaken(requestedCallsign, authUser.id))) {
+    return c.json({ error: "callsign_taken", callsign: requestedCallsign }, 409);
+  }
 
   const existing = await db
-    .select({ id: users.id, auth_user_id: users.auth_user_id })
+    .select({ id: users.id, auth_user_id: users.auth_user_id, callsign: users.callsign })
     .from(users)
     .where(eq(users.device_id, device_id))
     .limit(1);
 
+  // Decide what callsign to persist. Preserve existing value unless the
+  // caller explicitly supplied a new one.
+  const existingCallsign = existing[0]?.callsign ?? null;
+  const resolvedCallsign =
+    requestedCallsign ??
+    existingCallsign ??
+    authUser.email?.split("@")[0]?.slice(0, 64) ??
+    "friend";
+
   if (existing.length === 0) {
-    // New device, new account all in one go.
     const id = crypto.randomUUID();
     await db.insert(users).values({
       id,
       device_id,
       email: authUser.email,
-      callsign: rawCallsign,
+      callsign: resolvedCallsign,
       auth_user_id: authUser.id,
       created_at: now,
       last_seen_at: now,
     });
-    // Cross-device merge: if this auth account already has user rows from
-    // other devices, merge all memories/sessions/rapport into the primary.
     await mergeUsersByAuthId(authUser.id);
-    // After merge the primary user_id may differ from `id` (if older rows exist).
     const primaryRow = await db
       .select({ id: users.id })
       .from(users)
@@ -490,18 +394,12 @@ app.post("/api/adopt-device", async (c) => {
       .orderBy(asc(users.created_at))
       .limit(1);
     const primaryId = primaryRow.length > 0 ? primaryRow[0].id : id;
-    return c.json({ ok: true, user_id: primaryId, callsign: rawCallsign, adopted: true });
+    return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
   }
 
-  // Adopt: set auth_user_id + email + callsign, then merge across devices.
   const row = existing[0];
   if (row.auth_user_id && row.auth_user_id !== authUser.id) {
-    // Device was already linked to a different account. Refuse silently
-    // (don't move data between accounts automatically — avoids merge bugs).
-    return c.json(
-      { error: "device_linked_to_other_account", user_id: row.id },
-      409
-    );
+    return c.json({ error: "device_linked_to_other_account", user_id: row.id }, 409);
   }
 
   await db
@@ -509,14 +407,12 @@ app.post("/api/adopt-device", async (c) => {
     .set({
       auth_user_id: authUser.id,
       email: authUser.email,
-      callsign: rawCallsign,
+      callsign: resolvedCallsign,
       last_seen_at: now,
     })
     .where(eq(users.id, row.id));
 
-  // Cross-device merge: consolidate all user rows for this auth account.
   await mergeUsersByAuthId(authUser.id);
-  // Return the primary user_id (earliest created).
   const primaryRow = await db
     .select({ id: users.id })
     .from(users)
@@ -524,67 +420,67 @@ app.post("/api/adopt-device", async (c) => {
     .orderBy(asc(users.created_at))
     .limit(1);
   const primaryId = primaryRow.length > 0 ? primaryRow[0].id : row.id;
-  return c.json({ ok: true, user_id: primaryId, callsign: rawCallsign, adopted: true });
+  return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
 });
 
-// GET /api/me — authenticated. Returns the linked profile + callsign so the
-// web client can render "通讯畅通 · 呼号 XXX" once logged in.
 app.get("/api/me", async (c) => {
   if (!auth.isAuthenticated()) {
     return c.json({ error: "not authenticated" }, 401);
   }
-  const device_id = getDeviceId(c);
-  // It's OK for device_id to be missing here — the client can re-adopt.
-  let callsign: string | null = null;
-  if (device_id) {
-    const row = await db
-      .select({ callsign: users.callsign, auth_user_id: users.auth_user_id })
-      .from(users)
-      .where(eq(users.device_id, device_id))
-      .limit(1);
-    if (row.length > 0 && row[0].auth_user_id === auth.user.id) {
-      callsign = row[0].callsign;
-    }
-  }
+  const user = await getAuthedUser();
   return c.json({
     ok: true,
     email: auth.user.email,
-    callsign,
-    adopted: callsign != null,
+    callsign: user?.callsign ?? null,
+    adopted: user != null,
   });
 });
 
-// POST /api/public/session/end — close out session, record turn_count
-app.post("/api/public/session/end", async (c) => {
-  const device_id = getDeviceId(c);
-  if (!device_id) return c.json({ error: "missing X-Device-Id" }, 400);
+// ═══════════════════════════════════════════════════════════════════
+//  Session lifecycle — auth required
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/session/start", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
 
   const body = await c.req
-    .json<{ session_id?: string; turn_count?: number }>()
-    .catch(() => ({} as { session_id?: string; turn_count?: number }));
+    .json<{ lang?: string; mode?: string }>()
+    .catch(() => ({} as { lang?: string; mode?: string }));
+  const lang = body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
+  const mode = body.mode === "voice" ? "voice" : "text";
+
+  const session_id = crypto.randomUUID();
+  const now = Date.now();
+  await db.insert(sessions).values({
+    id: session_id,
+    user_id: user.user_id,
+    lang,
+    mode,
+    started_at: now,
+    turn_count: 0,
+  });
+
+  return c.json({ session_id, unlimited: true });
+});
+
+app.post("/api/session/end", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  const body = await c.req
+    .json<{ session_id?: string }>()
+    .catch(() => ({} as { session_id?: string }));
   if (!body.session_id) return c.json({ error: "missing session_id" }, 400);
 
-  // Isolation: session must belong to this device_id's user.
-  const user = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.device_id, device_id))
-    .limit(1);
-  if (user.length === 0) return c.json({ error: "unknown device" }, 404);
-
-  // Only set ended_at. turn_count is maintained server-side in
-  // /session/message, so we don't clobber it here.
   const result = await db
     .update(sessions)
     .set({ ended_at: Date.now() })
-    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user[0].id)))
+    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user.user_id)))
     .returning({ id: sessions.id });
 
   if (result.length === 0) return c.json({ error: "session not found" }, 404);
 
-  // P2: kick off consolidation in the background. The client gets its
-  // 200 immediately; the LLM extractor call can take a few seconds.
-  // consolidateSession() is idempotent and gates on turn_count/summary.
   ctx.runInBackground(
     consolidateSession(body.session_id).catch((err) =>
       console.error("consolidate error", err)
@@ -594,10 +490,9 @@ app.post("/api/public/session/end", async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /api/public/session/message — append one raw message to the log
-app.post("/api/public/session/message", async (c) => {
-  const device_id = getDeviceId(c);
-  if (!device_id) return c.json({ error: "missing X-Device-Id" }, 400);
+app.post("/api/session/message", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
 
   const body = await c.req
     .json<{ session_id?: string; role?: string; content?: string }>()
@@ -608,21 +503,12 @@ app.post("/api/public/session/message", async (c) => {
   if (body.role !== "user" && body.role !== "assistant") {
     return c.json({ error: "role must be user|assistant" }, 400);
   }
-  // Cap content length defensively — keeps one row < 10KB.
   const content = body.content.slice(0, 8000);
 
-  const user = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.device_id, device_id))
-    .limit(1);
-  if (user.length === 0) return c.json({ error: "unknown device" }, 404);
-
-  // Verify session ownership before writing.
   const session = await db
     .select({ id: sessions.id })
     .from(sessions)
-    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user[0].id)))
+    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user.user_id)))
     .limit(1);
   if (session.length === 0) return c.json({ error: "session not found" }, 404);
 
@@ -634,8 +520,6 @@ app.post("/api/public/session/message", async (c) => {
     created_at: Date.now(),
   });
 
-  // Increment turn_count server-side for user messages. More reliable than
-  // trusting the client's tally — survives dropped keepalive on page close.
   if (body.role === "user") {
     await db.run(
       sql`UPDATE sessions SET turn_count = turn_count + 1 WHERE id = ${body.session_id}`
@@ -646,10 +530,13 @@ app.post("/api/public/session/message", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  P0: MiniMax chat + TTS proxies (unchanged)
+//  MiniMax proxies — auth required
 // ═══════════════════════════════════════════════════════════════════
 
-app.post("/api/public/chat", async (c) => {
+app.post("/api/chat", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
   const body = await c.req.json<{
     messages: Array<{ role: string; content: string }>;
     temperature?: number;
@@ -667,40 +554,27 @@ app.post("/api/public/chat", async (c) => {
     return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
   }
 
-  // ── Resolve lang ──
-  const device_id = getDeviceId(c);
   const session_id = typeof body.session_id === "string" ? body.session_id : null;
   const lang: RockyLang =
     body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
 
-  // ── Build the complete messages array server-side ──
-  // 1. System prompt (character + scenario + format + lang)
-  //    Memory context is appended to the same system message because
-  //    MiniMax rejects system messages after user/assistant messages.
   let systemContent = getRockySystemPrompt(lang);
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }
 
-  // 1b. Memory context (P3) — append to system prompt, not as separate message
-  if (device_id && session_id) {
+  // Memory context — verify session belongs to this authed user before injecting.
+  if (session_id) {
     try {
-      const userRow = await db
-        .select({ id: users.id, callsign: users.callsign })
-        .from(users)
-        .where(eq(users.device_id, device_id))
+      const sess = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(and(eq(sessions.id, session_id), eq(sessions.user_id, user.user_id)))
         .limit(1);
-      if (userRow.length > 0) {
-        const sess = await db
-          .select({ id: sessions.id })
-          .from(sessions)
-          .where(and(eq(sessions.id, session_id), eq(sessions.user_id, userRow[0].id)))
-          .limit(1);
-        if (sess.length > 0) {
-          const memBlock = await buildMemoryContext(userRow[0].id, lang, userRow[0].callsign);
-          if (memBlock) {
-            systemContent += "\n\n" + memBlock;
-          }
+      if (sess.length > 0) {
+        const memBlock = await buildMemoryContext(user.user_id, lang, user.callsign);
+        if (memBlock) {
+          systemContent += "\n\n" + memBlock;
         }
       }
     } catch (err) {
@@ -711,14 +585,10 @@ app.post("/api/public/chat", async (c) => {
   const outboundMessages: Array<{ role: string; content: string }> = [
     { role: "system", content: systemContent },
   ];
-
-  // 2. Few-shot examples (English only)
   const fewShots = getRockyFewShots(lang);
   for (const shot of fewShots) {
     outboundMessages.push({ role: shot.role, content: shot.content });
   }
-
-  // 4. User/assistant chat history (raw from frontend, no system/few-shots)
   for (const msg of body.messages) {
     outboundMessages.push({ role: msg.role, content: msg.content });
   }
@@ -765,7 +635,10 @@ app.post("/api/public/chat", async (c) => {
   });
 });
 
-app.get("/api/public/tts", async (c) => {
+app.get("/api/tts", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
   const url = new URL(c.req.url);
   const text = url.searchParams.get("text")?.trim();
   if (!text) {

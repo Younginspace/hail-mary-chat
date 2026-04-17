@@ -1846,3 +1846,301 @@ body {
   padding: 4px 6px;
 }
 .callsign-hook .hook-dismiss:hover { color: #fff; background: none; }
+
+/* ═══════════════════════════════════════════════════════════════
+   P5 F1: Open Channel + Dial In
+   ═══════════════════════════════════════════════════════════════ */
+
+.channel-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  max-width: 720px;
+  width: 100%;
+  padding: 20px 16px 40px;
+  box-sizing: border-box;
+  color: var(--text-primary, #d6f1e9);
+}
+
+.channel-header { text-align: center; max-width: 560px; }
+.channel-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--accent-cyan-dim);
+  opacity: 0.72;
+  margin-bottom: 14px;
+}
+.channel-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 34px;
+  letter-spacing: 8px;
+  color: var(--accent-cyan);
+  font-weight: 700;
+  margin: 0 0 14px;
+  text-shadow:
+    0 0 18px rgba(0, 212, 170, 0.35),
+    0 0 48px rgba(0, 212, 170, 0.12);
+  animation: titleGlow 4s ease-in-out infinite;
+}
+.channel-desc {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(214, 241, 233, 0.74);
+  letter-spacing: 0.4px;
+}
+
+.channel-status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  padding: 30px 0;
+}
+
+.channel-list {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(0, 212, 170, 0.2);
+  background: rgba(5, 14, 18, 0.55);
+  border-radius: 6px;
+  padding: 8px;
+}
+.channel-item {
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.channel-item.expanded {
+  background: rgba(0, 212, 170, 0.05);
+}
+.channel-q {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  color: rgba(214, 241, 233, 0.85);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  text-align: left;
+  cursor: pointer;
+  line-height: 1.45;
+}
+.channel-q:hover { color: #00d4aa; }
+.channel-q-marker { color: var(--accent-cyan); width: 14px; flex-shrink: 0; }
+.channel-a {
+  display: flex;
+  gap: 10px;
+  padding: 2px 14px 14px 34px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  color: rgba(214, 241, 233, 0.78);
+  line-height: 1.65;
+  animation: fadeIn 0.25s ease;
+}
+.channel-a-prefix {
+  color: var(--accent-cyan);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.channel-a-text { flex: 1; }
+
+.channel-dialin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  width: 100%;
+  max-width: 420px;
+}
+.channel-dialin-hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: rgba(214, 241, 233, 0.62);
+  text-align: center;
+}
+.channel-dialin-cta {
+  width: 100%;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, rgba(0, 212, 170, 0.18) 0%, rgba(0, 212, 170, 0.05) 100%);
+  border: 1px solid rgba(0, 212, 170, 0.55);
+  color: #00d4aa;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 3px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.18s;
+  box-shadow: 0 0 18px rgba(0, 212, 170, 0.18);
+}
+.channel-dialin-cta:hover {
+  background: linear-gradient(180deg, rgba(0, 212, 170, 0.3) 0%, rgba(0, 212, 170, 0.1) 100%);
+  box-shadow: 0 0 28px rgba(0, 212, 170, 0.34);
+}
+.channel-dialin-cta:active { transform: translateY(1px); }
+.channel-logout {
+  background: none;
+  border: 1px solid rgba(214, 241, 233, 0.22);
+  color: rgba(214, 241, 233, 0.6);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.channel-logout:hover { border-color: rgba(214, 241, 233, 0.5); color: #fff; }
+.channel-error {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #ff8080;
+  background: rgba(42, 10, 10, 0.6);
+  border: 1px solid rgba(255, 90, 90, 0.4);
+  padding: 8px 12px;
+  border-radius: 4px;
+  max-width: 420px;
+}
+
+/* Dial In form */
+.dialin-wrap {
+  width: 100%;
+  max-width: 460px;
+  display: flex;
+  justify-content: center;
+}
+.dialin-panel {
+  width: 100%;
+  background: rgba(8, 16, 22, 0.96);
+  border: 1px solid rgba(0, 212, 170, 0.45);
+  box-shadow: 0 0 32px rgba(0, 212, 170, 0.22);
+  border-radius: 8px;
+  padding: 22px;
+  color: var(--text-primary, #d6f1e9);
+  font-family: 'JetBrains Mono', monospace;
+}
+.dialin-back {
+  background: none;
+  border: none;
+  padding: 0 0 12px;
+  color: rgba(214, 241, 233, 0.6);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  cursor: pointer;
+}
+.dialin-back:hover { color: #00d4aa; }
+.dialin-title {
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: #00d4aa;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.dialin-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid rgba(0, 212, 170, 0.2);
+  margin-bottom: 12px;
+}
+.dialin-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 8px 4px;
+  color: rgba(214, 241, 233, 0.48);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.dialin-tab.active {
+  color: #00d4aa;
+  border-bottom-color: #00d4aa;
+}
+.dialin-tab:hover:not(.active) { color: rgba(214, 241, 233, 0.75); }
+.dialin-mode-hint {
+  font-size: 11px;
+  color: rgba(214, 241, 233, 0.5);
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+}
+.dialin-form { display: flex; flex-direction: column; gap: 12px; }
+.dialin-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(214, 241, 233, 0.6);
+}
+.dialin-label input {
+  background: rgba(0, 20, 24, 0.7);
+  border: 1px solid rgba(0, 212, 170, 0.32);
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: var(--text-primary, #d6f1e9);
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+.dialin-label input:focus { border-color: #00d4aa; }
+.dialin-callsign-status {
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  margin-top: 2px;
+  text-transform: none;
+  font-style: italic;
+}
+.dialin-callsign-status.status-checking { color: rgba(214, 241, 233, 0.5); }
+.dialin-callsign-status.status-available { color: #00d4aa; }
+.dialin-callsign-status.status-taken,
+.dialin-callsign-status.status-invalid { color: #ff8080; }
+.dialin-error {
+  background: rgba(42, 10, 10, 0.6);
+  border: 1px solid rgba(255, 90, 90, 0.45);
+  color: #ff8080;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.dialin-submit {
+  margin-top: 6px;
+  font-family: inherit;
+  letter-spacing: 1.2px;
+  font-size: 13px;
+  padding: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #00d4aa;
+  border: 1px solid #00d4aa;
+  color: #001018;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.dialin-submit:hover:not(:disabled) { background: #2ce7bc; }
+.dialin-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .channel-title { font-size: 24px; letter-spacing: 5px; }
+  .channel-panel { padding: 12px 10px 30px; gap: 20px; }
+  .channel-q { font-size: 12px; }
+  .channel-a { font-size: 12px; padding-left: 28px; }
+  .dialin-panel { padding: 16px; }
+}

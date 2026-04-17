@@ -3,7 +3,6 @@ import { streamChat } from '../utils/api';
 import type { ChatMessage } from '../utils/api';
 import { getRockyGreeting, getRockyFarewell, ROCKY_API_CONFIG } from '../prompts/rocky';
 import { findDefaultDialog } from '../utils/defaultDialogs';
-import { refundPlay } from '../utils/playLimit';
 import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
 
@@ -164,9 +163,6 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
             setIsEnded(true);
           } else {
             setUserTurns(newTurnCount - 1);
-          }
-          if (newTurnCount === 1) {
-            refundPlay(mode);
           }
         },
         { ...ROCKY_API_CONFIG, session_id: sessionId, lang, last_turn: newTurnCount === MAX_TURNS }

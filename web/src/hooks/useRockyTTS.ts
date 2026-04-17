@@ -12,7 +12,7 @@ import {
 } from '../utils/rockyAudio';
 import { findDefaultAudioByReply } from '../utils/defaultDialogs';
 
-// ── TTS: 通过 EdgeSpark worker 代理（/api/public/tts）
+// ── TTS: 通过 EdgeSpark worker 代理（/api/tts，auth required）
 // 服务器端注入 MiniMax API key，浏览器不持有任何凭据
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -114,9 +114,10 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
 
     return (async () => {
       try {
-        const url = `${API_BASE}/api/public/tts?text=${encodeURIComponent(text)}`;
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}`;
         const res = await fetch(url, {
           method: 'GET',
+          credentials: 'include',
           signal: abortCtrl.signal,
         });
 
