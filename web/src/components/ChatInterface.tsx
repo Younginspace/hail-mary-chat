@@ -26,18 +26,11 @@ import LangSwitcher from './LangSwitcher';
 
 function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
-
-  const quotaMsg: Record<string, string> = {
-    zh: '今日通话的人太多了，资源不足，请改天再来吧！',
-    en: 'Too many calls today, resources exhausted. Please come back another day!',
-    ja: '本日は通話が多すぎてリソース不足です。また別の日に来てね！',
-  };
-
   return (
     <div className="ended-panel">
       <div className="ended-line">{t('ended.line', lang)}</div>
       {quotaExceeded ? (
-        <div className="ended-desc">{quotaMsg[lang]}</div>
+        <div className="ended-desc">{t('chat.quotaExceededPanel', lang)}</div>
       ) : (
         <button className="ended-play-btn" onClick={onBack}>{t('ended.callAgain', lang)}</button>
       )}
@@ -392,8 +385,8 @@ export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites
         type="button"
         className="pane-toggle"
         onClick={toggleMobileView}
-        aria-label={mobileView === 'chat' ? 'Show hologram' : 'Show chat'}
-        title={mobileView === 'chat' ? 'Hologram' : 'Chat'}
+        aria-label={mobileView === 'chat' ? t('aria.toggleHologram', lang) : t('aria.toggleChat', lang)}
+        title={mobileView === 'chat' ? t('aria.toggleHologram', lang) : t('aria.toggleChat', lang)}
       >
         {mobileView === 'chat' ? (
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
@@ -518,13 +511,7 @@ export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites
         </div>
 
         {mode === 'voice' && ttsQuotaExceeded && (
-          <div className="quota-bar">
-            {{
-              zh: '今日通话人数太多，资源不足以播放语音',
-              en: 'Too many calls today — insufficient resources for voice playback',
-              ja: '本日は通話が多すぎて、音声再生のリソースが不足しています',
-            }[lang]}
-          </div>
+          <div className="quota-bar">{t('chat.ttsQuotaBanner', lang)}</div>
         )}
 
         <div ref={chatAreaRef} className="chat-area">
@@ -561,7 +548,7 @@ export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites
               autoFocus
             />
             <button className="send-btn" type="submit" disabled={isLoading || !input.trim()}>
-              SEND
+              {t('chat.sendButton', lang)}
             </button>
           </form>
         )}

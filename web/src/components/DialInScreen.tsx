@@ -181,10 +181,6 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
               ? t('login.submitSignIn', lang)
               : t('login.submitSignUp', lang)}
         </button>
-
-        <div className="dialin-mode-hint">
-          {mode === 'signUp' ? t('dialin.signupHint', lang) : t('dialin.signinHint', lang)}
-        </div>
       </form>
 
       <button type="button" className="dialin-back" onClick={onBack} disabled={submitting}>

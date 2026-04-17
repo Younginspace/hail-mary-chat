@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useLang } from '../i18n/LangContext';
+import { t } from '../i18n';
 import { getDefaultDialogs, type DefaultDialog } from '../utils/defaultDialogs';
 
 // Strip the [MOOD:xxx], [LIKE], [Translation]/[翻译]/[翻訳] control tags and
@@ -62,7 +63,7 @@ export default function OpenChannel() {
   };
 
   if (dialogs.length === 0) {
-    return <div className="channel-status">No broadcast</div>;
+    return <div className="channel-status">{t('channel.noBroadcastFallback', lang)}</div>;
   }
 
   return (

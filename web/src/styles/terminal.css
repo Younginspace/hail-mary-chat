@@ -2980,3 +2980,90 @@ body {
   color: #ff6b8a;
   background: rgba(255, 107, 138, 0.12);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   P5 F1m: mobile polish — landing, dial-in, chat status bar
+   ═══════════════════════════════════════════════════════════════ */
+
+@media (max-width: 640px) {
+  /* Landing — clearer split between title block and action block */
+  .hero-panel {
+    gap: 18px;
+    padding: 28px 14px 36px;
+  }
+  .hero-title { font-size: 42px; letter-spacing: 2px; }
+  .hero-ctas {
+    margin-top: 24px;
+    gap: 12px;
+  }
+
+  /* DialIn — keep the card centered with breathing room at the edges */
+  .dialin-wrap {
+    padding: 0 18px;
+    box-sizing: border-box;
+  }
+  .dialin-panel {
+    padding: 20px 18px;
+  }
+  .dialin-form { gap: 14px; }
+  .dialin-title {
+    font-size: 13px;
+    letter-spacing: 0.8px;
+    margin-bottom: 14px;
+  }
+  .dialin-tab { font-size: 11px; }
+  .dialin-label { font-size: 10.5px; }
+
+  /* Hero account chip more compact — callsign names can be long */
+  .hero-account-chip {
+    top: 10px;
+    left: 10px;
+    font-size: 11px;
+    padding: 4px 6px 4px 10px;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Chat status bar — let rows wrap rather than overlap + tighten */
+  .chat-shell .chat-pane .status-bar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 8px 10px 8px 54px; /* keeps pane-toggle clear */
+    font-size: 10px;
+    gap: 4px;
+  }
+  .chat-shell .chat-pane .status-bar .signal span {
+    display: none; /* keep signal bars only on tiny screens */
+  }
+  .chat-shell .chat-pane .status-bar .account-chip {
+    font-size: 10px;
+    padding: 2px 6px 2px 8px;
+  }
+  /* Re-enable lang switcher on mobile now that there's no fab */
+  .chat-shell .chat-pane .status-bar .lang-switcher {
+    display: inline-flex;
+    transform: scale(0.85);
+    transform-origin: right center;
+  }
+  .status-actions {
+    gap: 4px;
+  }
+  .status-iconbtn,
+  .export-toggle {
+    width: 22px;
+    height: 22px;
+  }
+  .status-bar .tts-toggle {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+  .mode-bar {
+    padding: 6px 12px;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  .hero-title { font-size: 36px; }
+  .hero-ctas { grid-template-columns: 1fr; }
+}

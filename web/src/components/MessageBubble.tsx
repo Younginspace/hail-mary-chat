@@ -96,8 +96,8 @@ export default function MessageBubble({
               type="button"
               className={`msg-action msg-play ${isPlaying ? 'playing' : ''}`}
               onClick={() => onPlay(message)}
-              aria-label={isPlaying ? 'Stop' : 'Play'}
-              title={isPlaying ? 'Stop' : 'Play'}
+              aria-label={isPlaying ? t('aria.stop', lang) : t('aria.play', lang)}
+              title={isPlaying ? t('aria.stop', lang) : t('aria.play', lang)}
             >
               {isPlaying ? (
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
@@ -116,8 +116,8 @@ export default function MessageBubble({
               type="button"
               className={`msg-action msg-fav ${isFavorited ? 'favorited' : ''}`}
               onClick={() => onToggleFavorite(message)}
-              aria-label={isFavorited ? 'Unfavorite' : 'Favorite'}
-              title={isFavorited ? 'Unfavorite' : 'Favorite'}
+              aria-label={isFavorited ? t('aria.unfavorite', lang) : t('aria.favorite', lang)}
+              title={isFavorited ? t('aria.unfavorite', lang) : t('aria.favorite', lang)}
             >
               <svg viewBox="0 0 24 24" width="13" height="13" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                 <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
