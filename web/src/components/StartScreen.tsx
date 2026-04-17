@@ -9,7 +9,7 @@ import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
-import { startSession, type LevelUpPayload } from '../utils/sessionApi';
+import { startSession, fetchFavorites, type LevelUpPayload } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
 // P5 F1c: Landing layout priority order
@@ -45,6 +45,18 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [pendingLevelUp, setPendingLevelUp] = useState<LevelUpPayload | null>(null);
+  const [favCount, setFavCount] = useState<number | null>(null);
+
+  // Only logged-in users see the favorites pill, and only after we know the count.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setFavCount(null);
+      return;
+    }
+    fetchFavorites().then((res) => {
+      if (res) setFavCount(res.items.length);
+    });
+  }, [isAuthenticated]);
   const [startError, setStartError] = useState<string | null>(null);
   const homeRef = useRef<HTMLDivElement>(null);
   const dialinRef = useRef<HTMLDivElement>(null);
@@ -135,33 +147,38 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
       <div className="hero-horizon" aria-hidden="true" />
       <div className="hero-scan" aria-hidden="true" />
 
-      {/* Account chip — pinned top-left when logged in */}
+      {/* Top-left cluster: account chip + favorites pill (logged in only) */}
       {phase === 'home' && isAuthenticated && me?.callsign && (
-        <div className="hero-account-chip">
-          <span className="hero-account-dot" />
-          {me.affinity_level != null && me.affinity_level > 1 && (
-            <span className={`level-badge lv-${me.affinity_level}`}>Lv{me.affinity_level}</span>
-          )}
-          <span className="hero-account-name">{me.callsign}</span>
+        <div className="hero-topleft">
+          <div className="hero-account-chip">
+            <span className="hero-account-dot" />
+            {me.affinity_level != null && me.affinity_level > 1 && (
+              <span className={`level-badge lv-${me.affinity_level}`}>Lv{me.affinity_level}</span>
+            )}
+            <span className="hero-account-name">{me.callsign}</span>
+            <button
+              type="button"
+              className="hero-account-logout"
+              onClick={() => signOut()}
+              title={t('login.signOut', lang)}
+              aria-label={t('login.signOut', lang)}
+            >
+              ✕
+            </button>
+          </div>
           <button
             type="button"
-            className="hero-account-fav"
+            className="hero-favorites-pill"
             onClick={onFavorites}
             title={t('chat.favorites', lang)}
             aria-label={t('chat.favorites', lang)}
           >
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
               <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
             </svg>
-          </button>
-          <button
-            type="button"
-            className="hero-account-logout"
-            onClick={() => signOut()}
-            title={t('login.signOut', lang)}
-            aria-label={t('login.signOut', lang)}
-          >
-            ✕
+            {favCount != null && favCount > 0 && (
+              <span className="hero-favorites-count">{favCount}</span>
+            )}
           </button>
         </div>
       )}

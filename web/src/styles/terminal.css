@@ -3221,3 +3221,55 @@ body {
   background: rgba(0, 212, 170, 0.28);
   border-color: #00d4aa;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   F3.4: top-left cluster — account chip + standalone favorites pill
+   ═══════════════════════════════════════════════════════════════ */
+
+.hero-topleft {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Override the previous fixed-position on .hero-account-chip when wrapped. */
+.hero-topleft .hero-account-chip {
+  position: static;
+  top: auto;
+  left: auto;
+}
+.hero-favorites-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(5, 14, 18, 0.82);
+  border: 1px solid rgba(255, 107, 138, 0.42);
+  border-radius: 999px;
+  color: #ff6b8a;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: all 0.18s;
+}
+.hero-favorites-pill:hover {
+  background: rgba(255, 107, 138, 0.14);
+  border-color: #ff6b8a;
+  transform: translateY(-1px);
+}
+.hero-favorites-count {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+@media (max-width: 640px) {
+  .hero-topleft { top: 10px; left: 10px; gap: 6px; }
+  .hero-favorites-pill { padding: 4px 9px; font-size: 11px; }
+}
