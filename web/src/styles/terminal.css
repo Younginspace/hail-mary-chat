@@ -2151,8 +2151,8 @@ body {
 
 .chat-shell {
   display: grid;
-  /* Desktop: hologram left (2fr), chat right (3fr) */
-  grid-template-columns: minmax(340px, 2fr) minmax(420px, 3fr);
+  /* Desktop: hologram (1fr) vs chat (1.3fr) — a bit more even than 1:1.5 */
+  grid-template-columns: minmax(360px, 1fr) minmax(440px, 1.3fr);
   position: relative;
   overflow: hidden;
   width: 100vw;
@@ -2442,11 +2442,26 @@ body {
   box-shadow: 0 10px 30px rgba(0, 212, 170, 0.2);
 }
 .hero-cta:hover::before { opacity: 1; }
-.hero-cta-icon {
-  font-size: 22px;
-  line-height: 1;
-  margin-bottom: 4px;
-  filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.5));
+.hero-cta-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: linear-gradient(135deg, #ffaa44 0%, #ff8040 100%);
+  color: #1a0a00;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  box-shadow: 0 0 12px rgba(255, 170, 68, 0.55);
+  z-index: 2;
+  animation: badgePulse 2s ease-in-out infinite;
+}
+@keyframes badgePulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 170, 68, 0.55); }
+  50%      { box-shadow: 0 0 22px rgba(255, 170, 68, 0.85); }
 }
 .hero-cta-label {
   font-size: 14px;
