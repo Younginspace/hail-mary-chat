@@ -28,7 +28,6 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
   const [userTurns, setUserTurns] = useState(0);
   const [isEnded, setIsEnded] = useState(false);
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
-  const [usedSuggestions, setUsedSuggestions] = useState<Set<string>>(new Set());
   const abortRef = useRef(false);
 
   // Update greeting when lang changes (only if no user messages yet)
@@ -41,7 +40,6 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
           content: getRockyGreeting(lang),
         },
       ]);
-      setUsedSuggestions(new Set());
     }
   }, [lang, userTurns]);
 
@@ -51,9 +49,6 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
 
       const newTurnCount = userTurns + 1;
       setError(null);
-
-      // Track used suggestion
-      setUsedSuggestions((prev) => new Set(prev).add(text));
 
       // Check if this is the last turn
       if (newTurnCount > MAX_TURNS) {
@@ -173,5 +168,5 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
 
   const turnsLeft = Math.max(0, MAX_TURNS - userTurns);
 
-  return { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded, usedSuggestions };
+  return { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded };
 }
