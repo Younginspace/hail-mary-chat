@@ -4,7 +4,6 @@ import Starfield from './Starfield';
 import MemoryConstellation from './MemoryConstellation';
 import SignalStreaks from './SignalStreaks';
 import LangSwitcher from './LangSwitcher';
-import OpenChannel from './OpenChannel';
 import DialInScreen from './DialInScreen';
 import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
@@ -35,20 +34,19 @@ const CONNECTION_STEPS = [
 
 interface StartScreenProps {
   onConnected: (mode: ChatMode, sessionId: string) => void;
+  onEcho: () => void;
 }
 
-export default function StartScreen({ onConnected }: StartScreenProps) {
+export default function StartScreen({ onConnected, onEcho }: StartScreenProps) {
   const { lang } = useLang();
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [phase, setPhase] = useState<Phase>('home');
-  const [channelOpen, setChannelOpen] = useState(false);
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const homeRef = useRef<HTMLDivElement>(null);
   const dialinRef = useRef<HTMLDivElement>(null);
   const connectingRef = useRef<HTMLDivElement>(null);
-  const channelDrawerRef = useRef<HTMLDivElement>(null);
 
   // Fade/slide transitions between phases
   useEffect(() => {
@@ -74,18 +72,6 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
       );
     }
   }, [phase]);
-
-  // Slide the channel drawer in/out
-  useEffect(() => {
-    if (!channelDrawerRef.current) return;
-    if (channelOpen) {
-      gsap.fromTo(
-        channelDrawerRef.current,
-        { opacity: 0, y: -12, height: 0 },
-        { opacity: 1, y: 0, height: 'auto', duration: 0.4, ease: 'power2.out' }
-      );
-    }
-  }, [channelOpen]);
 
   const beginConnection = useCallback(async () => {
     unlockAudio();
@@ -146,6 +132,23 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
       <div className="hero-horizon" aria-hidden="true" />
       <div className="hero-scan" aria-hidden="true" />
 
+      {/* Account chip — pinned top-left when logged in */}
+      {phase === 'home' && isAuthenticated && me?.callsign && (
+        <div className="hero-account-chip">
+          <span className="hero-account-dot" />
+          <span className="hero-account-name">{me.callsign}</span>
+          <button
+            type="button"
+            className="hero-account-logout"
+            onClick={() => signOut()}
+            title={t('login.signOut', lang)}
+            aria-label={t('login.signOut', lang)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="start-overlay">
         <div className="start-lang-corner">
           <LangSwitcher />
@@ -181,33 +184,15 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
 
               <button
                 type="button"
-                className={`hero-cta hero-cta-secondary ${channelOpen ? 'active' : ''}`}
-                onClick={() => setChannelOpen((v) => !v)}
+                className="hero-cta hero-cta-secondary"
+                onClick={onEcho}
               >
-                <span className="hero-cta-label">
-                  {channelOpen ? t('hero.closeChannel', lang) : t('hero.openChannelCta', lang)}
-                </span>
+                <span className="hero-cta-label">{t('hero.openChannelCta', lang)}</span>
                 <span className="hero-cta-sub">{t('hero.openChannelSub', lang)}</span>
               </button>
             </div>
 
-            {isAuthenticated && (
-              <button
-                type="button"
-                className="hero-logout"
-                onClick={() => signOut()}
-              >
-                {t('login.signOut', lang)}
-              </button>
-            )}
-
             {startError && <div className="hero-error">{startError}</div>}
-
-            {channelOpen && (
-              <div ref={channelDrawerRef} className="hero-channel-drawer">
-                <OpenChannel />
-              </div>
-            )}
           </div>
         )}
 

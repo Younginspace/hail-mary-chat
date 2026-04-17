@@ -389,19 +389,34 @@ const translations = {
     ja: 'Rockyが覚えてる',
   },
   'hero.openChannelCta': {
-    zh: '公共频道',
-    en: 'OPEN CHANNEL',
-    ja: '公共チャンネル',
+    zh: 'Rocky Echo',
+    en: 'ROCKY ECHO',
+    ja: 'Rocky Echo',
   },
   'hero.openChannelSub': {
-    zh: '听 Rocky 广播',
-    en: 'Listen to broadcast',
-    ja: '放送を聞く',
+    zh: '听听 Rocky 平时会说什么',
+    en: 'Listen to preset broadcasts',
+    ja: 'プリセット放送を聞く',
   },
   'hero.closeChannel': {
     zh: '收起频道',
     en: 'Close channel',
     ja: 'チャンネルを閉じる',
+  },
+  'echo.hint': {
+    zh: '频道只读 · 点问题听 Rocky 回答',
+    en: 'Read-only channel · tap a question to hear Rocky',
+    ja: '読み取り専用 · 質問をタップ',
+  },
+  'echo.allAnswered': {
+    zh: '所有预置问题都听过了。想自己问 Rocky？回去 Dial In。',
+    en: "That's all the presets. Want to ask Rocky yourself? Dial in.",
+    ja: 'プリセットは全部。自分で話したい？ダイヤルイン。',
+  },
+  'echo.back': {
+    zh: '← 返回首页',
+    en: '← Back home',
+    ja: '← ホームに戻る',
   },
   'channel.title': {
     zh: 'OPEN CHANNEL · 公共频道',
