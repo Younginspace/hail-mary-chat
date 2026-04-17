@@ -57,6 +57,7 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const chatPaneRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
   const loggedIdsRef = useRef<Set<string>>(new Set());
@@ -118,6 +119,21 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
     lastSpokenIdRef.current = lastMsg.id;
     speak(lastMsg.content, lang, lastMsg.id);
   }, [messages, speak, lang]);
+
+  // Auto-focus the input when Rocky finishes replying — desktop only.
+  // `(pointer: fine)` filters out touch devices, so mobile doesn't trigger
+  // the soft keyboard every reply.
+  useEffect(() => {
+    if (isLoading || isEnded) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'assistant' || last.isStreaming) return;
+    if (typeof window === 'undefined') return;
+    if (!window.matchMedia('(pointer: fine)').matches) return;
+    // Skip focus when the export menu is open — the user is interacting
+    // with it and we'd yank focus away mid-flow.
+    if (exportOpen) return;
+    textareaRef.current?.focus();
+  }, [messages, isLoading, isEnded, exportOpen]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -343,6 +359,7 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
         ) : (
           <form className="input-area" onSubmit={handleSubmit}>
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
