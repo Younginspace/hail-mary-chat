@@ -454,9 +454,14 @@ const translations = {
     ja: 'Rockyのプライベートチャンネルにダイヤルイン',
   },
   'dialin.back': {
-    zh: '← 返回公共频道',
-    en: '← Back to Open Channel',
-    ja: '← 公共チャンネルに戻る',
+    zh: '返回首页',
+    en: 'Back',
+    ja: '戻る',
+  },
+  'dialin.passphraseHint': {
+    zh: '至少 8 位',
+    en: 'At least 8 characters',
+    ja: '8文字以上',
   },
   'dialin.callsignPlaceholder': {
     zh: 'Ryland',

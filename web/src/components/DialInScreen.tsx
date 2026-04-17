@@ -96,10 +96,6 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
 
   return (
     <div className="dialin-panel">
-      <button type="button" className="dialin-back" onClick={onBack} disabled={submitting}>
-        {t('dialin.back', lang)}
-      </button>
-
       <div className="dialin-title">{t('dialin.title', lang)}</div>
 
       <div className="dialin-tabs">
@@ -125,14 +121,17 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
         </button>
       </div>
 
-      <div className="dialin-mode-hint">
-        {mode === 'signUp' ? t('dialin.signupHint', lang) : t('dialin.signinHint', lang)}
-      </div>
-
       <form className="dialin-form" onSubmit={handleSubmit}>
         {mode === 'signUp' && (
           <label className="dialin-label">
-            <span>{t('login.displayNameLabel', lang)}</span>
+            <span className="dialin-label-row">
+              <span>{t('login.displayNameLabel', lang)}</span>
+              {callsignStatus !== 'idle' && (
+                <span className={`dialin-callsign-status status-${callsignStatus}`}>
+                  {statusHint[callsignStatus]}
+                </span>
+              )}
+            </span>
             <input
               type="text"
               required
@@ -143,11 +142,6 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
               autoComplete="nickname"
               autoFocus
             />
-            {callsignStatus !== 'idle' && (
-              <span className={`dialin-callsign-status status-${callsignStatus}`}>
-                {statusHint[callsignStatus]}
-              </span>
-            )}
           </label>
         )}
 
@@ -164,7 +158,10 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
         </label>
 
         <label className="dialin-label">
-          <span>{t('login.passwordLabel', lang)}</span>
+          <span className="dialin-label-row">
+            <span>{t('login.passwordLabel', lang)}</span>
+            <span className="dialin-hint-inline">{t('dialin.passphraseHint', lang)}</span>
+          </span>
           <input
             type="password"
             required
@@ -184,7 +181,15 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
               ? t('login.submitSignIn', lang)
               : t('login.submitSignUp', lang)}
         </button>
+
+        <div className="dialin-mode-hint">
+          {mode === 'signUp' ? t('dialin.signupHint', lang) : t('dialin.signinHint', lang)}
+        </div>
       </form>
+
+      <button type="button" className="dialin-back" onClick={onBack} disabled={submitting}>
+        ← {t('dialin.back', lang)}
+      </button>
     </div>
   );
 }
