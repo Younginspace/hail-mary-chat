@@ -175,6 +175,47 @@ const translations = {
     ja: '削除',
   },
 
+  // ===== Affinity levels (Rocky persona names — kept English) =====
+  'level.1.name': { zh: 'Earth Signal', en: 'Earth Signal', ja: 'Earth Signal' },
+  'level.2.name': { zh: 'Good Human', en: 'Good Human', ja: 'Good Human' },
+  'level.3.name': { zh: 'Friend', en: 'Friend', ja: 'Friend' },
+  'level.4.name': { zh: 'Fist My Bump', en: 'Fist My Bump', ja: 'Fist My Bump' },
+  'level.upTitle': {
+    zh: 'Rocky 升级了对你的看法',
+    en: 'Rocky has a new name for you',
+    ja: 'Rockyの呼び方が変わった',
+  },
+  'level.upSubtitle': {
+    zh: '{from} → {to}',
+    en: '{from} → {to}',
+    ja: '{from} → {to}',
+  },
+  'level.upVoiceBonus': {
+    zh: '语音额度 +{n}',
+    en: '+{n} voice plays',
+    ja: '音声+{n}',
+  },
+  'level.upImageBonus': {
+    zh: 'Rocky 可以为你画 {n} 张图',
+    en: 'Rocky can draw {n} picture(s) for you',
+    ja: 'Rockyが{n}枚描ける',
+  },
+  'level.upMusicBonus': {
+    zh: 'Rocky 可以为你做 {n} 段音乐',
+    en: 'Rocky can compose {n} piece(s) for you',
+    ja: 'Rockyが{n}曲作れる',
+  },
+  'level.upVideoBonus': {
+    zh: 'Rocky 可以为你录一次视频（一生一次）',
+    en: 'Rocky can record one video for you (once in a lifetime)',
+    ja: 'Rockyが一度だけ動画を撮れる（一生に一度）',
+  },
+  'level.upContinue': {
+    zh: '继续通讯',
+    en: 'Continue',
+    ja: '通信続行',
+  },
+
   // ===== Accessibility (aria-label / title) =====
   'aria.toggleHologram': {
     zh: '查看 Rocky 全息影像',

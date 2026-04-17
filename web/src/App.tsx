@@ -6,6 +6,7 @@ import StartScreen from './components/StartScreen';
 import { LangProvider } from './i18n/LangContext';
 import { preloadAllRockyAudio } from './utils/rockyAudio';
 import type { ChatMode } from './utils/playLimit';
+import type { LevelUpPayload } from './utils/sessionApi';
 import './styles/terminal.css';
 
 type AppPhase = 'start' | 'chat' | 'echo' | 'favorites';
@@ -14,16 +15,21 @@ export default function App() {
   const [phase, setPhase] = useState<AppPhase>('start');
   const [chatMode, setChatMode] = useState<ChatMode>('text');
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [pendingLevelUp, setPendingLevelUp] = useState<LevelUpPayload | null>(null);
 
   useEffect(() => {
     preloadAllRockyAudio();
   }, []);
 
-  const handleConnected = useCallback((mode: ChatMode, session_id: string) => {
-    setChatMode(mode);
-    setSessionId(session_id);
-    setPhase('chat');
-  }, []);
+  const handleConnected = useCallback(
+    (mode: ChatMode, session_id: string, levelUp: LevelUpPayload | null) => {
+      setChatMode(mode);
+      setSessionId(session_id);
+      setPendingLevelUp(levelUp);
+      setPhase('chat');
+    },
+    []
+  );
 
   const handleEcho = useCallback(() => {
     setSessionId(null);
@@ -60,6 +66,8 @@ export default function App() {
           sessionId={sessionId}
           onBack={handleBackToStart}
           onOpenFavorites={handleFavorites}
+          initialLevelUp={pendingLevelUp}
+          onLevelUpDismiss={() => setPendingLevelUp(null)}
         />
       )}
       {phase === 'echo' && <EchoInterface onBack={handleBackToStart} />}

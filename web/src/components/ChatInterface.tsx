@@ -23,6 +23,8 @@ import Starfield from './Starfield';
 import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
 import LangSwitcher from './LangSwitcher';
+import LevelUpCeremony from './LevelUpCeremony';
+import type { LevelUpPayload } from '../utils/sessionApi';
 
 function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
@@ -43,6 +45,8 @@ interface ChatInterfaceProps {
   sessionId: string;
   onBack: () => void;
   onOpenFavorites: () => void;
+  initialLevelUp: LevelUpPayload | null;
+  onLevelUpDismiss: () => void;
 }
 
 // Mobile-only view state. Desktop CSS shows both panes regardless.
@@ -50,7 +54,14 @@ type MobileView = 'chat' | 'hologram';
 
 const SWIPE_THRESHOLD = 80; // px
 
-export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites }: ChatInterfaceProps) {
+export default function ChatInterface({
+  mode,
+  sessionId,
+  onBack,
+  onOpenFavorites,
+  initialLevelUp,
+  onLevelUpDismiss,
+}: ChatInterfaceProps) {
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
   const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
@@ -486,6 +497,9 @@ export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites
           </div>
           {isAuthenticated && me?.callsign && (
             <span className="account-chip" title={me.email ?? ''}>
+              {me.affinity_level != null && me.affinity_level > 1 && (
+                <span className={`level-badge lv-${me.affinity_level}`}>Lv{me.affinity_level}</span>
+              )}
               ● {me.callsign}
               <button
                 type="button"
@@ -531,6 +545,10 @@ export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites
 
         {(exportError || favError) && (
           <div className="export-error">{exportError ?? favError}</div>
+        )}
+
+        {initialLevelUp && (
+          <LevelUpCeremony payload={initialLevelUp} onClose={onLevelUpDismiss} />
         )}
 
         {isEnded ? (

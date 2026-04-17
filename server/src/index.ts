@@ -490,11 +490,21 @@ app.get("/api/me", async (c) => {
     return c.json({ error: "not authenticated" }, 401);
   }
   const user = await getAuthedUser();
+  let affinity_level = 1;
+  if (user) {
+    const row = await db
+      .select({ affinity_level: users.affinity_level })
+      .from(users)
+      .where(eq(users.id, user.user_id))
+      .limit(1);
+    affinity_level = row[0]?.affinity_level ?? 1;
+  }
   return c.json({
     ok: true,
     email: auth.user.email,
     callsign: user?.callsign ?? null,
     adopted: user != null,
+    affinity_level,
   });
 });
 
@@ -514,6 +524,45 @@ app.post("/api/session/start", async (c) => {
 
   const session_id = crypto.randomUUID();
   const now = Date.now();
+
+  // Before creating the session, atomically consume any pending level-up
+  // flag so the client can ceremony it exactly once.
+  const userState = await db
+    .select({
+      affinity_level: users.affinity_level,
+      pending_level_up: users.pending_level_up,
+      image_credits: users.image_credits,
+      music_credits: users.music_credits,
+      video_credits: users.video_credits,
+    })
+    .from(users)
+    .where(eq(users.id, user.user_id))
+    .limit(1);
+
+  let level_up: {
+    from: number;
+    to: number;
+    image_credits: number;
+    music_credits: number;
+    video_credits: number;
+  } | null = null;
+  if (userState.length > 0 && userState[0].pending_level_up != null) {
+    const to = userState[0].pending_level_up;
+    const from = Math.max(1, to - 1);
+    level_up = {
+      from,
+      to,
+      image_credits: userState[0].image_credits,
+      music_credits: userState[0].music_credits,
+      video_credits: userState[0].video_credits,
+    };
+    // Clear the flag — only show once.
+    await db
+      .update(users)
+      .set({ pending_level_up: null })
+      .where(eq(users.id, user.user_id));
+  }
+
   await db.insert(sessions).values({
     id: session_id,
     user_id: user.user_id,
@@ -523,7 +572,12 @@ app.post("/api/session/start", async (c) => {
     turn_count: 0,
   });
 
-  return c.json({ session_id, unlimited: true });
+  return c.json({
+    session_id,
+    unlimited: true,
+    affinity_level: userState[0]?.affinity_level ?? 1,
+    level_up,
+  });
 });
 
 app.post("/api/session/end", async (c) => {

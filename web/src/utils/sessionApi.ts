@@ -6,9 +6,19 @@ import type { ChatMode } from './playLimit';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+export interface LevelUpPayload {
+  from: number;
+  to: number;
+  image_credits: number;
+  music_credits: number;
+  video_credits: number;
+}
+
 export interface StartSessionResult {
   ok: true;
   session_id: string;
+  affinity_level: number;
+  level_up: LevelUpPayload | null;
 }
 export interface StartSessionDenied {
   ok: false;
@@ -32,8 +42,17 @@ export async function startSession(
     if (!res.ok) {
       return { ok: false, reason: 'server' };
     }
-    const json = (await res.json()) as { session_id: string };
-    return { ok: true, session_id: json.session_id };
+    const json = (await res.json()) as {
+      session_id: string;
+      affinity_level?: number;
+      level_up?: LevelUpPayload | null;
+    };
+    return {
+      ok: true,
+      session_id: json.session_id,
+      affinity_level: json.affinity_level ?? 1,
+      level_up: json.level_up ?? null,
+    };
   } catch (err) {
     console.warn('startSession failed', err);
     return { ok: false, reason: 'network' };

@@ -9,7 +9,15 @@
  */
 
 import { db, vars, secret } from "edgespark";
-import { memories as memoriesTable, messages as messagesTable, rapport, sessions } from "@defs";
+import {
+  memories as memoriesTable,
+  messages as messagesTable,
+  rapport,
+  rapport_thresholds,
+  sessions,
+  users,
+  voice_credit_ledger,
+} from "@defs";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
@@ -371,5 +379,99 @@ export async function consolidateSession(session_id: string): Promise<void> {
 
   console.info(
     `consolidate: session ${session_id} user ${session.user_id} → +${facts.length} facts, −${supersededCount} superseded, −${forgotCount} forgot, trustΔ=${trustDelta}, warmthΔ=${warmthDelta}`
+  );
+
+  // 7. Affinity level check — compute new level from the just-updated rapport
+  //    and, if higher than stored users.affinity_level, grant the unlock
+  //    bundle and mark pending_level_up so session/start can ceremony it.
+  try {
+    await checkLevelUp(session.user_id, session_id);
+  } catch (err) {
+    console.error("level check failed — skipping:", err);
+  }
+}
+
+// Rapport-driven level unlock. Called after consolidate() updates rapport.
+// Safe to call any time — idempotent: only grants once per upward level change.
+async function checkLevelUp(user_id: string, session_id: string): Promise<void> {
+  const rapRow = await db
+    .select({ trust: rapport.trust, warmth: rapport.warmth })
+    .from(rapport)
+    .where(eq(rapport.user_id, user_id))
+    .limit(1);
+  if (rapRow.length === 0) return;
+  const { trust, warmth } = rapRow[0];
+
+  const thresholdsRows = await db.select().from(rapport_thresholds);
+  if (thresholdsRows.length === 0) return; // unseeded — nothing to do
+  // Highest level whose threshold is satisfied.
+  let newLevel = 1;
+  for (const row of thresholdsRows) {
+    const okTrust = trust >= row.trust_min;
+    const okWarmth = warmth >= row.warmth_min;
+    const ok = row.combinator === "AND" ? okTrust && okWarmth : okTrust || okWarmth;
+    if (ok && row.level > newLevel) newLevel = row.level;
+  }
+
+  const userRow = await db
+    .select({
+      affinity_level: users.affinity_level,
+      voice_credits: users.voice_credits,
+    })
+    .from(users)
+    .where(eq(users.id, user_id))
+    .limit(1);
+  if (userRow.length === 0) return;
+  const curLevel = userRow[0].affinity_level;
+  if (newLevel <= curLevel) return;
+
+  // Credit bundle per milestone (plan table):
+  //   Lv2: +10 TTS · 3 image
+  //   Lv3: +30 TTS · 5 music
+  //   Lv4: +50 TTS · 1 video (lifetime)
+  const voiceBonusTable: Record<number, number> = { 2: 10, 3: 30, 4: 50 };
+  const imageTable: Record<number, number> = { 2: 3 };
+  const musicTable: Record<number, number> = { 3: 5 };
+  const videoTable: Record<number, number> = { 4: 1 };
+
+  let voiceBonus = 0;
+  let imageBonus = 0;
+  let musicBonus = 0;
+  let videoBonus = 0;
+  // Grant every unlock between curLevel+1 .. newLevel (in case user jumps
+  // two levels from a single session — possible with large trust/warmth delta).
+  for (let l = curLevel + 1; l <= newLevel; l++) {
+    voiceBonus += voiceBonusTable[l] ?? 0;
+    imageBonus += imageTable[l] ?? 0;
+    musicBonus += musicTable[l] ?? 0;
+    videoBonus += videoTable[l] ?? 0;
+  }
+
+  const now = Date.now();
+  await db
+    .update(users)
+    .set({
+      affinity_level: newLevel,
+      pending_level_up: newLevel,
+      voice_credits: sql`${users.voice_credits} + ${voiceBonus}`,
+      image_credits: sql`${users.image_credits} + ${imageBonus}`,
+      music_credits: sql`${users.music_credits} + ${musicBonus}`,
+      video_credits: sql`${users.video_credits} + ${videoBonus}`,
+    })
+    .where(eq(users.id, user_id));
+
+  if (voiceBonus > 0) {
+    await db.insert(voice_credit_ledger).values({
+      id: crypto.randomUUID(),
+      user_id,
+      delta: voiceBonus,
+      reason: `level_up_${newLevel}`,
+      session_id,
+      created_at: now,
+    });
+  }
+
+  console.info(
+    `level_up: user ${user_id} ${curLevel} → ${newLevel} (trust=${trust.toFixed(2)}, warmth=${warmth.toFixed(2)}); +${voiceBonus} voice · +${imageBonus} image · +${musicBonus} music · +${videoBonus} video`
   );
 }
