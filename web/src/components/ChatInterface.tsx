@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, FormEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, FormEvent, KeyboardEvent } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useRockyTTS } from '../hooks/useRockyTTS';
 import { useAuthSession } from '../hooks/useAuthSession';
@@ -110,6 +110,17 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   }, [messages, speak, lang]);
 
   const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || isLoading) return;
+    stopTTS();
+    setInput('');
+    sendMessage(text);
+  };
+
+  // Enter submits; Shift+Enter inserts a newline (Slack-style).
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     const text = input.trim();
     if (!text || isLoading) return;
@@ -254,11 +265,13 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
         ) : (
           <form className="input-area" onSubmit={handleSubmit}>
-            <input
+            <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
               placeholder={t('chat.inputPlaceholder', lang)}
               disabled={isLoading}
+              rows={3}
               autoFocus
             />
             <button className="send-btn" type="submit" disabled={isLoading || !input.trim()}>

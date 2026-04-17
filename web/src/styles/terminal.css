@@ -479,7 +479,8 @@ body {
   backdrop-filter: blur(12px);
 }
 
-.input-area input {
+.input-area input,
+.input-area textarea {
   flex: 1;
   background: rgba(26, 35, 50, 0.6);
   border: 1px solid var(--text-dim);
@@ -492,16 +493,26 @@ body {
   transition: border-color 0.2s;
 }
 
-.input-area input:focus {
+.input-area textarea {
+  resize: vertical;
+  min-height: 76px;        /* ~3 lines */
+  max-height: 180px;       /* ~6-7 lines before scroll */
+  line-height: 1.5;
+}
+
+.input-area input:focus,
+.input-area textarea:focus {
   border-color: var(--accent-cyan);
   box-shadow: 0 0 8px rgba(0, 212, 170, 0.15);
 }
 
-.input-area input::placeholder {
+.input-area input::placeholder,
+.input-area textarea::placeholder {
   color: var(--text-dim);
 }
 
-.input-area input:disabled {
+.input-area input:disabled,
+.input-area textarea:disabled {
   opacity: 0.5;
 }
 
@@ -2242,6 +2253,15 @@ body {
   .chat-shell .chat-pane .status-bar {
     padding-left: 58px;
   }
+}
+
+/* Lift the input above the EdgeSpark watermark (bottom-right badge is
+   ~32px tall). Applied inside chat-shell so other surfaces are unaffected. */
+.chat-shell .chat-pane .input-area {
+  padding-bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+}
+.send-btn {
+  align-self: flex-end;
 }
 
 /* Desktop: toggle is irrelevant; still hide the button. */
