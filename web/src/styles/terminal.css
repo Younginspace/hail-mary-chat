@@ -241,20 +241,22 @@ body {
   100% { transform: translate(0, 0); }
 }
 
-/* Signal indicator */
+/* Signal indicator — moved to bottom-left of the hologram pane as a
+   subtle watermark so it stops competing with the status bar. */
 .screen-signal {
   position: absolute;
-  top: 8px;
-  right: 10px;
+  bottom: 10px;
+  left: 12px;
   z-index: 4;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 9px;
+  letter-spacing: 2px;
   color: var(--accent-cyan);
   display: flex;
   align-items: center;
   gap: 6px;
-  opacity: 0.7;
-  text-shadow: 0 0 4px rgba(0, 212, 170, 0.5);
+  opacity: 0.35;
+  text-shadow: 0 0 4px rgba(0, 212, 170, 0.35);
 }
 
 .signal-dot {
@@ -677,14 +679,27 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--accent-cyan);
-  letter-spacing: 1px;
+  letter-spacing: 1.2px;
+  opacity: 0.7;
+}
+
+.mode-bar-divider {
+  color: rgba(214, 241, 233, 0.25);
+  margin: 0 8px;
 }
 
 .mode-bar-remaining {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--text-dim);
-  letter-spacing: 0.5px;
+  color: rgba(214, 241, 233, 0.55);
+  letter-spacing: 0.4px;
+}
+
+.status-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .quota-bar {
@@ -2812,4 +2827,156 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   letter-spacing: 0.3px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P5 F3: per-message action buttons (play / favorite) + favorites page
+   ═══════════════════════════════════════════════════════════════ */
+
+.message.rocky { position: relative; }
+.message-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(0, 212, 170, 0.18);
+}
+.msg-action {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid rgba(0, 212, 170, 0.28);
+  border-radius: 50%;
+  color: rgba(214, 241, 233, 0.6);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.msg-action:hover {
+  border-color: #00d4aa;
+  color: #00d4aa;
+  background: rgba(0, 212, 170, 0.08);
+}
+.msg-action.playing {
+  background: #00d4aa;
+  color: #001018;
+  border-color: #00d4aa;
+  box-shadow: 0 0 10px rgba(0, 212, 170, 0.45);
+}
+.msg-fav.favorited {
+  color: #ff6b8a;
+  border-color: rgba(255, 107, 138, 0.55);
+  background: rgba(255, 107, 138, 0.08);
+}
+.msg-fav.favorited:hover {
+  background: rgba(255, 107, 138, 0.18);
+}
+
+/* Favorites screen */
+.favorites-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.favorite-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: rgba(5, 14, 18, 0.55);
+  border: 1px solid rgba(0, 212, 170, 0.18);
+  border-radius: 6px;
+}
+.favorite-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.favorite-row-text {
+  color: rgba(214, 241, 233, 0.86);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.favorite-row-meta {
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: rgba(214, 241, 233, 0.42);
+  letter-spacing: 0.4px;
+}
+.favorite-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.favorite-row-actions button {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid rgba(0, 212, 170, 0.28);
+  color: rgba(214, 241, 233, 0.7);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.favorite-row-actions button:hover { border-color: #00d4aa; color: #00d4aa; }
+.favorite-row-actions .fav-remove:hover { border-color: #ff8080; color: #ff8080; background: rgba(255, 128, 128, 0.08); }
+.favorite-row-actions .fav-play.playing {
+  background: #00d4aa;
+  color: #001018;
+  border-color: #00d4aa;
+}
+.favorites-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: rgba(214, 241, 233, 0.55);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
+/* Icon button fits alongside export-toggle in the status-actions cluster. */
+.status-iconbtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid rgba(0, 212, 170, 0.35);
+  color: var(--accent-cyan);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.status-iconbtn:hover {
+  border-color: #00d4aa;
+  background: rgba(0, 212, 170, 0.08);
+}
+
+.hero-account-fav {
+  width: 22px; height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: rgba(214, 241, 233, 0.55);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.hero-account-fav:hover {
+  color: #ff6b8a;
+  background: rgba(255, 107, 138, 0.12);
 }

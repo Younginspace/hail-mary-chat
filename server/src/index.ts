@@ -24,6 +24,7 @@ import {
   audio_cache,
   buckets,
   daily_api_usage,
+  favorites,
   memories,
   messages as messagesTable,
   rapport,
@@ -713,6 +714,84 @@ app.get("/api/voice-credits", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+//  P5 F3 — Favorites (capped at 100 per user)
+// ═══════════════════════════════════════════════════════════════════
+
+const FAVORITES_CAP = 100;
+
+app.post("/api/favorites", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  type FavBody = {
+    message_content?: string;
+    lang?: string;
+    mood?: string;
+    source_session?: string;
+  };
+  const body: FavBody = await c.req.json<FavBody>().catch(() => ({} as FavBody));
+
+  const content = (body.message_content ?? "").trim();
+  if (!content) return c.json({ error: "content_required" }, 400);
+  if (content.length > 4000) return c.json({ error: "content_too_long" }, 400);
+
+  const lang = body.lang === "zh" || body.lang === "ja" ? body.lang : "en";
+  const voiceId = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const contentHash = await hashAudioContent(content, lang, voiceId);
+
+  const countRows = await db
+    .select({ c: sql<number>`count(*)` })
+    .from(favorites)
+    .where(eq(favorites.user_id, user.user_id));
+  const count = countRows[0]?.c ?? 0;
+  if (count >= FAVORITES_CAP) {
+    return c.json({ error: "favorites_full", cap: FAVORITES_CAP }, 409);
+  }
+
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  try {
+    await db.insert(favorites).values({
+      id,
+      user_id: user.user_id,
+      content_hash: contentHash,
+      message_content: content,
+      mood: body.mood ?? null,
+      lang,
+      source_session: body.source_session ?? null,
+      created_at: now,
+    });
+  } catch {
+    return c.json({ error: "already_favorited", content_hash: contentHash }, 409);
+  }
+
+  return c.json({ ok: true, id, content_hash: contentHash });
+});
+
+app.delete("/api/favorites/:id", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+  const id = c.req.param("id");
+  const result = await db
+    .delete(favorites)
+    .where(and(eq(favorites.id, id), eq(favorites.user_id, user.user_id)))
+    .returning({ id: favorites.id });
+  if (result.length === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.get("/api/favorites", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+  const rows = await db
+    .select()
+    .from(favorites)
+    .where(eq(favorites.user_id, user.user_id))
+    .orderBy(desc(favorites.created_at));
+  return c.json({ items: rows, cap: FAVORITES_CAP });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 //  P5 F2 — /api/tts  (cache-first, credit-metered, global-quota-gated)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -743,6 +822,22 @@ app.get("/api/tts", async (c) => {
 
   const contentHash = await hashAudioContent(text, lang, voiceId);
 
+  // ── 0. Favorite-aware free play ──
+  // If this content is already in the user's favorites, replay is free.
+  // Either the explicit ?favorite=true flag or a matching favorites row
+  // is enough to skip the credit deduction.
+  let freePlay = isFavorite;
+  if (!freePlay) {
+    const favRow = await db
+      .select({ id: favorites.id })
+      .from(favorites)
+      .where(
+        and(eq(favorites.user_id, user.user_id), eq(favorites.content_hash, contentHash))
+      )
+      .limit(1);
+    if (favRow.length > 0) freePlay = true;
+  }
+
   // ── 1. Try cache ──
   const cached = await db
     .select({ r2_key: audio_cache.r2_key })
@@ -766,9 +861,9 @@ app.get("/api/tts", async (c) => {
     console.warn(`audio_cache row hit but R2 missing for ${cached[0].r2_key}`);
   }
 
-  // ── 2. Cache miss — charge the user (unless replaying a favorite) ──
+  // ── 2. Cache miss — charge the user (unless it's a free play) ──
   const now = Date.now();
-  if (!isFavorite) {
+  if (!freePlay) {
     const deducted = await db
       .update(users)
       .set({ voice_credits: sql`${users.voice_credits} - 1` })
@@ -801,7 +896,7 @@ app.get("/api/tts", async (c) => {
 
   if (usage.length === 0) {
     // Global cap hit. Refund the credit so the user isn't punished for it.
-    if (!isFavorite) {
+    if (!freePlay) {
       await db
         .update(users)
         .set({ voice_credits: sql`${users.voice_credits} + 1` })

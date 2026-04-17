@@ -164,6 +164,31 @@ const translations = {
     en: 'Voice credits used up',
     ja: '音声残高ゼロ',
   },
+  'chat.favoritesFull': {
+    zh: '收藏夹已满（100 条上限），删几条再试',
+    en: 'Favorites full (100 max) — remove a few first',
+    ja: 'お気に入りが満杯（100件上限）、少し削除して',
+  },
+  'chat.favorites': {
+    zh: '收藏夹',
+    en: 'Favorites',
+    ja: 'お気に入り',
+  },
+  'chat.favoritesEmpty': {
+    zh: '还没收藏任何 Rocky 的话',
+    en: "Haven't favorited anything yet",
+    ja: 'まだお気に入りはない',
+  },
+  'chat.favoritesDownload': {
+    zh: '下载 MP3',
+    en: 'Download MP3',
+    ja: 'MP3ダウンロード',
+  },
+  'chat.favoritesRemove': {
+    zh: '取消收藏',
+    en: 'Remove',
+    ja: '削除',
+  },
 
   // ===== Suggested Questions =====
   'suggest.1': {

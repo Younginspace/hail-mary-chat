@@ -14,7 +14,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
   "users",
@@ -157,6 +157,32 @@ export const daily_api_usage = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.date, t.api, t.scope] }),
     index("idx_usage_date_api").on(t.date, t.api),
+  ]
+);
+
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F3 — Favorites (per user, capped at 100)
+// ═══════════════════════════════════════════════════════════════════
+
+export const favorites = sqliteTable(
+  "favorites",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    // Matches audio_cache.content_hash — repeat taps of the same content
+    // resolve to the same R2 key, so favorite replay stays free.
+    content_hash: text("content_hash").notNull(),
+    message_content: text("message_content").notNull(), // cleaned translation text
+    mood: text("mood"),                                  // happy | unhappy | …
+    lang: text("lang").notNull(),
+    source_session: text("source_session"),
+    created_at: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("idx_fav_user_hash").on(t.user_id, t.content_hash),
+    index("idx_fav_user_created").on(t.user_id, t.created_at),
   ]
 );
 

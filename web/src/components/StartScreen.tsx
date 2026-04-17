@@ -35,9 +35,10 @@ const CONNECTION_STEPS = [
 interface StartScreenProps {
   onConnected: (mode: ChatMode, sessionId: string) => void;
   onEcho: () => void;
+  onFavorites: () => void;
 }
 
-export default function StartScreen({ onConnected, onEcho }: StartScreenProps) {
+export default function StartScreen({ onConnected, onEcho, onFavorites }: StartScreenProps) {
   const { lang } = useLang();
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [phase, setPhase] = useState<Phase>('home');
@@ -137,6 +138,17 @@ export default function StartScreen({ onConnected, onEcho }: StartScreenProps) {
         <div className="hero-account-chip">
           <span className="hero-account-dot" />
           <span className="hero-account-name">{me.callsign}</span>
+          <button
+            type="button"
+            className="hero-account-fav"
+            onClick={onFavorites}
+            title={t('chat.favorites', lang)}
+            aria-label={t('chat.favorites', lang)}
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+            </svg>
+          </button>
           <button
             type="button"
             className="hero-account-logout"

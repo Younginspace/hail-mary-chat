@@ -124,7 +124,6 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
             {t('echo.back', lang)}
           </button>
           <span className="echo-badge">ROCKY ECHO</span>
-          <span className="delay">{t('chat.latency', lang)}</span>
           <LangSwitcher />
         </div>
 
