@@ -10,28 +10,34 @@
 
 import { db, vars, secret } from "edgespark";
 import { memories as memoriesTable, messages as messagesTable, rapport, sessions } from "@defs";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
-const MIN_TURNS = 3;
+const MIN_TURNS = 1;
 // Clamp token cost per consolidation.
-const MAX_INPUT_MESSAGES = 60;
+const MAX_INPUT_MESSAGES = 100;
 const EXTRACTION_MAX_TOKENS = 600;
 
 const EXTRACTION_SYSTEM_PROMPT = `You are the memory consolidator for a 3D alien character named Rocky (from the novel "Project Hail Mary") who has just finished an interstellar comm call with a human friend. Your job: read the raw conversation and extract structured memory Rocky will use in future calls to remember this friend.
 
+You will receive:
+1. The conversation transcript.
+2. (Optionally) Rocky's existing memories about this friend, prefixed with [EXISTING MEMORIES].
+
 Return ONLY a JSON object matching this schema — no prose, no markdown fences, no explanation:
 
 {
-  "summary": "1-2 sentence English summary of what this call was about (who the friend seemed to be, what topics came up)",
+  "summary": "1-2 sentence English summary of what this call was about",
   "facts": [
     {
       "kind": "fact" | "preference" | "topic" | "emotion",
-      "content": "short English sentence Rocky should remember (e.g. 'Friend lives in Shanghai', 'Friend likes building small software', 'Friend asked about Grace's research')",
-      "importance": 0.0 to 1.0
+      "content": "short English sentence Rocky should remember",
+      "importance": 0.0 to 1.0,
+      "supersedes": "(optional) exact content string of an existing memory this fact replaces/updates"
     }
   ],
+  "forget": ["(optional) exact content string of existing memories the friend asked Rocky to forget"],
   "rapport_delta": {
     "trust": -0.2 to 0.2,
     "warmth": -0.2 to 0.2,
@@ -41,7 +47,10 @@ Return ONLY a JSON object matching this schema — no prose, no markdown fences,
 }
 
 Rules:
-- Output at most 8 facts. Prefer high-signal facts over trivia.
+- Output at most 8 NEW facts. Prefer high-signal facts over trivia.
+- DEDUPLICATION: Do NOT repeat facts that already exist in [EXISTING MEMORIES]. Only extract genuinely new information from this conversation.
+- UPDATES: If the friend corrected or updated something from an existing memory (e.g., moved to a new city, changed job), include the new fact with "supersedes" set to the exact content string of the old memory it replaces.
+- FORGETTING: If the friend explicitly asked Rocky to forget, not remember, or stop mentioning something, add the exact content string(s) of the matching existing memory/memories to the "forget" array. Only do this for explicit requests — not for topic changes or mild discomfort.
 - Never invent facts the user did not state. If nothing substantive was said, return "facts": [] and small rapport delta.
 - Write everything in English, even if the conversation was Chinese / Japanese — memory is stored in a single language.
 - Facts should be written as Rocky-facing third-person statements about the friend.
@@ -52,11 +61,15 @@ interface ExtractedFact {
   kind: string;
   content: string;
   importance?: number;
+  /** Exact content string of an existing memory this fact replaces. */
+  supersedes?: string;
 }
 
 interface ExtractionResult {
   summary?: string;
   facts?: ExtractedFact[];
+  /** Exact content strings of existing memories the user asked to forget. */
+  forget?: string[];
   rapport_delta?: {
     trust?: number;
     warmth?: number;
@@ -103,7 +116,10 @@ function tryParseJson(text: string): ExtractionResult | null {
 
 const RETRY_DELAYS_MS = [1000, 3000, 9000]; // 3 retries on transient upstream errors
 
-async function callExtractor(transcript: string): Promise<ExtractionResult | null> {
+async function callExtractor(
+  transcript: string,
+  existingMemories: Array<{ content: string; kind: string }>,
+): Promise<ExtractionResult | null> {
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
   const apiKey = secret.get("MINIMAX_API_KEY");
@@ -112,11 +128,22 @@ async function callExtractor(transcript: string): Promise<ExtractionResult | nul
     return null;
   }
 
+  // Prepend existing memories to the transcript so the LLM can dedup and detect updates.
+  let userContent = "";
+  if (existingMemories.length > 0) {
+    userContent += "[EXISTING MEMORIES]\n";
+    for (const m of existingMemories) {
+      userContent += `- (${m.kind}) ${m.content}\n`;
+    }
+    userContent += "\n[CONVERSATION TRANSCRIPT]\n";
+  }
+  userContent += transcript;
+
   const body = JSON.stringify({
     model,
     messages: [
       { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-      { role: "user", content: transcript },
+      { role: "user", content: userContent },
     ],
     stream: false,
     temperature: 0.2,
@@ -210,8 +237,25 @@ export async function consolidateSession(session_id: string): Promise<void> {
     .map((m) => `[${m.role}] ${m.content}`)
     .join("\n");
 
+  // 2b. Fetch existing memories for dedup + forget detection.
+  const existingMems = await db
+    .select({
+      id: memoriesTable.id,
+      kind: memoriesTable.kind,
+      content: memoriesTable.content,
+    })
+    .from(memoriesTable)
+    .where(
+      and(
+        eq(memoriesTable.user_id, session.user_id),
+        isNull(memoriesTable.superseded_by),
+      )
+    )
+    .orderBy(desc(memoriesTable.importance))
+    .limit(50); // pass up to 50 existing memories for context
+
   // 3. Extract.
-  const result = await callExtractor(transcript);
+  const result = await callExtractor(transcript, existingMems);
   if (!result) {
     console.warn("consolidate: extractor returned nothing for", session_id);
     return;
@@ -229,8 +273,46 @@ export async function consolidateSession(session_id: string): Promise<void> {
     })
     .where(eq(sessions.id, session_id));
 
-  // 5. Insert memories.
+  // 5a. Handle "forget" requests — mark matching memories as superseded.
+  const forgetPatterns = Array.isArray(result.forget) ? result.forget : [];
+  let forgotCount = 0;
+  for (const pattern of forgetPatterns) {
+    if (typeof pattern !== "string" || pattern.trim().length === 0) continue;
+    // Find memory with exact or close content match.
+    const match = existingMems.find(
+      (m) => m.content === pattern || m.content.toLowerCase() === pattern.toLowerCase()
+    );
+    if (match) {
+      await db
+        .update(memoriesTable)
+        .set({ superseded_by: `forget:${session_id}` })
+        .where(eq(memoriesTable.id, match.id));
+      forgotCount++;
+    }
+  }
+  if (forgotCount > 0) {
+    console.info(`consolidate: forgot ${forgotCount} memories for user ${session.user_id}`);
+  }
+
+  // 5b. Handle "supersedes" — mark old memories replaced by new facts.
   const rawFacts = Array.isArray(result.facts) ? result.facts : [];
+  let supersededCount = 0;
+  for (const f of rawFacts) {
+    if (typeof f.supersedes === "string" && f.supersedes.trim().length > 0) {
+      const match = existingMems.find(
+        (m) => m.content === f.supersedes || m.content.toLowerCase() === f.supersedes!.toLowerCase()
+      );
+      if (match) {
+        await db
+          .update(memoriesTable)
+          .set({ superseded_by: session_id })
+          .where(eq(memoriesTable.id, match.id));
+        supersededCount++;
+      }
+    }
+  }
+
+  // 5c. Insert new memories.
   const facts = rawFacts
     .filter((f) => f && typeof f.content === "string" && f.content.trim().length > 0)
     .slice(0, 8)
@@ -288,10 +370,6 @@ export async function consolidateSession(session_id: string): Promise<void> {
   }
 
   console.info(
-    `consolidate: session ${session_id} user ${session.user_id} → ${facts.length} facts, trustΔ=${trustDelta}, warmthΔ=${warmthDelta}`
+    `consolidate: session ${session_id} user ${session.user_id} → +${facts.length} facts, −${supersededCount} superseded, −${forgotCount} forgot, trustΔ=${trustDelta}, warmthΔ=${warmthDelta}`
   );
-
-  // Silence unused-import warning for drizzle's `and` — kept for symmetry
-  // with index.ts and future refinements (e.g., partial consolidation).
-  void and;
 }

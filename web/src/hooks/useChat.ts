@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { streamChat } from '../utils/api';
 import type { ChatMessage } from '../utils/api';
-import { getRockySystemPrompt, getRockyGreeting, getRockyFarewell, getLastTurnHint, getRockyFewShots, ROCKY_API_CONFIG } from '../prompts/rocky';
+import { getRockyGreeting, getRockyFarewell, ROCKY_API_CONFIG } from '../prompts/rocky';
 import { findDefaultDialog } from '../utils/defaultDialogs';
 import { refundPlay } from '../utils/playLimit';
 import type { ChatMode } from '../utils/playLimit';
@@ -102,22 +102,9 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
       setIsLoading(true);
       setUserTurns(newTurnCount);
 
-      let systemContent = getRockySystemPrompt(lang);
-      if (newTurnCount === MAX_TURNS) {
-        systemContent += getLastTurnHint(lang);
-      }
-
-      const apiMessages: ChatMessage[] = [
-        { role: 'system', content: systemContent },
-      ];
-
-      // 注入 few-shot 示例（定口感，教格式，仅英文）
-      const fewShots = getRockyFewShots(lang);
-      for (const shot of fewShots) {
-        apiMessages.push({ role: shot.role, content: shot.content });
-      }
-
-      // 实际对话历史
+      // Build raw user/assistant chat history only — server handles
+      // system prompt, few-shots, memory context, and last-turn hint.
+      const apiMessages: ChatMessage[] = [];
       const history = [...messages, userMsg];
       for (const msg of history) {
         if (msg.id === 'greeting') {
@@ -182,7 +169,7 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
             refundPlay(mode);
           }
         },
-        { ...ROCKY_API_CONFIG, session_id: sessionId, lang }
+        { ...ROCKY_API_CONFIG, session_id: sessionId, lang, last_turn: newTurnCount === MAX_TURNS }
       );
     },
     [messages, isLoading, isEnded, userTurns, lang, sessionId, mode]
