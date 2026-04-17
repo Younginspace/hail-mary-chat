@@ -1,176 +1,179 @@
-# Hail Mary Chat — P5 Progress & Handoff
+# Hail Mary Chat — Branch Diff vs Production
 
-_Last updated: 2026-04-17_
-_Branch: `feat/edgespark-migration`_
-_Production: https://teaching-collie-6315.edgespark.app_
+_Last updated: 2026-04-17 (post P5 Review reliability/bot-defense batch)_
+_Branch: `feat/edgespark-migration` (many commits ahead of `main`)_
+_Production baseline: `main` @ `bb1bd95` (2026-04-07) — served at **rocky.savemoss.com** via old Cloudflare Pages (CNAME never cut over)_
+_EdgeSpark worker (deployed target): https://teaching-collie-6315.edgespark.app_
 
-A durable snapshot of where the P5 upgrade stands so the next session
-can pick up without re-reading the transcript. The authoritative
-companion docs are:
-
-- **Master plan**: `~/.claude/plans/steady-shimmying-lighthouse.md`
-  (feature breakdown + P5 review decisions)
-- **Memory**: `~/.claude/projects/-Users-yangyihan-Downloads/memory/hail-mary-progress.md`
-  (commit log by phase + key decisions)
+This doc is **diff-only**: what sits on `feat/edgespark-migration` but
+is NOT yet on `main`/`rocky.savemoss.com`. For the master plan see
+`P5_PLAN.md` (copy of `~/.claude/plans/steady-shimmying-lighthouse.md`).
+For runtime/admin usage of new secrets + endpoints see `ADMIN.md`.
 
 ---
 
-## Shipped features (in chronological order)
+## TL;DR
 
-| Phase | What shipped | Commit | Notes |
-|---|---|---|---|
-| P0 | Express → EdgeSpark Hono migration | `2e3cf5e` | |
-| P1 | D1 tables + anonymous device_id quota | `a92781e` | |
-| P2 | Async memory consolidation (MiniMax-M2.7) | `bfb2c5a` | |
-| P3+P4+v3.0 | Memory injection + email/password + particle visuals | `6518974` | |
-| Security/enhancements | Prompt server-side migration + dedup/decay/merge | `61f802b` | |
-| **P5 F1** | **Forced registration + Rocky Chat hero + Dial In + Open Channel** | `6cb887a` | Open Channel later renamed to Rocky Echo |
-| F1b+F1c | Two-pane chat (hologram + chat) + parallel CTAs + dynamic bg | `079b8f8` | |
-| F1d→F1g | CTA polish + 3-row textarea + scroll isolation + MD/PNG export + register fix + top-down hologram | several | |
-| F1h | Open Channel restored to 6 `defaultDialogs` with pre-recorded mp3s | `a7042e3` | |
-| F1i | Rocky Echo screen + top-left account chip + remembered email | `f9b8bc6` | |
-| F1k | DialIn layout polish (back to bottom, mode hint under CONNECT) | `a93754f` | |
-| **P5 F2** | **Voice credits + R2 TTS cache + daily API accounting** | `a4fc329` | 10 voice credits on signup; rapport milestones add bonuses |
-| **P5 F3 + F1l** | **Per-message play + favorites (100 cap) + UI polish** | `28813e1` | `?favorite=true` replay free; status bar reorganized |
-| F1m + F1j | Mobile adaptation (landing/dialin/chat) + i18n audit | `15e18bb` | +8 new keys, 44 dead keys dropped, inline dicts moved to t() |
-| **P5 F6 Phase 1** | **Affinity levels + rapport-driven credit unlocks** | `6ed1370` | Lv1→Lv4, pending_level_up, LevelUpCeremony overlay |
-| F6 Phase 2 prep | Favorites hero pill + MiniMax probe + Phase 2 schema | `6a00d5d` | **current head** |
+Express-on-Pages MVP → EdgeSpark Hono worker with D1 + R2. Forced
+registration (Open Channel read-only + Dial In auth), voice-credit
+economy, rapport-driven 4-level affinity system, favourites, chat
+export (MD + PNG), MiniMax TTS + memory consolidation, media-gift
+scaffolding (paused), and a full set of P5 Review carryover
+reliability + bot-defense features shipped this round.
 
-Plan Features inventory vs P5 plan:
-- **F1** forced registration ✅
-- **F2** merge text/voice modes + voice credits ✅
-- **F3** play button + favorites ✅
-- **F4** export (MD + PNG) ✅
-- **F5** GSAP visual — partial (hero transitions only; message bubbles
-  still CSS fadeIn)
-- **F6** affinity + gifts — **Phase 1 ✅**, **Phase 2 in progress**
+Everything is on branch. The only thing between the branch and real
+users is a CNAME flip at the DNS provider.
 
 ---
 
-## Current architecture snapshot
+## Plan feature status (vs P5_PLAN.md)
 
-### Routes
-
-| Path | Auth | Purpose |
+| Plan Feature | Scope | Status |
 |---|---|---|
-| `GET /api/public/health` | No | Liveness probe |
-| `GET /api/public/check-callsign` | No | DialIn debounced availability |
-| `POST /api/adopt-device` | Yes | Link device + callsign |
-| `GET /api/me` | Yes | Profile + callsign + `affinity_level` |
-| `GET /api/voice-credits` | Yes | Voice credit balance |
-| `GET /api/favorites` / `POST` / `DELETE /:id` | Yes | Favorites CRUD (100 cap) |
-| `POST /api/session/start` | Yes | Creates session row; returns `affinity_level`, optional `level_up` payload |
-| `POST /api/session/end` | Yes | End + kicks consolidation (runs `checkLevelUp` after) |
-| `POST /api/session/message` | Yes | Append message |
-| `POST /api/chat` | Yes | SSE chat stream via MiniMax |
-| `GET /api/tts` | Yes | Cache-first TTS (R2). Skips credit on favorite match or `?favorite=true` |
-| `GET /api/probe-minimax` | Yes | Dev-only: probes MiniMax endpoints (`?what=all|image|music|lyrics|video|video-t2v|video-director|video-hailuo|video-i2v|lyrics-alt|vision|vision-retry`) |
-
-### Database (D1, migrations 0001–0006)
-
-- `users` — identity + credits: `voice_credits` (default 10), `affinity_level` (default 1), `pending_level_up`, `image_credits`, `music_credits`, `video_credits`, `video_used_at` (immutable)
-- `sessions`, `messages`, `memories`, `rapport` — dialog + memory
-- `voice_credit_ledger` — append-only audit (reasons include `consume_tts`, `register_bonus`, `refund_global_cap`, `level_up_{N}`)
-- `audio_cache` — SHA-256 keyed TTS cache → R2 bucket `rocky-audio`
-- `daily_api_usage` — composite PK (`date`, `api`, `scope`) for global + per-user counters (e.g. TTS 9,900/day user ceiling)
-- `favorites` — unique per `(user_id, content_hash)` + index on `(user_id, created_at)`
-- `rapport_thresholds` — seeded beta (Lv2 OR, Lv3/4 AND)
-- **Phase 2 (schema only, no endpoints yet):** `gifts`, `media_tasks`, `daily_global_locks`, `video_fallback_events`
-
-### Storage (R2)
-
-- Bucket `rocky-audio` — current use: `audio/<2-hex>/<hash>.mp3` for TTS cache. Phase 2 will reuse it for gift image/music/video via `r2_key` in `gifts`.
+| P0 Express → Hono | Worker runtime migration | ✅ branch only |
+| P1 Anonymous D1 + quota | `users` / `sessions` / `messages` | ✅ |
+| P2 Memory consolidation | MiniMax-M2.7 extractor + `memories` | ✅ |
+| P3+P4 Login + memory injection | better-auth email/password, prompt injection | ✅ |
+| Security/enhancements | prompts server-side, dedup/decay | ✅ |
+| **F1** Forced registration | Open Channel + Dial In + GSAP transitions | ✅ |
+| **F2** Voice credits + cache | 10-credit grant + R2 `audio_cache` + daily CAS | ✅ |
+| **F3** Play + favourites | Per-message play, 100-cap favourites, free replay | ✅ |
+| **F4** Export | Markdown + PNG long-shot (html2canvas) | ✅ |
+| **F5** GSAP polish | Hero transitions ✅ + message bubbles ✅ (this round) | ✅ |
+| **F6 Phase 1** Affinity levels | Lv1→Lv4, rapport check, `pending_level_up`, Ceremony | ✅ |
+| **F6 Phase 2 runtime** | `/api/generate-media` + prompt injection + `GiftBubble` | ⏸ code shipped, **paused** (MiniMax img2img has no character-lock; need model switch) |
+| **F6 Phase 2 LevelUp ceremony gift** | Track A — precise gift on overlay dismiss | ⏸ waits on gift unpause |
+| **F6 Phase 2 video path** | 2-step image-01 → I2V-01 + Hailuo CAS + 48h SLA | ⏸ waits on gift unpause |
+| MiniMax probes | image/music/video/lyrics/vision/i2i-rocky/music-cover | ✅ multiple rounds |
+| i18n audit | +8/−44 keys, mobile adaptation | ✅ |
 
 ---
 
-## MiniMax probe findings (2026-04-17)
+## Reliability + P5 Review carryover (this round)
 
-Confirmed with real API key via `/api/probe-minimax`:
+All shipped, all live on the worker.
 
-| API | Endpoint | Method | Result |
-|---|---|---|---|
-| Image | `POST /v1/image_generation` | sync | ✅ 200, ~25s, returns OSS URL (7-day expiry → **must copy to R2**). Body: `{model:"image-01", prompt, aspect_ratio, n, prompt_optimizer}` |
-| Music | `POST /v1/music_generation` | sync | ✅ 200, ~16s, returns hex audio. Body: `{model:"music-2.6", lyrics}` |
-| Lyrics | `POST /v1/lyrics_generation` | sync | ❌ 2013 invalid params on 3 variants. Use chat LLM to generate lyrics instead. |
-| Video (text2video) | `POST /v1/video_generation` | — | ❌ Current token plan does not include `video-01`, `T2V-01`, `T2V-01-Director`, `MiniMax-Hailuo-02`. |
-| Video (I2V) | `POST /v1/video_generation` | async | ⚠️ `I2V-01` works but `first_frame_image` is required. Lv4 video gift must be **two-step: image-01 → I2V-01**. |
-| Vision (M2.7 + abab6.5) | chat `/v1/chat/completions` with `content: [text, image_url]` | — | `abab6.5-chat` + `abab6.5g-chat` explicitly reject img. `M2.7` returned 529 overloaded — **retry needed**. |
+| Feature | Files | Notes |
+|---|---|---|
+| **Consolidation retry + dead-letter** (`consolidation_jobs` table) | `server/src/consolidate.ts`, migration `0007_small_ikaris.sql` | `runConsolidationJob(session_id)` wraps the bare logic. Attempts capped at 3. Failed jobs → `failed` (dead letter). Opportunistic sweep fires on every `/api/session/end`. Admin inspect: `GET /api/admin/consolidation-failed`. |
+| **Server-side GIFT tag stripping** | `server/src/index.ts` (`buildGiftStrippingTransform`), `web/src/utils/api.ts`, `web/src/hooks/useChat.ts` | `/api/chat` pipes MiniMax SSE through a TransformStream. `[GIFT:type:sub "desc"]` tags are detected across chunk boundaries, stripped from `data:` deltas, re-emitted as `event: gift_trigger` with a validated JSON payload. Client listens for the event and dispatches generation. Client regex kept as belt+suspenders fallback. |
+| **Duplicate user rows fix** | `server/src/index.ts` (`adopt-device` + `mergeUsersByAuthId`) | Root cause: `useAuthSession.ts` called `adopt-device` on every session change; backend keyed on `device_id` so every fresh browser / cleared localStorage spawned a new `users` row. Fix: auth-first lookup in adopt-device (idempotent update); `mergeUsersByAuthId` now reparents `sessions` / `memories` / `voice_credit_ledger` / `favorites` (uniq-hash-aware) / `gifts` / `rapport` (best trust/warmth) + merges credit columns (max) + **DELETEs zombie user rows**. Historical cleanup done via SQL (21 rows → 1). |
+| **rapport_thresholds recalibration** | `server/src/index.ts` (admin endpoints) | `GET /api/admin/rapport-percentiles` proposes Lv2=P50, Lv3=P75, Lv4=P95 with sample-size warning. `POST /api/admin/rapport-recalibrate` applies a reviewed body. Plan says wait ≥500 users before running. |
+| **Admin endpoints gate** | `server/src/defs/runtime.ts`, secret `ADMIN_TOKEN` | Constant-time compare on `X-Admin-Token` header. See `ADMIN.md` for usage. |
 
-**Pending user trigger** for `?what=vision-retry` (M2.7 ×2 retries + MiniMax-VL-01 / MiniMax-VL / abab7-chat / abab7-preview / MiniMax-M1). Paste JSON back next session.
+## Bot defenses (this round)
 
-If vision works: **F6.P2.7** — chat composer 📎 upload button, image → R2 → presigned URL → `image_url` content block in MiniMax chat body, Rocky "sees" user photos.
+| Feature | Files | Notes |
+|---|---|---|
+| **Per-IP register rate limit** | `server/src/index.ts`, `register_rate_limit` table, migration `0008_low_trish_tilby.sql` | 10 `users`-row creations per IP per rolling UTC hour. Key = (ip, hour_bucket), CAS via `onConflictDoUpdate` with `setWhere: count < cap`. Reads `CF-Connecting-IP` header. Applies to the fallback insert branches of `adopt-device`, NOT the auth-first idempotent update path. |
+| **7-day idle credit zero** | `server/src/index.ts` (`zeroCreditsIfStale`) | Runs background on `/api/me`. If user signed up ≥7 days ago with 0 sessions, zeroes `voice_credits` and logs to `voice_credit_ledger` with `reason='idle_7day_zero'`. Lazy — no cron needed. |
+| **Disposable email blacklist** | `server/src/index.ts` (`DISPOSABLE_EMAIL_DOMAINS`) | 17-domain static set (mailinator, 10minutemail, etc). Silent-rejects in `adopt-device` with `{error:'not_supported'}` so bots can't trivially iterate. |
 
----
+## UX batch (this round)
 
-## Phase 2 (F6) — remaining work
-
-Tasks filed: `#41`–`#46` + `#47` (vision) if vision works.
-
-### Ready to build now (no probe needed)
-
-1. **`/api/generate-media` POST** (`#42`, `#45`)
-   - Input: `{ type: 'image'|'music', description, session_id? }`
-   - Auth required; checks `affinity_level ≥ 2|3`, atomically decrements `image_credits` / `music_credits`
-   - Calls MiniMax sync API, fetches OSS URL (image) or parses hex (music), puts to R2 (reuse `rocky-audio` bucket with subpath `gift/<type>/<hash>`), inserts `gifts` row with `status='ready'`
-   - Music MVP: `music-2.6` BGM only. Plan's "BGM + TTS monologue overlay" is a v2 follow-up (needs ffmpeg-on-worker).
-   - Returns `{ id, status, r2_presigned_url }`
-2. **`GET /api/gifts`** — list for user
-3. **Rocky system prompt updates** (`#43`)
-   - `getRockySystemPrompt(lang, affinity_level, credits)` signature change
-   - Append level-gated hints: Lv≥2 `[GIFT:image "desc"]`, Lv≥3 `[GIFT:music "desc"]`, Lv≥4 `[GIFT:video "desc"]` (only when corresponding credits > 0)
-4. **Client: parse `[GIFT:xxx "desc"]`** (`#44`)
-   - In `useChat.ts` after stream completes, regex `/\[GIFT:(image|music|video)\s+"([^"]+)"\]/`, remove from displayed text, fire `POST /api/generate-media`
-   - Show placeholder bubble immediately ("Rocky is making something for you…"), on success replace with `GiftBubble`
-5. **`GiftBubble.tsx`** component
-   - `image` → `<img>` with fade-in + download
-   - `music` → `<audio controls>` + download
-   - `video` → `<video controls>` + download
-6. **LevelUpCeremony → gift delivery**
-   - When user closes the level-up overlay, kick off the milestone gift in the background (the plan's "track A — precise upgrade delivery" from the 2026-04-17 review)
-
-### Needs more plumbing
-
-7. **Video gift (`#46`)** — two-step `image-01 → I2V-01`
-   - Step 1 sync: `image-01` to produce first frame (hand-tuned Erid/Rocky prompt)
-   - Step 2 async: `POST /v1/video_generation` with `model: 'I2V-01'` + `first_frame_image` → returns `task_id`
-   - Poll: `GET /v1/query/video_generation?task_id=…` (endpoint unverified; add to probe)
-   - Atomic CAS on `daily_global_locks(date='…', api='hailuo_video')` with user's plan limit (~2 Fast + 2 full = 4/day). On failure → queue + user sees "预约明天" copy.
-   - 48h SLA check: cron or on-access flag; past 48h offer postcard downgrade (another `image-01` call with different prompt) and record `video_fallback_events.choice`.
-   - Respect `users.video_used_at` lifetime marker on success (once set, new Lv4 promotions do **not** re-grant `video_credits`).
-
-### Also from the plan review, still open
-
-- **Consolidation retry + `consolidation_jobs` dead-letter table** — currently `.catch(console.error)` swallows failures. Not Phase 2 per se but called out as a P1 risk.
-- **`rapport_thresholds` auto-recalibration job** — beta values hard-set; plan to recompute P50/P75/P95 after 500 real users.
-- **Bot defenses** (low priority at DAU≈100) — register IP rate limit, 7-day idle credits zeroing, disposable-email blacklist.
-- **F5 GSAP message animations** — nice-to-have polish.
+| Feature | Files | Notes |
+|---|---|---|
+| **Hang-up button** | `ChatInterface.tsx`, `i18n/index.ts`, `styles/terminal.css` | Red phone icon in status-bar actions. Calls `stopTTS` + `endSession` + `onBack`. |
+| **Echo replay + favorite** | `EchoInterface.tsx`, `MessageBubble.tsx` | Greeting + each preset now accept play/favorite. Favorite requires login (hidden for anon). Greeting exclusion removed from `MessageBubble`. |
+| **TTS latency shaved** | `useRockyTTS.ts`, `ChatInterface.tsx`, `EchoInterface.tsx` | Removed 3× 200ms hard-coded pauses + dropped greeting 500ms → 120ms. ~1.1s saved per reply. |
+| **Echo post-presets CTA → button** | `EchoInterface.tsx`, `i18n/index.ts`, `styles/terminal.css` | "Dial In" is now a pill button calling `onBack`. |
+| **F5 GSAP message bubble mount** | `MessageBubble.tsx`, `styles/terminal.css` | `gsap.fromTo` on mount, 0.32s power2.out, `prefers-reduced-motion` honored. CSS fadeIn dropped. |
+| **"首条消息偶发刷新" defensive** | `ChatInterface.tsx` | Form `noValidate` + `action="#"` + `autoComplete="off"`. **Root cause not yet found** — need console log on repro. |
+| **Auto-scroll tightened** | `ChatInterface.tsx` | `rAF` defer + `block:'end'` + force-scroll on user send. |
 
 ---
 
-## Current state reminders
+## Architecture snapshot (branch-only)
 
-- `MINIMAX_API_KEY` is set as an EdgeSpark secret; all MiniMax calls route through the server.
-- EdgeSpark CLI login: `edgespark login` → user opens printed URL in browser → re-run original command.
-- Deploy from project root: `edgespark deploy`.
-- DB migrations: `cd server && edgespark db generate` (author SQL in `drizzle/*.sql`), `edgespark db migrate`. Never edit a file once applied.
-- Test account: `debugtest` (Stardust was set up during F1e regression; also a `1111` remains). Ask user for passphrase if sign-in testing needed.
-- Playwright browser session is **not** authed across turns by default; for probe-style checks ask the user to hit the URL manually while logged in.
+### D1 migrations `0001`→`0008`
 
-## Known production-facing gaps
+- `0001`–`0005`: users / sessions / messages / memories / rapport, voice_credit_ledger, audio_cache, daily_api_usage, favorites, rapport_thresholds
+- `0006`: F6 Phase 2 gifts / media_tasks / daily_global_locks / video_fallback_events
+- `0007` **(this round)**: `consolidation_jobs`
+- `0008` **(this round)**: `register_rate_limit`
 
-- Video gifts blocked until user's MiniMax plan changes (only `I2V-01` available). The two-step image→I2V flow works, but 4/day global ceiling is very tight and 48h SLA fallback is required.
-- Vision (user uploads image → Rocky reacts) pending `?what=vision-retry` result.
-- `music_cover` not probed yet — plan's "首选: music-cover + Rocky 参考音频" still gated on spike. Music gift MVP will ship as plain `music-2.6` BGM.
+### Routes (post-batch)
+
+```
+Public (no auth):
+  GET    /api/public/health
+  GET    /api/public/check-callsign
+
+User-auth (session required):
+  GET    /api/me                         (also triggers zeroCreditsIfStale)
+  POST   /api/adopt-device               (auth-first, rate-limited, disposable-blocked)
+  GET    /api/voice-credits
+  GET    /api/favorites
+  POST   /api/favorites
+  DELETE /api/favorites/:id
+  POST   /api/session/start
+  POST   /api/session/end                (runs runConsolidationJob + sweep)
+  POST   /api/session/message
+  POST   /api/chat                       (SSE w/ gift_trigger transform)
+  GET    /api/tts                        (cache-first R2)
+  POST   /api/generate-media             (gift endpoint — paused usage)
+  GET    /api/gifts                      (gift list — paused usage)
+  GET    /api/probe-minimax              (?what=all|image|music|lyrics|video|video-*|vision|vision-retry|image-i2i|image-i2i-rocky|music-cover-rocky)
+
+Admin (X-Admin-Token required — see ADMIN.md):
+  POST   /api/admin/retry-consolidation  (?older_than_ms=…&limit=…)
+  GET    /api/admin/consolidation-failed
+  GET    /api/admin/rapport-percentiles
+  POST   /api/admin/rapport-recalibrate  ({ levels: [...] })
+```
+
+### Storage (R2 bucket `rocky-audio`)
+
+- `audio/<2hex>/<hash>.mp3` — cached TTS
+- `gift/<type>/<2hex>/<hash>.{jpg,mp3}` — gift media (paused usage)
+- `gift/ref/*.jpeg` — Rocky character reference images (realistic, comic1, rockyemoji)
+
+### Secrets
+
+- `MINIMAX_API_KEY` — upstream MiniMax (chat, TTS, image, music)
+- `ADMIN_TOKEN` — gates all `/api/admin/*` endpoints
+
+---
+
+## MiniMax probe findings (consolidated)
+
+Latest results — see `/api/probe-minimax?what=<kind>` for live re-runs.
+
+| API | Endpoint | Result |
+|---|---|---|
+| Image T2I | `POST /v1/image_generation` `image-01` sync | ✅ 200, ~25s, OSS URL 7-day expiry → mirror to R2 |
+| Image img2img (`reference_image`) | `POST /v1/image_generation` | ✅ 200, but **only loose style/composition** — does NOT preserve character IP. Confirmed visually |
+| Image img2img (`subject_reference: character`) | `POST /v1/image_generation` | ❌ 1000 "unknown error" on our plan — likely requires higher tier |
+| Music | `POST /v1/music_generation` `music-2.6` sync | ✅ 200, ~16s, hex audio |
+| Music-cover | `/v1/music_cover` variants | **Not yet probed with Rocky voice** — probe added as `?what=music-cover-rocky`, pending user trigger |
+| Lyrics | `POST /v1/lyrics_generation` | ❌ 2013 — use chat LLM for lyrics |
+| Video T2V family | `video_generation` w/ T2V-01/Director/Hailuo-02 | ❌ 2061 — excluded from plan |
+| Video I2V | `I2V-01` async w/ `first_frame_image` | ⚠️ Works. Requires 2-step image→I2V |
+| Vision (chat multimodal) | `content:[text, image_url]` | ❌ abab6.5 reject, M2.7 flaky. `vision-retry` probe prepared but never triggered by user |
+
+**Upshot for gifts**: MiniMax cannot character-lock img2img for Rocky
+on our plan. Plan next iteration: evaluate AnyCap nano-banana-pro
+(character-lock verified in the Rocky-sign template test) or upgrade
+MiniMax tier.
+
+---
+
+## Outstanding (not doable this round)
+
+| # | Item | Why deferred |
+|---|---|---|
+| 1 | **F6 Phase 2 gift runtime unlock** | Waits on model selection (AnyCap vs MiniMax paid) |
+| 2 | **`rocky.savemoss.com` CNAME → EdgeSpark** | User DNS action, not code |
+| 3 | **"首条消息偶发刷新" root-cause** | Needs repro + console log `[Rocky ErrorBoundary]` |
+| 4 | **rapport_thresholds live recalibration** | Script shipped, waiting on ≥500 real users (DAU≈100 → ~2-3 months) |
+| 5 | **LevelUpCeremony → precise gift delivery** (Track A) | Depends on #1 |
+| 6 | **Video gift SLA** (`video_fallback_events`) | Depends on #1 |
+| 7 | **Music-cover production integration** | Probe shipped, production flow depends on #1 |
 
 ---
 
 ## Where to start next session
 
-1. **Paste vision-retry probe JSON** if it was triggered.
-2. Decide: implement F6.P2.7 vision (if a model works) alongside Phase 2, or defer.
-3. Start `/api/generate-media` (image first — sync, shortest path to visible value).
-4. Add level-aware GIFT prompt fragments to `prompts/rocky.ts`.
-5. Client-side `[GIFT:...]` parser + `GiftBubble.tsx`.
-6. Deploy, smoke-test at Lv2 (register new account, fake rapport bump, trigger a gift).
-
-Then iterate to music, then video.
+1. If user triggered `?what=music-cover-rocky` or `?what=image-i2i-rocky` or `?what=vision-retry`, paste JSON.
+2. If model decision made for gift revival → unpause, wire new provider into `/api/generate-media`, and resume F6 Phase 2 code (already on branch).
+3. Otherwise: CNAME flip discussion, or pick any P2/P3 polish task.
