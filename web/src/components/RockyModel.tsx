@@ -180,15 +180,20 @@ export default function RockyModel({ isSpeaking }: Props) {
         rockyPivot.add(innerGroup);
         scene.add(rockyPivot);
 
-        // Camera — closer on mobile for bigger Rocky
+        // Camera — default pose is a slight top-down tilt, as if looking
+        // down into a holo-projector. Also dialed back closer so Rocky
+        // reads as a small contained projection, not a full-bleed model.
         const maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z);
         const fov = camera.fov * (Math.PI / 180);
         const isMobile = width < 600;
-        const distMult = isMobile ? 1.05 : 1.25;
+        const distMult = isMobile ? 1.55 : 1.75;
         const dist = (maxDim / 2) / Math.tan(fov / 2) * distMult;
-        camera.position.set(0, modelSize.y * 0.1, dist);
-        camera.lookAt(0, 0, 0);
-        controls.target.set(0, 0, 0);
+        // Lift camera well above the model and aim just below center so
+        // Rocky and his base ring both sit in the lower portion of the
+        // frame with visible top-down perspective.
+        camera.position.set(0, modelSize.y * 0.95, dist * 0.92);
+        camera.lookAt(0, -modelSize.y * 0.1, 0);
+        controls.target.set(0, -modelSize.y * 0.1, 0);
         controls.update();
 
         // Ring
