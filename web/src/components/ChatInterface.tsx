@@ -6,6 +6,7 @@ import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { endSession, logMessage } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
+import { exportChatMarkdown, exportChatImage } from '../utils/exportChat';
 import Starfield from './Starfield';
 import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
@@ -51,7 +52,10 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [input, setInput] = useState('');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatAreaRef = useRef<HTMLDivElement>(null);
   const chatPaneRef = useRef<HTMLDivElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
@@ -86,9 +90,15 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
     return () => window.removeEventListener('pagehide', onPageHide);
   }, [sessionId]);
 
-  // Auto-scroll to bottom on new messages
+  // Smart auto-scroll: only pull to bottom if the user is already near the
+  // bottom. If they've scrolled up to read history, leave them alone.
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const area = chatAreaRef.current;
+    if (!area) return;
+    const distanceFromBottom = area.scrollHeight - area.scrollTop - area.clientHeight;
+    if (distanceFromBottom < 120) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
   // Speak Rocky's message when it finishes streaming
@@ -132,6 +142,48 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const toggleMobileView = useCallback(() => {
     setMobileView((v) => (v === 'chat' ? 'hologram' : 'chat'));
   }, []);
+
+  const handleExportMarkdown = useCallback(() => {
+    setExportOpen(false);
+    setExportError(null);
+    try {
+      exportChatMarkdown(messages, me?.callsign ?? null, lang);
+    } catch (err) {
+      console.error(err);
+      setExportError(t('chat.exportFailed', lang));
+    }
+  }, [messages, me, lang]);
+
+  const handleExportImage = useCallback(async () => {
+    setExportOpen(false);
+    setExportError(null);
+    if (!chatPaneRef.current) return;
+    try {
+      await exportChatImage(chatPaneRef.current);
+    } catch (err) {
+      console.error(err);
+      setExportError(t('chat.exportFailed', lang));
+    }
+  }, [lang]);
+
+  // Close export menu on outside click / ESC
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('.export-menu') || target?.closest('.export-toggle')) return;
+      setExportOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setExportOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [exportOpen]);
 
   // Horizontal swipe to toggle mobile view. Attached only to chat-pane —
   // the hologram pane hosts OrbitControls which own its touch events.
@@ -216,6 +268,29 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           )}
           <span className="delay">{t('chat.latency', lang)}</span>
           <span className="turns">{turnsLeft}/{maxTurns} {t('chat.remaining', lang)}</span>
+          <div className="export-wrap">
+            <button
+              type="button"
+              className="export-toggle"
+              onClick={() => setExportOpen((v) => !v)}
+              title={t('chat.exportLabel', lang)}
+              aria-label={t('chat.exportLabel', lang)}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v13M6 10l6 6 6-6M5 21h14" />
+              </svg>
+            </button>
+            {exportOpen && (
+              <div className="export-menu" role="menu">
+                <button type="button" role="menuitem" onClick={handleExportMarkdown}>
+                  {t('chat.exportMarkdown', lang)}
+                </button>
+                <button type="button" role="menuitem" onClick={handleExportImage}>
+                  {t('chat.exportImage', lang)}
+                </button>
+              </div>
+            )}
+          </div>
           {isAuthenticated && me?.callsign && (
             <span className="account-chip" title={me.email ?? ''}>
               ● {me.callsign}
@@ -254,12 +329,14 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
           </div>
         )}
 
-        <div className="chat-area">
+        <div ref={chatAreaRef} className="chat-area">
           {messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} lang={lang} />
           ))}
           <div ref={chatEndRef} />
         </div>
+
+        {exportError && <div className="export-error">{exportError}</div>}
 
         {isEnded ? (
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
