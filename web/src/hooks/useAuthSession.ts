@@ -8,7 +8,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { esClient } from '../lib/edgespark';
 import type { AuthSession } from '@edgespark/web';
-import { getDeviceId } from '../utils/deviceId';
+import { getDeviceId, resetDeviceId } from '../utils/deviceId';
 
 export interface AdoptedMe {
   email: string | null;
@@ -89,10 +89,18 @@ export function useAuthSession() {
         password,
         name: callsign ?? email.split('@')[0],
       });
-      if (!res.error) {
-        const adopted = await adoptDevice(callsign);
-        if (adopted) setMe(adopted);
+      if (res.error) return res;
+      // EdgeSpark/better-auth doesn't always auto-establish a session after
+      // signUp (autoSignIn config can be off). Explicitly sign in so the
+      // cookie is guaranteed before adopt-device / startSession run.
+      // Safe to call even if already signed in.
+      const signInRes = await esClient.auth.signIn.email({ email, password });
+      if (signInRes.error) {
+        console.warn('auto-signIn after signUp failed', signInRes.error);
+        return signInRes;
       }
+      const adopted = await adoptDevice(callsign);
+      if (adopted) setMe(adopted);
       return res;
     },
     []
@@ -101,6 +109,9 @@ export function useAuthSession() {
   const signOut = useCallback(async () => {
     await esClient.auth.signOut();
     setMe(null);
+    // Clear the browser's anonymous device identity so the next account
+    // registering on this device doesn't collide with the previous owner.
+    resetDeviceId();
   }, []);
 
   return {

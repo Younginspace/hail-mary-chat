@@ -93,6 +93,7 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
     const result = await startSession(lang, 'text');
     if (!result.ok) {
       setStartError(t('login.errorGeneric', lang));
+      setPhase('home');
       return;
     }
     setPendingSessionId(result.session_id);
@@ -215,9 +216,12 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
             <DialInScreen
               onBack={() => setPhase('home')}
               onSuccess={() => {
+                // Session cookie + adoption happened inside signUp/signIn.
+                // A short tick lets React flush state before we issue the
+                // session/start request.
                 setTimeout(() => {
                   void beginConnection();
-                }, 500);
+                }, 200);
               }}
             />
           </div>
