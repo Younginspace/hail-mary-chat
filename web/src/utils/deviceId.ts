@@ -27,3 +27,15 @@ export function getDeviceId(): string {
     return generate();
   }
 }
+
+// Wipe the persisted device_id. Called on sign-out so the next user on the
+// same browser gets a fresh anonymous identity (prevents /api/adopt-device
+// 409 "device_linked_to_other_account" when account B tries to register on
+// a device still linked to account A).
+export function resetDeviceId(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}

@@ -399,7 +399,30 @@ app.post("/api/adopt-device", async (c) => {
 
   const row = existing[0];
   if (row.auth_user_id && row.auth_user_id !== authUser.id) {
-    return c.json({ error: "device_linked_to_other_account", user_id: row.id }, 409);
+    // Device is linked to a different auth account (e.g. previous user on
+    // a shared browser that missed the device-id reset). Instead of hard
+    // failing, create a fresh users row for this auth user with a
+    // synthetic device_id so downstream getAuthedUser() works normally.
+    const syntheticDeviceId = `synth-${authUser.id}-${now}`;
+    const id = crypto.randomUUID();
+    await db.insert(users).values({
+      id,
+      device_id: syntheticDeviceId,
+      email: authUser.email,
+      callsign: resolvedCallsign,
+      auth_user_id: authUser.id,
+      created_at: now,
+      last_seen_at: now,
+    });
+    await mergeUsersByAuthId(authUser.id);
+    const primaryRow = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.auth_user_id, authUser.id))
+      .orderBy(asc(users.created_at))
+      .limit(1);
+    const primaryId = primaryRow.length > 0 ? primaryRow[0].id : id;
+    return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
   }
 
   await db
