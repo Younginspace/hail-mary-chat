@@ -9,6 +9,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { esClient } from '../lib/edgespark';
 import type { AuthSession } from '@edgespark/web';
 import { getDeviceId, resetDeviceId } from '../utils/deviceId';
+import { rememberEmail } from '../utils/rememberedEmail';
 
 export interface AdoptedMe {
   email: string | null;
@@ -74,6 +75,7 @@ export function useAuthSession() {
   const signInEmail = useCallback(async (email: string, password: string) => {
     const res = await esClient.auth.signIn.email({ email, password });
     if (!res.error) {
+      rememberEmail(email);
       // Synchronously adopt so the caller can show success UI with a real
       // callsign rather than waiting for onSessionChange to race.
       const adopted = await adoptDevice();
@@ -90,6 +92,7 @@ export function useAuthSession() {
         name: callsign ?? email.split('@')[0],
       });
       if (res.error) return res;
+      rememberEmail(email);
       // EdgeSpark/better-auth doesn't always auto-establish a session after
       // signUp (autoSignIn config can be off). Explicitly sign in so the
       // cookie is guaranteed before adopt-device / startSession run.

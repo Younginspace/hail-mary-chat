@@ -3,6 +3,7 @@ import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { checkCallsign } from '../utils/sessionApi';
+import { loadRememberedEmail } from '../utils/rememberedEmail';
 
 type Mode = 'signUp' | 'signIn';
 type CallsignStatus = 'idle' | 'checking' | 'available' | 'taken' | 'invalid';
@@ -17,9 +18,12 @@ interface DialInScreenProps {
 export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
   const { lang } = useLang();
   const { signInEmail, signUpEmail } = useAuthSession();
-  const [mode, setMode] = useState<Mode>('signUp');
+  // Pre-pick Sign-in tab when we have a remembered email — likely a
+  // returning user. Fresh visitors land on Sign-up as before.
+  const rememberedEmail = loadRememberedEmail();
+  const [mode, setMode] = useState<Mode>(rememberedEmail ? 'signIn' : 'signUp');
   const [callsign, setCallsign] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(rememberedEmail);
   const [password, setPassword] = useState('');
   const [callsignStatus, setCallsignStatus] = useState<CallsignStatus>('idle');
   const [error, setError] = useState<string | null>(null);
