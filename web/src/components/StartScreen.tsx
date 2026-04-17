@@ -170,7 +170,7 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
                 className="hero-cta hero-cta-primary"
                 onClick={handleDialIn}
               >
-                <span className="hero-cta-icon" aria-hidden="true">📞</span>
+                <span className="hero-cta-badge">{t('hero.recommended', lang)}</span>
                 <span className="hero-cta-label">{t('hero.dialInCta', lang)}</span>
                 <span className="hero-cta-sub">
                   {isAuthenticated && me?.callsign
@@ -184,7 +184,6 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
                 className={`hero-cta hero-cta-secondary ${channelOpen ? 'active' : ''}`}
                 onClick={() => setChannelOpen((v) => !v)}
               >
-                <span className="hero-cta-icon" aria-hidden="true">📡</span>
                 <span className="hero-cta-label">
                   {channelOpen ? t('hero.closeChannel', lang) : t('hero.openChannelCta', lang)}
                 </span>
