@@ -4,9 +4,21 @@ import { useRockyTTS } from '../hooks/useRockyTTS';
 import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
-import { endSession, logMessage, fetchVoiceCredits } from '../utils/sessionApi';
+import {
+  endSession,
+  logMessage,
+  fetchVoiceCredits,
+  fetchFavorites,
+  addFavorite,
+  removeFavorite,
+  type FavoriteRow,
+} from '../utils/sessionApi';
+import { extractPlayableText, extractMood } from '../utils/messageCleanup';
+import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, exportChatImage } from '../utils/exportChat';
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
 import Starfield from './Starfield';
 import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
@@ -37,6 +49,7 @@ interface ChatInterfaceProps {
   mode: ChatMode;
   sessionId: string;
   onBack: () => void;
+  onOpenFavorites: () => void;
 }
 
 // Mobile-only view state. Desktop CSS shows both panes regardless.
@@ -44,7 +57,7 @@ type MobileView = 'chat' | 'hologram';
 
 const SWIPE_THRESHOLD = 80; // px
 
-export default function ChatInterface({ mode, sessionId, onBack }: ChatInterfaceProps) {
+export default function ChatInterface({ mode, sessionId, onBack, onOpenFavorites }: ChatInterfaceProps) {
   const { lang } = useLang();
   const maxTurns = mode === 'text' ? 50 : 10;
   const { messages, sendMessage, isLoading, error, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
@@ -56,6 +69,10 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [favoritesList, setFavoritesList] = useState<FavoriteRow[]>([]);
+  const [favError, setFavError] = useState<string | null>(null);
+  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const chatPaneRef = useRef<HTMLDivElement>(null);
@@ -150,6 +167,113 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
       setVoiceEnabled(false);
     }
   }, [ttsInsufficientCredits]);
+
+  // F3: load favorites once. The set only mutates via add/remove handlers.
+  useEffect(() => {
+    fetchFavorites().then((res) => {
+      if (res) setFavoritesList(res.items);
+    });
+  }, []);
+
+  // Stop any per-message playback on unmount.
+  useEffect(() => {
+    return () => {
+      playbackAudioRef.current?.pause();
+      playbackAudioRef.current = null;
+    };
+  }, []);
+
+  const findFavoriteFor = useCallback(
+    (msg: DisplayMessage): FavoriteRow | undefined => {
+      const clean = extractPlayableText(msg.content, lang);
+      if (!clean) return undefined;
+      return favoritesList.find((f) => f.message_content === clean);
+    },
+    [favoritesList, lang]
+  );
+
+  const handleMessagePlay = useCallback(
+    async (msg: DisplayMessage) => {
+      // Toggle-off if the same bubble is currently playing.
+      if (playingMsgId === msg.id) {
+        playbackAudioRef.current?.pause();
+        playbackAudioRef.current = null;
+        setPlayingMsgId(null);
+        return;
+      }
+      // Stop auto-TTS + any other manual clip first so only one thing plays.
+      stopTTS();
+      playbackAudioRef.current?.pause();
+
+      const text = extractPlayableText(msg.content, lang);
+      if (!text) return;
+
+      setFavError(null);
+      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}`;
+      let res: Response;
+      try {
+        res = await fetch(url, { credentials: 'include' });
+      } catch {
+        return;
+      }
+      if (res.status === 402) {
+        setVoiceCredits(0);
+        setVoiceEnabled(false);
+        return;
+      }
+      if (!res.ok) return;
+
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const audio = new Audio(blobUrl);
+      playbackAudioRef.current = audio;
+      setPlayingMsgId(msg.id);
+      const cleanup = () => {
+        URL.revokeObjectURL(blobUrl);
+        if (playbackAudioRef.current === audio) {
+          playbackAudioRef.current = null;
+          setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
+        }
+      };
+      audio.onended = cleanup;
+      audio.onerror = cleanup;
+      audio.play().catch(cleanup);
+
+      // Credits may have changed (cache miss on a non-favorite).
+      fetchVoiceCredits().then((r) => {
+        if (!r) return;
+        setVoiceCredits(r.remaining);
+      });
+    },
+    [playingMsgId, stopTTS, lang]
+  );
+
+  const handleToggleFavorite = useCallback(
+    async (msg: DisplayMessage) => {
+      setFavError(null);
+      const existing = findFavoriteFor(msg);
+      if (existing) {
+        const ok = await removeFavorite(existing.id);
+        if (ok) setFavoritesList((fs) => fs.filter((f) => f.id !== existing.id));
+        return;
+      }
+      const text = extractPlayableText(msg.content, lang);
+      if (!text) return;
+      const res = await addFavorite({
+        message_content: text,
+        lang,
+        mood: extractMood(msg.content),
+        source_session: sessionId,
+      });
+      if (res.ok) {
+        const reload = await fetchFavorites();
+        if (reload) setFavoritesList(reload.items);
+      } else if (res.reason === 'full') {
+        setFavError(t('chat.favoritesFull', lang));
+      }
+    },
+    [findFavoriteFor, lang, sessionId]
+  );
 
   // Auto-focus the input when Rocky finishes replying — desktop only.
   // `(pointer: fine)` filters out touch devices, so mobile doesn't trigger
@@ -304,6 +428,7 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
             </div>
             <span>ERID-LINK v2.1</span>
           </div>
+          <div className="status-actions">
           <button
             className={`tts-toggle ${voiceEnabled ? 'tts-on' : 'tts-off'}`}
             onClick={() => {
@@ -331,8 +456,17 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
             </svg>
             {voiceCredits != null && <span className="tts-credits">{voiceCredits}</span>}
           </button>
-          <span className="delay">{t('chat.latency', lang)}</span>
-          <span className="turns">{turnsLeft}/{maxTurns} {t('chat.remaining', lang)}</span>
+          <button
+            type="button"
+            className="status-iconbtn"
+            onClick={onOpenFavorites}
+            title={t('chat.favorites', lang)}
+            aria-label={t('chat.favorites', lang)}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+            </svg>
+          </button>
           <div className="export-wrap">
             <button
               type="button"
@@ -356,6 +490,7 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
               </div>
             )}
           </div>
+          </div>
           {isAuthenticated && me?.callsign && (
             <span className="account-chip" title={me.email ?? ''}>
               ● {me.callsign}
@@ -375,12 +510,10 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
         {error && <div className="error-bar">{error}</div>}
 
         <div className="mode-bar">
-          <span className="mode-bar-label">
-            {mode === 'voice' ? '📞' : '💬'}{' '}
-            {t(mode === 'voice' ? 'chat.modeVoice' : 'chat.modeText', lang)}
-          </span>
+          <span className="mode-bar-label">{t('chat.latency', lang)}</span>
+          <span className="mode-bar-divider">·</span>
           <span className="mode-bar-remaining">
-            {t('chat.modeRemaining', lang, { n: turnsLeft })}
+            {turnsLeft} / {maxTurns} {t('chat.remaining', lang).toLowerCase()}
           </span>
         </div>
 
@@ -396,12 +529,22 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
 
         <div ref={chatAreaRef} className="chat-area">
           {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} lang={lang} />
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              lang={lang}
+              onPlay={msg.role === 'assistant' ? handleMessagePlay : undefined}
+              onToggleFavorite={msg.role === 'assistant' ? handleToggleFavorite : undefined}
+              isFavorited={msg.role === 'assistant' ? findFavoriteFor(msg) != null : false}
+              isPlaying={playingMsgId === msg.id}
+            />
           ))}
           <div ref={chatEndRef} />
         </div>
 
-        {exportError && <div className="export-error">{exportError}</div>}
+        {(exportError || favError) && (
+          <div className="export-error">{exportError ?? favError}</div>
+        )}
 
         {isEnded ? (
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />

@@ -68,6 +68,68 @@ export interface VoiceCreditsResponse {
   remaining: number;
 }
 
+export interface FavoriteRow {
+  id: string;
+  user_id: string;
+  content_hash: string;
+  message_content: string;
+  mood: string | null;
+  lang: string;
+  source_session: string | null;
+  created_at: number;
+}
+
+export async function fetchFavorites(): Promise<{ items: FavoriteRow[]; cap: number } | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/favorites`, { credentials: 'include' });
+    if (!res.ok) return null;
+    return (await res.json()) as { items: FavoriteRow[]; cap: number };
+  } catch (err) {
+    console.warn('fetchFavorites failed', err);
+    return null;
+  }
+}
+
+export async function addFavorite(payload: {
+  message_content: string;
+  lang: Lang;
+  mood?: string | null;
+  source_session?: string | null;
+}): Promise<{ ok: true; id: string; content_hash: string } | { ok: false; reason: 'full' | 'exists' | 'server' }> {
+  try {
+    const res = await fetch(`${API_BASE}/api/favorites`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      if (body.error === 'favorites_full') return { ok: false, reason: 'full' };
+      return { ok: false, reason: 'exists' };
+    }
+    if (!res.ok) return { ok: false, reason: 'server' };
+    const body = (await res.json()) as { id: string; content_hash: string };
+    return { ok: true, ...body };
+  } catch (err) {
+    console.warn('addFavorite failed', err);
+    return { ok: false, reason: 'server' };
+  }
+}
+
+export async function removeFavorite(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/api/favorites/${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('removeFavorite failed', err);
+    return false;
+  }
+}
+
 export async function fetchVoiceCredits(): Promise<VoiceCreditsResponse | null> {
   try {
     const res = await fetch(`${API_BASE}/api/voice-credits`, {
