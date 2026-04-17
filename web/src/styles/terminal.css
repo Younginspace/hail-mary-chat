@@ -2258,7 +2258,7 @@ body {
 /* Lift the input above the EdgeSpark watermark (bottom-right badge is
    ~32px tall). Applied inside chat-shell so other surfaces are unaffected. */
 .chat-shell .chat-pane .input-area {
-  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   align-items: stretch;
 }
 .chat-shell .chat-pane .input-area .send-btn {
