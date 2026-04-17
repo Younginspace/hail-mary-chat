@@ -92,15 +92,16 @@ export default function ChatInterface({ mode, sessionId, onBack }: ChatInterface
     };
   }, [sessionId]);
 
-  // Also close on page visibility hidden (mobile tab swipe, browser close).
+  // Also close on actual page unload (tab close / navigate away).
+  // Using 'pagehide' instead of 'visibilitychange' — the latter fires on
+  // mobile keyboard show/hide, tab switch, share sheet, etc., which would
+  // prematurely end the session while the user is still chatting.
   useEffect(() => {
-    const onHidden = () => {
-      if (document.visibilityState === 'hidden') {
-        endSession(sessionId);
-      }
+    const onPageHide = () => {
+      endSession(sessionId);
     };
-    document.addEventListener('visibilitychange', onHidden);
-    return () => document.removeEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
   }, [sessionId]);
 
   // Auto-scroll to bottom

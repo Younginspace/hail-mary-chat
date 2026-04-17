@@ -241,11 +241,24 @@ export default function RockyModel({ isSpeaking }: Props) {
       (err) => console.error('[Rocky] Load error:', err)
     );
 
+    // WebGL context loss — stop the render loop instead of crashing React
+    let contextLost = false;
+    renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      contextLost = true;
+      cancelAnimationFrame(animId);
+    });
+    renderer.domElement.addEventListener('webglcontextrestored', () => {
+      contextLost = false;
+      animate();
+    });
+
     // Animation
     let animId: number;
     const startTime = performance.now();
 
     const animate = () => {
+      if (contextLost) return;
       animId = requestAnimationFrame(animate);
       const t = (performance.now() - startTime) / 1000;
 

@@ -12,10 +12,12 @@
 import { db, vars, secret, ctx } from "edgespark";
 import { auth } from "edgespark/http";
 import { memories, messages as messagesTable, rapport, sessions, users } from "@defs";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { consolidateSession } from "./consolidate";
+import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
+import type { Lang as RockyLang } from "./prompts/rocky";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -127,6 +129,11 @@ async function buildMemoryContext(
   lang: MemoryLang,
   callsign: string | null
 ): Promise<string | null> {
+  // Time-decayed scoring: score = importance / (1 + age_days / 30)
+  // This gives a ~30-day half-life — newer facts of equal importance rank higher.
+  // Naturally resolves conflicts: "moved to Beijing" (2 days ago) beats
+  // "lives in Shanghai" (60 days ago) at the same importance level.
+  const now = Date.now();
   const memRows = await db
     .select({
       kind: memories.kind,
@@ -134,8 +141,18 @@ async function buildMemoryContext(
       importance: memories.importance,
     })
     .from(memories)
-    .where(eq(memories.user_id, user_id))
-    .orderBy(desc(memories.importance), desc(memories.created_at))
+    .where(
+      and(
+        eq(memories.user_id, user_id),
+        isNull(memories.superseded_by),
+      )
+    )
+    .orderBy(
+      desc(
+        sql`(${memories.importance} * 1.0 / (1.0 + (${now} - ${memories.created_at}) / 86400000.0 / 30.0))`
+      ),
+      desc(memories.created_at)
+    )
     .limit(MEMORY_INJECT_TOP_N);
 
   const rapportRows = await db
@@ -189,6 +206,97 @@ async function buildMemoryContext(
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Cross-device memory merge — called after adopt-device links a device
+//  to an auth account. Merges sessions, memories, and rapport from all
+//  user rows sharing the same auth_user_id into a single primary user.
+//  Idempotent: safe to call multiple times (e.g., device C logs in later).
+// ═══════════════════════════════════════════════════════════════════
+
+async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
+  // 1. Find all user rows linked to this auth account.
+  const allUsers = await db
+    .select({ id: users.id, created_at: users.created_at })
+    .from(users)
+    .where(eq(users.auth_user_id, auth_user_id))
+    .orderBy(asc(users.created_at));
+
+  if (allUsers.length <= 1) return; // Nothing to merge.
+
+  // 2. Pick the earliest-created user as the primary.
+  const primaryId = allUsers[0].id;
+  const secondaryIds = allUsers.slice(1).map((u) => u.id);
+
+  // 3. Re-parent sessions and memories to the primary user (atomic batch).
+  //    Messages are scoped to session_id, so they follow automatically.
+  await db.batch([
+    db.update(sessions).set({ user_id: primaryId }).where(inArray(sessions.user_id, secondaryIds)),
+    db.update(memories).set({ user_id: primaryId }).where(inArray(memories.user_id, secondaryIds)),
+  ]);
+
+  // 4. Merge rapport: take MAX trust/warmth, most recent last_mood,
+  //    concatenate notes. Then delete secondary rapport rows.
+  const allRapport = await db
+    .select()
+    .from(rapport)
+    .where(inArray(rapport.user_id, [primaryId, ...secondaryIds]));
+
+  if (allRapport.length > 0) {
+    let bestTrust = 0.3;
+    let bestWarmth = 0.3;
+    let latestMood: string | null = null;
+    let latestUpdatedAt = 0;
+    const notesParts: string[] = [];
+
+    for (const r of allRapport) {
+      if (r.trust > bestTrust) bestTrust = r.trust;
+      if (r.warmth > bestWarmth) bestWarmth = r.warmth;
+      if (r.updated_at > latestUpdatedAt) {
+        latestUpdatedAt = r.updated_at;
+        latestMood = r.last_mood;
+      }
+      if (r.notes) notesParts.push(r.notes);
+    }
+
+    const mergedNotes = notesParts.length > 0 ? notesParts.join(" | ").slice(0, 500) : null;
+    const now = Date.now();
+
+    const primaryRapport = allRapport.find((r) => r.user_id === primaryId);
+    if (primaryRapport) {
+      // Update existing primary rapport with merged values.
+      await db
+        .update(rapport)
+        .set({
+          trust: bestTrust,
+          warmth: bestWarmth,
+          last_mood: latestMood ?? primaryRapport.last_mood,
+          notes: mergedNotes,
+          updated_at: now,
+        })
+        .where(eq(rapport.user_id, primaryId));
+    } else {
+      // Primary had no rapport yet — insert merged values.
+      await db.insert(rapport).values({
+        user_id: primaryId,
+        trust: bestTrust,
+        warmth: bestWarmth,
+        last_mood: latestMood,
+        notes: mergedNotes,
+        updated_at: now,
+      });
+    }
+
+    // Delete secondary rapport rows.
+    if (secondaryIds.length > 0) {
+      await db.delete(rapport).where(inArray(rapport.user_id, secondaryIds));
+    }
+  }
+
+  console.info(
+    `merge: auth_user_id=${auth_user_id} → primary=${primaryId}, merged ${secondaryIds.length} secondary user(s)`
+  );
+}
+
 // Log MiniMax response headers once per cold start so P2 can decide whether
 // it can trust upstream rate-limit headers for the "能源再生中" countdown.
 const chatHeaderFlag = { done: false };
@@ -213,7 +321,7 @@ const app = new Hono();
 app.use(
   "/api/*",
   cors({
-    origin: (origin) => origin ?? "*",
+    origin: (origin) => origin || "https://teaching-collie-6315.edgespark.app",
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization", "X-Device-Id"],
     credentials: true,
@@ -371,11 +479,21 @@ app.post("/api/adopt-device", async (c) => {
       created_at: now,
       last_seen_at: now,
     });
-    return c.json({ ok: true, user_id: id, callsign: rawCallsign, adopted: true });
+    // Cross-device merge: if this auth account already has user rows from
+    // other devices, merge all memories/sessions/rapport into the primary.
+    await mergeUsersByAuthId(authUser.id);
+    // After merge the primary user_id may differ from `id` (if older rows exist).
+    const primaryRow = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.auth_user_id, authUser.id))
+      .orderBy(asc(users.created_at))
+      .limit(1);
+    const primaryId = primaryRow.length > 0 ? primaryRow[0].id : id;
+    return c.json({ ok: true, user_id: primaryId, callsign: rawCallsign, adopted: true });
   }
 
-  // Adopt: set auth_user_id + email + callsign. Keep existing memories/
-  // sessions as-is — they're already scoped to this users.id.
+  // Adopt: set auth_user_id + email + callsign, then merge across devices.
   const row = existing[0];
   if (row.auth_user_id && row.auth_user_id !== authUser.id) {
     // Device was already linked to a different account. Refuse silently
@@ -396,7 +514,17 @@ app.post("/api/adopt-device", async (c) => {
     })
     .where(eq(users.id, row.id));
 
-  return c.json({ ok: true, user_id: row.id, callsign: rawCallsign, adopted: true });
+  // Cross-device merge: consolidate all user rows for this auth account.
+  await mergeUsersByAuthId(authUser.id);
+  // Return the primary user_id (earliest created).
+  const primaryRow = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.auth_user_id, authUser.id))
+    .orderBy(asc(users.created_at))
+    .limit(1);
+  const primaryId = primaryRow.length > 0 ? primaryRow[0].id : row.id;
+  return c.json({ ok: true, user_id: primaryId, callsign: rawCallsign, adopted: true });
 });
 
 // GET /api/me — authenticated. Returns the linked profile + callsign so the
@@ -529,6 +657,7 @@ app.post("/api/public/chat", async (c) => {
     max_tokens?: number;
     session_id?: string;
     lang?: string;
+    last_turn?: boolean;
   }>();
 
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
@@ -538,17 +667,22 @@ app.post("/api/public/chat", async (c) => {
     return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
   }
 
-  // ── P3: inject memory context when the client passes a session_id ──
-  // We look up user_id via device_id → session ownership, then prepend a
-  // short [MEMORY CONTEXT] system message at position 1 (after the client's
-  // main system prompt). Silent failure: if anything's off, we just skip
-  // injection so the chat still works for new / anonymous sessions.
-  let outboundMessages = body.messages;
+  // ── Resolve lang ──
   const device_id = getDeviceId(c);
   const session_id = typeof body.session_id === "string" ? body.session_id : null;
-  const lang: MemoryLang =
+  const lang: RockyLang =
     body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
 
+  // ── Build the complete messages array server-side ──
+  // 1. System prompt (character + scenario + format + lang)
+  //    Memory context is appended to the same system message because
+  //    MiniMax rejects system messages after user/assistant messages.
+  let systemContent = getRockySystemPrompt(lang);
+  if (body.last_turn) {
+    systemContent += getLastTurnHint(lang);
+  }
+
+  // 1b. Memory context (P3) — append to system prompt, not as separate message
   if (device_id && session_id) {
     try {
       const userRow = await db
@@ -565,21 +699,28 @@ app.post("/api/public/chat", async (c) => {
         if (sess.length > 0) {
           const memBlock = await buildMemoryContext(userRow[0].id, lang, userRow[0].callsign);
           if (memBlock) {
-            // Place the memory context right after the first system message
-            // if there is one, otherwise at index 0. Two system messages in
-            // a row is fine for MiniMax-M2.7.
-            const firstRole = outboundMessages[0]?.role;
-            const memoryMsg = { role: "system", content: memBlock };
-            outboundMessages =
-              firstRole === "system"
-                ? [outboundMessages[0], memoryMsg, ...outboundMessages.slice(1)]
-                : [memoryMsg, ...outboundMessages];
+            systemContent += "\n\n" + memBlock;
           }
         }
       }
     } catch (err) {
       console.warn("memory inject failed — proceeding without:", err);
     }
+  }
+
+  const outboundMessages: Array<{ role: string; content: string }> = [
+    { role: "system", content: systemContent },
+  ];
+
+  // 2. Few-shot examples (English only)
+  const fewShots = getRockyFewShots(lang);
+  for (const shot of fewShots) {
+    outboundMessages.push({ role: shot.role, content: shot.content });
+  }
+
+  // 4. User/assistant chat history (raw from frontend, no system/few-shots)
+  for (const msg of body.messages) {
+    outboundMessages.push({ role: msg.role, content: msg.content });
   }
 
   let upstream: Response;

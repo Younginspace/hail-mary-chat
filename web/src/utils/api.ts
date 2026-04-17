@@ -20,10 +20,12 @@ function getDeviceIdHeader(): Record<string, string> {
 export interface ChatConfig {
   temperature?: number;
   top_p?: number;
-  /** If provided, server prepends a [MEMORY CONTEXT] system message for this session's user. */
+  /** If provided, server uses this to look up memory context for the session's user. */
   session_id?: string;
-  /** Language hint for the memory-context localization. */
+  /** Language hint — server uses this for system prompt + memory-context localization. */
   lang?: 'en' | 'zh' | 'ja';
+  /** Signal that this is the last turn so server appends a farewell hint to the system prompt. */
+  last_turn?: boolean;
 }
 
 const MAX_RETRIES = 2;
@@ -57,9 +59,10 @@ export async function streamChat(
           temperature: config?.temperature ?? 0.55,
           top_p: config?.top_p ?? 0.9,
           max_tokens: 1024,
-          // P3: server uses these to inject memory context for the session.
+          // Server builds complete prompt (system + few-shots + memory + history)
           session_id: config?.session_id,
           lang: config?.lang,
+          last_turn: config?.last_turn,
         }),
       });
 
