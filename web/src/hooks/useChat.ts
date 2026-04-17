@@ -5,6 +5,7 @@ import { getRockyGreeting, getRockyFarewell, ROCKY_API_CONFIG } from '../prompts
 import { findDefaultDialog } from '../utils/defaultDialogs';
 import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
+import { t } from '../i18n';
 
 export interface DisplayMessage {
   id: string;
@@ -136,20 +137,12 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
         (err) => {
           console.error('API error after retries:', err.message);
           const isQuotaExceeded = err.message === 'QUOTA_EXCEEDED';
-          const quotaMsg: Record<Lang, string> = {
-            en: '[MOOD:unhappy]\n[Translation] Too many calls today, resources exhausted. Please come back another day, friend!',
-            zh: '[MOOD:unhappy]\n[翻译] 今日通话的人太多了，资源不足，请改天再来吧！',
-            ja: '[MOOD:unhappy]\n[翻訳] 今日は通話が多すぎてリソース不足です。また別の日に来てね！',
-          };
-          const fallback: Record<Lang, string> = {
-            en: '[MOOD:unhappy]\n[Translation] Interstellar link unstable. Please resend, friend.',
-            zh: '[MOOD:unhappy]\n[翻译] 星际链接不稳定，请重新发送。',
-            ja: '[MOOD:unhappy]\n[翻訳] 星間リンクが不安定。もう一度送ってほしい。',
-          };
-          const msg = isQuotaExceeded ? quotaMsg : fallback;
+          const msg = isQuotaExceeded
+            ? t('chat.rockyQuotaReply', lang)
+            : t('chat.rockyNetworkError', lang);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, content: msg[lang], isStreaming: false } : m
+              m.id === assistantId ? { ...m, content: msg, isStreaming: false } : m
             )
           );
           setIsLoading(false);

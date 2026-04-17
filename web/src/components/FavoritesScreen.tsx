@@ -130,8 +130,8 @@ export default function FavoritesScreen({ onBack }: Props) {
                       type="button"
                       className={`fav-play ${playing ? 'playing' : ''}`}
                       onClick={() => play(fav)}
-                      title={playing ? 'Stop' : 'Play'}
-                      aria-label={playing ? 'Stop' : 'Play'}
+                      title={playing ? t('aria.stop', lang) : t('aria.play', lang)}
+                      aria-label={playing ? t('aria.stop', lang) : t('aria.play', lang)}
                     >
                       {playing ? (
                         <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
