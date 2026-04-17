@@ -363,11 +363,6 @@ const translations = {
     en: 'Close channel',
     ja: 'チャンネルを閉じる',
   },
-  'hero.recommended': {
-    zh: '推荐',
-    en: 'RECOMMENDED',
-    ja: 'おすすめ',
-  },
   'channel.title': {
     zh: 'OPEN CHANNEL · 公共频道',
     en: 'OPEN CHANNEL',
