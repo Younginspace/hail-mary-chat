@@ -11,4 +11,7 @@ export type VarKey =
   | "MINIMAX_TTS_VOICE_ID";
 
 export type SecretKey =
-  | "MINIMAX_API_KEY";
+  | "MINIMAX_API_KEY"
+  // Gate admin-only endpoints (rapport recalibration, stuck-job retry).
+  // Pass as `X-Admin-Token: <value>` header. Set via `edgespark secret set ADMIN_TOKEN`.
+  | "ADMIN_TOKEN";

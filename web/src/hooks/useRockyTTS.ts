@@ -199,10 +199,11 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
       setIsSpeaking(true);
 
       // === Greeting 特殊处理: hello音效 + sayhello + 预录音频 ===
+      // Note: previous version had 200ms setTimeout between mood and voice.
+      // Removed — adds latency with no audible benefit.
       if (msgId === 'greeting') {
         await playSequenceInterruptible(getGreetingAudioSequence());
         if (!cancelledRef.current) {
-          await new Promise((r) => setTimeout(r, 200));
           await playInterruptible(`/audio/defaults/greeting_${lang}.mp3`);
         }
         setIsSpeaking(false);
@@ -215,7 +216,6 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
           await playInterruptible(getMoodAudio('unhappy'));
         }
         if (!cancelledRef.current) {
-          await new Promise((r) => setTimeout(r, 200));
           await playInterruptible(`/audio/defaults/farewell_${lang}.mp3`);
         }
         setIsSpeaking(false);
@@ -233,7 +233,6 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
           await playInterruptible(getLikeAudio());
         }
         if (defaultAudio && !cancelledRef.current) {
-          await new Promise((r) => setTimeout(r, 200));
           await playInterruptible(defaultAudio);
         }
         setIsSpeaking(false);

@@ -18,6 +18,16 @@ export interface ChatConfig {
   last_turn?: boolean;
 }
 
+// Payload shape of the server-emitted `gift_trigger` SSE event (P5
+// Review §5). The server strips [GIFT:...] tags from text before
+// forwarding and emits them as this dedicated event, so the client
+// doesn't have to trust-parse text.
+export interface GiftTriggerPayload {
+  type: 'image' | 'music' | 'video';
+  subtype: 'realistic' | 'comic' | null;
+  description: string;
+}
+
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
 
@@ -31,7 +41,8 @@ export async function streamChat(
   onChunk: (text: string) => void,
   onDone: () => void,
   onError: (error: Error) => void,
-  config?: ChatConfig
+  config?: ChatConfig,
+  onGiftTrigger?: (payload: GiftTriggerPayload) => void
 ) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -74,6 +85,10 @@ export async function streamChat(
       const decoder = new TextDecoder();
       let buffer = '';
       let rawAccumulated = '';
+      // Tracks the event type for the next `data:` line. SSE spec:
+      // an `event:` directive applies to the next data line and resets
+      // to 'message' (the default) after dispatch / blank line.
+      let pendingEventType: string | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -85,8 +100,30 @@ export async function streamChat(
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (!trimmed) {
+            // blank line = SSE record boundary → reset event type
+            pendingEventType = null;
+            continue;
+          }
+          if (trimmed.startsWith('event: ')) {
+            pendingEventType = trimmed.slice(7).trim();
+            continue;
+          }
+          if (trimmed === 'data: [DONE]') continue;
           if (!trimmed.startsWith('data: ')) continue;
+
+          // Server-emitted gift_trigger carries a JSON payload shaped
+          // like { type, subtype, description } — dispatch and skip.
+          if (pendingEventType === 'gift_trigger') {
+            try {
+              const payload = JSON.parse(trimmed.slice(6)) as GiftTriggerPayload;
+              if (onGiftTrigger) onGiftTrigger(payload);
+            } catch {
+              // malformed — ignore
+            }
+            pendingEventType = null;
+            continue;
+          }
 
           try {
             const json = JSON.parse(trimmed.slice(6));

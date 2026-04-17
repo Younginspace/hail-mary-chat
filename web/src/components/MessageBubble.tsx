@@ -1,7 +1,10 @@
+import { useRef, useLayoutEffect } from 'react';
+import gsap from 'gsap';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { Lang } from '../i18n';
 import { t } from '../i18n';
 import { getTranslationLabel } from '../prompts/rocky';
+import GiftBubble from './GiftBubble';
 
 interface Props {
   message: DisplayMessage;
@@ -52,10 +55,33 @@ export default function MessageBubble({
   isPlaying = false,
 }: Props) {
   const isRocky = message.role === 'assistant';
+  const bubbleRef = useRef<HTMLDivElement>(null);
+
+  // F5: GSAP mount animation replacing the prior CSS `fadeIn`. Honor
+  // prefers-reduced-motion — users who asked for no motion get no
+  // tweens at all.
+  useLayoutEffect(() => {
+    const node = bubbleRef.current;
+    if (!node) return;
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
+    gsap.fromTo(
+      node,
+      { autoAlpha: 0, y: 14 },
+      {
+        autoAlpha: 1,
+        y: 0,
+        duration: 0.32,
+        ease: 'power2.out',
+        clearProps: 'transform,opacity,visibility',
+      }
+    );
+  }, []);
 
   if (!isRocky) {
     return (
-      <div className="message user">
+      <div ref={bubbleRef} className="message user">
         <div className="message-sender">{t('chat.senderYou', lang)}</div>
         {message.content}
       </div>
@@ -64,16 +90,17 @@ export default function MessageBubble({
 
   const parts = parseRockyMessage(message.content, lang);
 
-  // Only show action buttons when caller wires them in — and never on the
-  // greeting placeholder or while the reply is still streaming in.
+  // Only show action buttons when caller wires them in — and never
+  // while the reply is still streaming in. Greeting used to be hidden
+  // too, but in Echo mode users want to replay/favorite the greeting,
+  // so the caller decides via the onPlay/onToggleFavorite props.
   const showActions =
     (onPlay != null || onToggleFavorite != null) &&
     !message.isStreaming &&
-    message.id !== 'greeting' &&
     !message.id?.startsWith('farewell-');
 
   return (
-    <div className="message rocky">
+    <div ref={bubbleRef} className="message rocky">
       <div className="message-sender">Rocky (Erid)</div>
       {parts.map((part, i) => {
         switch (part.type) {
@@ -88,6 +115,8 @@ export default function MessageBubble({
         }
       })}
       {message.isStreaming && <span className="streaming-cursor" />}
+
+      {message.gift && <GiftBubble gift={message.gift} lang={lang} />}
 
       {showActions && (
         <div className="message-actions">

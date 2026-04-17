@@ -10,6 +10,7 @@
 
 import { db, vars, secret } from "edgespark";
 import {
+  consolidation_jobs,
   memories as memoriesTable,
   messages as messagesTable,
   rapport,
@@ -19,6 +20,10 @@ import {
   voice_credit_ledger,
 } from "@defs";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
+
+// How many attempts we'll give a single session before flagging the
+// job as failed (dead letter). 3 matches plan §7.
+const MAX_CONSOLIDATION_ATTEMPTS = 3;
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -474,4 +479,102 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
   console.info(
     `level_up: user ${user_id} ${curLevel} → ${newLevel} (trust=${trust.toFixed(2)}, warmth=${warmth.toFixed(2)}); +${voiceBonus} voice · +${imageBonus} image · +${musicBonus} music · +${videoBonus} video`
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Job wrapper (P5 Review §7) — no more silent .catch(console.error)
+// ═══════════════════════════════════════════════════════════════════
+
+// Replaces the old `consolidateSession(session_id).catch(...)` pattern.
+// Upserts a consolidation_jobs row, runs the actual work, and records
+// outcome so failures stop disappearing. After MAX_CONSOLIDATION_ATTEMPTS
+// failures the row is marked 'failed' (dead letter) for a human or
+// admin endpoint to retry.
+export async function runConsolidationJob(session_id: string): Promise<void> {
+  const now = Date.now();
+
+  // Upsert: if a prior attempt failed and this is a retry, bump attempts.
+  // ON CONFLICT path captures both "first time" and "retry after prior
+  // attempt" cases without a separate read-then-write.
+  await db
+    .insert(consolidation_jobs)
+    .values({
+      session_id,
+      status: "running",
+      attempts: 1,
+      last_error: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: consolidation_jobs.session_id,
+      set: {
+        status: "running",
+        attempts: sql`${consolidation_jobs.attempts} + 1`,
+        updated_at: now,
+      },
+    });
+
+  try {
+    await consolidateSession(session_id);
+    await db
+      .update(consolidation_jobs)
+      .set({ status: "done", last_error: null, updated_at: Date.now() })
+      .where(eq(consolidation_jobs.session_id, session_id));
+  } catch (err) {
+    const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.slice(0, 2000) : String(err).slice(0, 2000);
+    console.error(`consolidate job failed for ${session_id}:`, err);
+
+    // Read current attempts to decide terminal vs requeue. Races with
+    // a concurrent retry are harmless — both will settle on the same
+    // observable state (attempts capped by MAX).
+    const rows = await db
+      .select({ attempts: consolidation_jobs.attempts })
+      .from(consolidation_jobs)
+      .where(eq(consolidation_jobs.session_id, session_id))
+      .limit(1);
+    const attempts = rows[0]?.attempts ?? 1;
+    const terminal = attempts >= MAX_CONSOLIDATION_ATTEMPTS;
+
+    await db
+      .update(consolidation_jobs)
+      .set({
+        status: terminal ? "failed" : "pending",
+        last_error: msg,
+        updated_at: Date.now(),
+      })
+      .where(eq(consolidation_jobs.session_id, session_id));
+  }
+}
+
+// Cold-start retry: call from an admin endpoint or a periodic path to
+// sweep pending jobs with attempts < MAX that haven't been touched in
+// a while. Keeps the queue self-healing without requiring a proper
+// worker cron.
+export async function retryStuckConsolidationJobs(
+  olderThanMs = 10 * 60 * 1000,
+  limit = 25
+): Promise<{ retried: number }> {
+  const cutoff = Date.now() - olderThanMs;
+  const rows = await db
+    .select({ session_id: consolidation_jobs.session_id })
+    .from(consolidation_jobs)
+    .where(
+      and(
+        eq(consolidation_jobs.status, "pending"),
+        sql`${consolidation_jobs.attempts} < ${MAX_CONSOLIDATION_ATTEMPTS}`,
+        sql`${consolidation_jobs.updated_at} < ${cutoff}`
+      )
+    )
+    .limit(limit);
+  let retried = 0;
+  for (const r of rows) {
+    try {
+      await runConsolidationJob(r.session_id);
+      retried++;
+    } catch (err) {
+      console.error(`retry job for ${r.session_id} threw (should be caught):`, err);
+    }
+  }
+  return { retried };
 }

@@ -1,9 +1,18 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { useChat } from '../hooks/useChat';
+import type { DisplayMessage } from '../hooks/useChat';
 import { useRockyTTS } from '../hooks/useRockyTTS';
+import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { getDefaultQuestions } from '../utils/defaultDialogs';
+import { extractPlayableText, extractMood } from '../utils/messageCleanup';
+import {
+  fetchFavorites,
+  addFavorite,
+  removeFavorite,
+  type FavoriteRow,
+} from '../utils/sessionApi';
 import Starfield from './Starfield';
 import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
@@ -27,12 +36,84 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
   // never fires because findDefaultDialog intercepts every message.
   const { messages, sendMessage, isEnded, turnsLeft } = useChat(lang, 'voice', undefined);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking } = useRockyTTS(false);
+  const { isAuthenticated } = useAuthSession();
   const [mobileView, setMobileView] = useState<MobileView>('chat');
+  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const [favoritesList, setFavoritesList] = useState<FavoriteRow[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Load favorites once if logged in. Echo is anon-accessible but the
+  // favorite endpoint requires auth — skip when not signed in.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setFavoritesList([]);
+      return;
+    }
+    fetchFavorites().then((res) => {
+      if (res) setFavoritesList(res.items);
+    });
+  }, [isAuthenticated]);
+
+  // Reflect speak()'s finish back into playingMsgId so the icon toggles
+  // off when the audio ends naturally.
+  useEffect(() => {
+    if (!ttsSpeaking) setPlayingMsgId(null);
+  }, [ttsSpeaking]);
+
+  const findFavoriteFor = useCallback(
+    (msg: DisplayMessage): FavoriteRow | undefined => {
+      const clean = extractPlayableText(msg.content, lang);
+      if (!clean) return undefined;
+      return favoritesList.find((f) => f.message_content === clean);
+    },
+    [favoritesList, lang]
+  );
+
+  // Replay via the same speak() that autoplays preset replies. For
+  // greeting / default-<id> / farewell-<id> IDs this uses the locally
+  // pre-recorded MP3 sequence in useRockyTTS — zero network cost.
+  const handleMessagePlay = useCallback(
+    (msg: DisplayMessage) => {
+      if (playingMsgId === msg.id) {
+        stopTTS();
+        setPlayingMsgId(null);
+        return;
+      }
+      stopTTS();
+      setPlayingMsgId(msg.id);
+      speak(msg.content, lang, msg.id);
+    },
+    [playingMsgId, speak, stopTTS, lang]
+  );
+
+  const handleToggleFavorite = useCallback(
+    async (msg: DisplayMessage) => {
+      if (!isAuthenticated) return; // button hidden in this branch, defensive
+      const existing = findFavoriteFor(msg);
+      if (existing) {
+        const ok = await removeFavorite(existing.id);
+        if (ok) setFavoritesList((fs) => fs.filter((f) => f.id !== existing.id));
+        return;
+      }
+      const text = extractPlayableText(msg.content, lang);
+      if (!text) return;
+      const res = await addFavorite({
+        message_content: text,
+        lang,
+        mood: extractMood(msg.content),
+        source_session: null,
+      });
+      if (res.ok) {
+        const reload = await fetchFavorites();
+        if (reload) setFavoritesList(reload.items);
+      }
+    },
+    [findFavoriteFor, isAuthenticated, lang]
+  );
 
   // Smart auto-scroll — same heuristic as ChatInterface.
   useEffect(() => {
@@ -53,7 +134,8 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
     if (last.id === 'greeting' && !greetingSpoken.current) {
       greetingSpoken.current = true;
       lastSpokenIdRef.current = last.id;
-      setTimeout(() => speak(last.content, lang, last.id), 500);
+      // Minimal defer so the greeting bubble paints before audio starts.
+      setTimeout(() => speak(last.content, lang, last.id), 120);
       return;
     }
     lastSpokenIdRef.current = last.id;
@@ -134,14 +216,35 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
 
         <div ref={chatAreaRef} className="chat-area">
           {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} lang={lang} />
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              lang={lang}
+              onPlay={msg.role === 'assistant' ? handleMessagePlay : undefined}
+              onToggleFavorite={
+                msg.role === 'assistant' && isAuthenticated
+                  ? handleToggleFavorite
+                  : undefined
+              }
+              isFavorited={!!findFavoriteFor(msg)}
+              isPlaying={playingMsgId === msg.id}
+            />
           ))}
           <div ref={chatEndRef} />
         </div>
 
         <div className="echo-questions">
           {remaining.length === 0 ? (
-            <div className="echo-allanswered">{t('echo.allAnswered', lang)}</div>
+            <div className="echo-allanswered">
+              <span className="echo-allanswered-text">{t('echo.allAnswered', lang)}</span>
+              <button
+                type="button"
+                className="echo-allanswered-cta"
+                onClick={onBack}
+              >
+                {t('echo.allAnsweredCta', lang)}
+              </button>
+            </div>
           ) : (
             remaining.map((q) => (
               <button

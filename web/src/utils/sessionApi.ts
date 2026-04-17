@@ -181,3 +181,82 @@ export async function checkCallsign(q: string): Promise<CheckCallsignResult | nu
   }
 }
 
+// ── F6 Phase 2: gift generation ──
+
+export type GiftType = 'image' | 'music' | 'video';
+export type GiftImageSubtype = 'realistic' | 'comic';
+
+export interface GiftReady {
+  id: string;
+  type: GiftType;
+  subtype: GiftImageSubtype | null;
+  status: 'ready';
+  url: string;
+  expires_at: number;
+  content_type: string;
+  caption: string | null;
+  remaining: number;
+}
+
+export type GenerateGiftResult =
+  | GiftReady
+  | { status: 'failed'; reason: 'insufficient' | 'minimax' | 'network' | 'storage'; detail?: string };
+
+export async function generateGift(
+  type: GiftType,
+  description: string,
+  session_id?: string | null,
+  subtype?: GiftImageSubtype | null
+): Promise<GenerateGiftResult> {
+  try {
+    const res = await fetch(`${API_BASE}/api/generate-media`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type,
+        subtype: subtype ?? undefined,
+        description,
+        session_id: session_id ?? null,
+      }),
+    });
+    if (res.status === 402) {
+      return { status: 'failed', reason: 'insufficient' };
+    }
+    if (res.status === 502 || res.status === 500) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return { status: 'failed', reason: body.error === 'storage_failed' ? 'storage' : 'minimax' };
+    }
+    if (!res.ok) {
+      return { status: 'failed', reason: 'minimax' };
+    }
+    const json = (await res.json()) as GiftReady;
+    return json;
+  } catch (err) {
+    console.warn('generateGift failed', err);
+    return { status: 'failed', reason: 'network' };
+  }
+}
+
+export interface GiftRow {
+  id: string;
+  type: GiftType;
+  subtype: GiftImageSubtype | null;
+  description: string | null;
+  status: string;
+  created_at: number;
+  url: string | null;
+}
+
+export async function fetchGifts(): Promise<GiftRow[] | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/gifts`, { credentials: 'include' });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { gifts: GiftRow[] };
+    return json.gifts;
+  } catch (err) {
+    console.warn('fetchGifts failed', err);
+    return null;
+  }
+}
+
