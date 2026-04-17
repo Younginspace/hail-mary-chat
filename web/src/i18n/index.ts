@@ -327,6 +327,83 @@ const translations = {
     ja: 'Rockyは友達一人ひとりを覚えている',
   },
 
+  // ===== P5 F1: Open Channel + Dial In =====
+  'channel.title': {
+    zh: 'OPEN CHANNEL · 公共频道',
+    en: 'OPEN CHANNEL',
+    ja: 'OPEN CHANNEL · 公共チャンネル',
+  },
+  'channel.desc': {
+    zh: '听 Rocky 回答朋友们常问的问题。想亲自通话？拨号进来。',
+    en: "Listen to Rocky's broadcast answers. Want to talk to him yourself? Dial in.",
+    ja: '友達からよくある質問へのRockyの答えを聞く。直接話したい？ダイヤルインして。',
+  },
+  'channel.loading': {
+    zh: '正在接收广播...',
+    en: 'Receiving broadcast...',
+    ja: '放送受信中...',
+  },
+  'channel.empty': {
+    zh: '频道暂无广播',
+    en: 'No broadcast on this channel',
+    ja: 'このチャンネルに放送なし',
+  },
+  'channel.dialInCta': {
+    zh: '拨入私人频道',
+    en: 'DIAL IN PRIVATE CHANNEL',
+    ja: 'プライベートチャンネルにダイヤルイン',
+  },
+  'channel.dialInHint': {
+    zh: '登记呼号后，Rocky 会永远记得你',
+    en: 'Register a callsign — Rocky will remember you forever',
+    ja: 'コールサインを登録したら、Rockyはずっと覚えてる',
+  },
+  'dialin.title': {
+    zh: '拨入 Rocky 的私人频道',
+    en: "Dial in to Rocky's private channel",
+    ja: 'Rockyのプライベートチャンネルにダイヤルイン',
+  },
+  'dialin.back': {
+    zh: '← 返回公共频道',
+    en: '← Back to Open Channel',
+    ja: '← 公共チャンネルに戻る',
+  },
+  'dialin.callsignPlaceholder': {
+    zh: 'Ryland',
+    en: 'Ryland',
+    ja: 'Ryland',
+  },
+  'dialin.callsignChecking': {
+    zh: '核对呼号中...',
+    en: 'Checking callsign...',
+    ja: 'コールサイン確認中...',
+  },
+  'dialin.callsignAvailable': {
+    zh: '✓ 呼号可用',
+    en: '✓ Callsign available',
+    ja: '✓ コールサイン使用可',
+  },
+  'dialin.callsignTaken': {
+    zh: '这个呼号刚被别人抢了，换一个试试',
+    en: 'This callsign was just taken. Pick another, friend.',
+    ja: 'このコールサインは誰かに取られた。別のを試して。',
+  },
+  'dialin.callsignInvalid': {
+    zh: '呼号 3-32 个字符，字母/数字/空格/下划线',
+    en: 'Callsign 3-32 chars, letters / digits / spaces / _ / -',
+    ja: 'コールサインは3-32文字、英数字/スペース/_/-',
+  },
+  'dialin.signupHint': {
+    zh: '首次拨入 · 登记你的呼号',
+    en: 'First dial-in · register your callsign',
+    ja: '初回ダイヤルイン · コールサインを登録',
+  },
+  'dialin.signinHint': {
+    zh: '已有呼号 · 重新连接',
+    en: 'Have a callsign · reconnect',
+    ja: '既存コールサイン · 再接続',
+  },
+
   // ===== Share Content =====
   'share.title': {
     zh: '和外星人 Rocky 通话 — 挽救计划',

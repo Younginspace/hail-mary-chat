@@ -1,53 +1,18 @@
-// Thin client for the EdgeSpark session/quota endpoints.
-// All calls carry X-Device-Id. Errors are logged, not thrown, for
-// fire-and-forget sites; callers that need the result await the promise.
+// P5 F1: session endpoints are auth-required (/api/session/*).
+// Registration happens before the first session/start call.
 
 import type { Lang } from '../i18n';
 import type { ChatMode } from './playLimit';
-import { getDeviceId } from './deviceId';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
-
-function withDeviceHeader(extra: Record<string, string> = {}): HeadersInit {
-  return {
-    'X-Device-Id': getDeviceId(),
-    ...extra,
-  };
-}
-
-export interface QuotaResponse {
-  used: number;
-  remaining: number;
-  dailyLimit: number;
-  resetAt: number; // unix ms
-  anonymous?: boolean;
-}
-
-export async function fetchQuota(): Promise<QuotaResponse | null> {
-  try {
-    const res = await fetch(`${API_BASE}/api/public/quota`, {
-      method: 'GET',
-      headers: withDeviceHeader(),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as QuotaResponse;
-  } catch (err) {
-    console.warn('fetchQuota failed', err);
-    return null;
-  }
-}
 
 export interface StartSessionResult {
   ok: true;
   session_id: string;
-  used: number;
-  remaining: number;
-  resetAt: number;
 }
 export interface StartSessionDenied {
   ok: false;
-  reason: 'quota_exceeded' | 'network' | 'server';
-  resetAt?: number;
+  reason: 'not_authenticated' | 'network' | 'server';
 }
 
 export async function startSession(
@@ -55,25 +20,20 @@ export async function startSession(
   mode: ChatMode
 ): Promise<StartSessionResult | StartSessionDenied> {
   try {
-    const res = await fetch(`${API_BASE}/api/public/session/start`, {
+    const res = await fetch(`${API_BASE}/api/session/start`, {
       method: 'POST',
-      headers: withDeviceHeader({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lang, mode }),
     });
-    if (res.status === 429) {
-      const body = await res.json().catch(() => ({}));
-      return { ok: false, reason: 'quota_exceeded', resetAt: body.resetAt };
+    if (res.status === 401) {
+      return { ok: false, reason: 'not_authenticated' };
     }
     if (!res.ok) {
       return { ok: false, reason: 'server' };
     }
-    const json = (await res.json()) as {
-      session_id: string;
-      used: number;
-      remaining: number;
-      resetAt: number;
-    };
-    return { ok: true, ...json };
+    const json = (await res.json()) as { session_id: string };
+    return { ok: true, session_id: json.session_id };
   } catch (err) {
     console.warn('startSession failed', err);
     return { ok: false, reason: 'network' };
@@ -81,13 +41,10 @@ export async function startSession(
 }
 
 export function endSession(session_id: string): void {
-  // keepalive: true lets this survive page unload. If the browser drops it
-  // anyway (rare), the session simply lacks ended_at — consolidation can
-  // infer end time from the last message. turn_count is maintained
-  // server-side in /session/message so we don't send it here.
-  fetch(`${API_BASE}/api/public/session/end`, {
+  fetch(`${API_BASE}/api/session/end`, {
     method: 'POST',
-    headers: withDeviceHeader({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id }),
     keepalive: true,
   }).catch((err) => console.warn('endSession failed', err));
@@ -98,12 +55,49 @@ export function logMessage(
   role: 'user' | 'assistant',
   content: string
 ): void {
-  // Fire-and-forget. Silent failures are acceptable for P1 — missing one
-  // turn just leaves a gap in memory consolidation later.
-  fetch(`${API_BASE}/api/public/session/message`, {
+  fetch(`${API_BASE}/api/session/message`, {
     method: 'POST',
-    headers: withDeviceHeader({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id, role, content }),
     keepalive: true,
   }).catch((err) => console.warn('logMessage failed', err));
+}
+
+export interface CheckCallsignResult {
+  available: boolean;
+  callsign?: string;
+  reason?: 'invalid_format';
+}
+
+export async function checkCallsign(q: string): Promise<CheckCallsignResult | null> {
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/public/check-callsign?q=${encodeURIComponent(q)}`
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as CheckCallsignResult;
+  } catch (err) {
+    console.warn('checkCallsign failed', err);
+    return null;
+  }
+}
+
+export interface OpenChannelFaq {
+  id: string;
+  category: string;
+  question: string;
+  answer: string;
+}
+
+export async function fetchFaqs(lang: Lang): Promise<OpenChannelFaq[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/public/faqs?lang=${lang}`);
+    if (!res.ok) return [];
+    const json = (await res.json()) as { items: OpenChannelFaq[] };
+    return json.items ?? [];
+  } catch (err) {
+    console.warn('fetchFaqs failed', err);
+    return [];
+  }
 }
