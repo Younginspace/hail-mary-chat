@@ -37,7 +37,6 @@ import { cors } from "hono/cors";
 import { consolidateSession } from "./consolidate";
 import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
 import type { Lang as RockyLang } from "./prompts/rocky";
-import { OPEN_CHANNEL_FAQS } from "./faqs";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -340,22 +339,9 @@ app.get("/api/public/health", (c) => c.json({ ok: true, service: "hail-mary-chat
 //  Public endpoints — no auth required
 // ═══════════════════════════════════════════════════════════════════
 
-// GET /api/public/faqs?lang=en — Open Channel FAQ list
-app.get("/api/public/faqs", (c) => {
-  const lang = c.req.query("lang");
-  const resolved: MemoryLang = lang === "zh" || lang === "ja" ? lang : "en";
-  return c.json({
-    lang: resolved,
-    items: OPEN_CHANNEL_FAQS.map((f) => ({
-      id: f.id,
-      category: f.category,
-      question: f.question[resolved],
-      answer: f.answer[resolved],
-    })),
-  });
-});
-
 // GET /api/public/check-callsign?q=xxx — true when available
+// (Open Channel content is served directly from the web bundle —
+// see web/src/utils/defaultDialogs.ts — so there is no /faqs endpoint.)
 app.get("/api/public/check-callsign", async (c) => {
   const raw = c.req.query("q") ?? "";
   if (!isValidCallsign(raw)) {
