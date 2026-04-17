@@ -18,9 +18,19 @@
  * have an anonymous-only state.
  */
 
-import { db, secret, vars, ctx } from "edgespark";
+import { db, secret, vars, ctx, storage } from "edgespark";
 import { auth } from "edgespark/http";
-import { memories, messages as messagesTable, rapport, sessions, users } from "@defs";
+import {
+  audio_cache,
+  buckets,
+  daily_api_usage,
+  memories,
+  messages as messagesTable,
+  rapport,
+  sessions,
+  users,
+  voice_credit_ledger,
+} from "@defs";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -38,6 +48,31 @@ const DEFAULT_TTS_VOICE_ID = "rocky_hailmary_v2";
 // ═══════════════════════════════════════════════════════════════════
 //  Helpers
 // ═══════════════════════════════════════════════════════════════════
+
+// SHA-256 hex of text + lang + voice_id — the cache key for rendered
+// audio. Kept deterministic so the same prompt never re-renders.
+async function hashAudioContent(
+  text: string,
+  lang: string,
+  voiceId: string
+): Promise<string> {
+  const input = `${lang}|${voiceId}|${text}`;
+  const buf = new TextEncoder().encode(input);
+  const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Current date string in UTC+8 — matches the TTS quota reset boundary.
+function utc8DateString(nowMs: number = Date.now()): string {
+  const utc8 = new Date(nowMs + 8 * 3600 * 1000);
+  return utc8.toISOString().slice(0, 10);
+}
+
+// TTS per-day cap reserved for regular user playback. Final MiniMax limit
+// is 11,000/day; we leave 1,100 for F6 gift generation (tts_gift scope).
+const TTS_DAILY_USER_CAP = 9900;
 
 function getDeviceId(c: { req: { header: (k: string) => string | undefined } }): string | null {
   const raw = c.req.header("x-device-id")?.trim();
@@ -385,6 +420,15 @@ app.post("/api/adopt-device", async (c) => {
       auth_user_id: authUser.id,
       created_at: now,
       last_seen_at: now,
+      // voice_credits defaults to 10 via schema.
+    });
+    await db.insert(voice_credit_ledger).values({
+      id: crypto.randomUUID(),
+      user_id: id,
+      delta: 10,
+      reason: "register_bonus",
+      session_id: null,
+      created_at: now,
     });
     await mergeUsersByAuthId(authUser.id);
     const primaryRow = await db
@@ -413,6 +457,14 @@ app.post("/api/adopt-device", async (c) => {
       auth_user_id: authUser.id,
       created_at: now,
       last_seen_at: now,
+    });
+    await db.insert(voice_credit_ledger).values({
+      id: crypto.randomUUID(),
+      user_id: id,
+      delta: 10,
+      reason: "register_bonus",
+      session_id: null,
+      created_at: now,
     });
     await mergeUsersByAuthId(authUser.id);
     const primaryRow = await db
@@ -658,6 +710,26 @@ app.post("/api/chat", async (c) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F2 — /api/voice-credits  (GET balance)
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/voice-credits", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+  const row = await db
+    .select({ voice_credits: users.voice_credits })
+    .from(users)
+    .where(eq(users.id, user.user_id))
+    .limit(1);
+  const remaining = row.length > 0 ? row[0].voice_credits : 0;
+  return c.json({ remaining });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F2 — /api/tts  (cache-first, credit-metered, global-quota-gated)
+// ═══════════════════════════════════════════════════════════════════
+
 app.get("/api/tts", async (c) => {
   const user = await getAuthedUser();
   if (!user) return c.json({ error: "not_authenticated" }, 401);
@@ -667,9 +739,7 @@ app.get("/api/tts", async (c) => {
   if (!text) {
     return c.json({ error: "text is required" }, 400);
   }
-  const speed = url.searchParams.get("speed");
-  const vol = url.searchParams.get("vol");
-  const pitch = url.searchParams.get("pitch");
+  const isFavorite = url.searchParams.get("favorite") === "true";
 
   const apiUrl = vars.get("MINIMAX_TTS_API_URL") ?? DEFAULT_TTS_API_URL;
   const ttsModel = vars.get("MINIMAX_TTS_MODEL") ?? DEFAULT_TTS_MODEL;
@@ -679,6 +749,90 @@ app.get("/api/tts", async (c) => {
     return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
   }
 
+  // Memory context language is encoded with the system prompt, but the
+  // text itself is what MiniMax renders. Use the language header the
+  // frontend sends so the hash is stable across languages of the same
+  // string (rare but possible for single words).
+  const lang = url.searchParams.get("lang") ?? "en";
+
+  const contentHash = await hashAudioContent(text, lang, voiceId);
+
+  // ── 1. Try cache ──
+  const cached = await db
+    .select({ r2_key: audio_cache.r2_key })
+    .from(audio_cache)
+    .where(eq(audio_cache.content_hash, contentHash))
+    .limit(1);
+
+  if (cached.length > 0) {
+    const file = await storage.from(buckets.rockyAudio).get(cached[0].r2_key);
+    if (file) {
+      return new Response(file.body, {
+        status: 200,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Content-Length": String(file.body.byteLength),
+          "X-Audio-Cache": "hit",
+        },
+      });
+    }
+    // Cache row exists but R2 object was lost — fall through and re-render.
+    console.warn(`audio_cache row hit but R2 missing for ${cached[0].r2_key}`);
+  }
+
+  // ── 2. Cache miss — charge the user (unless replaying a favorite) ──
+  const now = Date.now();
+  if (!isFavorite) {
+    const deducted = await db
+      .update(users)
+      .set({ voice_credits: sql`${users.voice_credits} - 1` })
+      .where(and(eq(users.id, user.user_id), sql`${users.voice_credits} > 0`))
+      .returning({ voice_credits: users.voice_credits });
+    if (deducted.length === 0) {
+      return c.json({ error: "insufficient_credits", remaining: 0 }, 402);
+    }
+    await db.insert(voice_credit_ledger).values({
+      id: crypto.randomUUID(),
+      user_id: user.user_id,
+      delta: -1,
+      reason: "consume_tts",
+      session_id: url.searchParams.get("session_id"),
+      created_at: now,
+    });
+  }
+
+  // ── 3. Global daily TTS cap — atomic CAS ──
+  const today = utc8DateString(now);
+  const usage = await db
+    .insert(daily_api_usage)
+    .values({ date: today, api: "tts", scope: "__global__", count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} < ${TTS_DAILY_USER_CAP}`,
+    })
+    .returning({ count: daily_api_usage.count });
+
+  if (usage.length === 0) {
+    // Global cap hit. Refund the credit so the user isn't punished for it.
+    if (!isFavorite) {
+      await db
+        .update(users)
+        .set({ voice_credits: sql`${users.voice_credits} + 1` })
+        .where(eq(users.id, user.user_id));
+      await db.insert(voice_credit_ledger).values({
+        id: crypto.randomUUID(),
+        user_id: user.user_id,
+        delta: 1,
+        reason: "refund_global_cap",
+        session_id: url.searchParams.get("session_id"),
+        created_at: now,
+      });
+    }
+    return c.json({ error: "global_quota_exceeded" }, 429);
+  }
+
+  // ── 4. Render via MiniMax ──
   let upstream: Response;
   try {
     upstream = await fetch(`${apiUrl}/v1/t2a_v2`, {
@@ -692,9 +846,9 @@ app.get("/api/tts", async (c) => {
         text,
         voice_setting: {
           voice_id: voiceId,
-          speed: speed ? parseFloat(speed) : 1.0,
-          vol: vol ? parseFloat(vol) : 1.0,
-          pitch: pitch ? parseInt(pitch, 10) : 0,
+          speed: 1.0,
+          vol: 1.0,
+          pitch: 0,
         },
         audio_setting: {
           format: "mp3",
@@ -740,11 +894,35 @@ app.get("/api/tts", async (c) => {
     buf[i] = parseInt(hexAudio.substr(i * 2, 2), 16);
   }
 
+  // ── 5. Persist to R2 + insert cache row (background — don't block user) ──
+  const r2Key = `audio/${contentHash.slice(0, 2)}/${contentHash}.mp3`;
+  ctx.runInBackground(
+    (async () => {
+      try {
+        await storage.from(buckets.rockyAudio).put(r2Key, buf);
+        await db
+          .insert(audio_cache)
+          .values({
+            content_hash: contentHash,
+            lang,
+            voice_id: voiceId,
+            r2_key: r2Key,
+            byte_length: buf.byteLength,
+            created_at: Date.now(),
+          })
+          .onConflictDoNothing();
+      } catch (err) {
+        console.warn("audio cache persist failed:", err);
+      }
+    })()
+  );
+
   return new Response(buf, {
     status: 200,
     headers: {
       "Content-Type": "audio/mpeg",
       "Content-Length": String(buf.byteLength),
+      "X-Audio-Cache": "miss",
     },
   });
 });

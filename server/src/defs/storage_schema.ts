@@ -15,9 +15,10 @@
 
 import type { BucketDef } from "@sdk/server-types";
 
-// Example bucket — uncomment and modify:
-//
-// export const uploads: BucketDef<"uploads"> = {
-//   bucket_name: "uploads",
-//   description: "User uploaded files",
-// };
+// P5 F2: cache of rendered TTS audio clips. Keyed by SHA-256 of
+// text+lang+voice_id so repeat requests skip MiniMax entirely.
+// Directory layout: audio/<first2chars>/<rest>.mp3
+export const rockyAudio: BucketDef<"rocky-audio"> = {
+  bucket_name: "rocky-audio",
+  description: "Cached TTS audio clips (content-addressed)",
+};

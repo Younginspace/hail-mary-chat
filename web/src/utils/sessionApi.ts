@@ -64,6 +64,23 @@ export function logMessage(
   }).catch((err) => console.warn('logMessage failed', err));
 }
 
+export interface VoiceCreditsResponse {
+  remaining: number;
+}
+
+export async function fetchVoiceCredits(): Promise<VoiceCreditsResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/voice-credits`, {
+      credentials: 'include',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as VoiceCreditsResponse;
+  } catch (err) {
+    console.warn('fetchVoiceCredits failed', err);
+    return null;
+  }
+}
+
 export interface CheckCallsignResult {
   available: boolean;
   callsign?: string;
