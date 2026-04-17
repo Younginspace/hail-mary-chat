@@ -50,6 +50,20 @@
       "when": 1776410282393,
       "tag": "0006_orange_bushwacker",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1776422149029,
+      "tag": "0007_small_ikaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1776422606410,
+      "tag": "0008_low_trish_tilby",
+      "breakpoints": true
     }
   ]
 }

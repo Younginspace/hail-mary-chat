@@ -6,6 +6,20 @@ import { findDefaultDialog } from '../utils/defaultDialogs';
 import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
 import { t } from '../i18n';
+import { generateGift, type GiftType } from '../utils/sessionApi';
+
+export type GiftImageSubtype = 'realistic' | 'comic';
+
+export interface GiftAttachment {
+  type: GiftType;
+  subtype?: GiftImageSubtype | null;
+  description: string;
+  caption?: string | null;
+  status: 'pending' | 'ready' | 'failed';
+  url?: string;
+  content_type?: string;
+  reason?: string;
+}
 
 export interface DisplayMessage {
   id: string;
@@ -13,6 +27,28 @@ export interface DisplayMessage {
   content: string;
   isStreaming?: boolean;
   isDefault?: boolean;   // 预置对话标记，TTS 用本地音频
+  gift?: GiftAttachment;
+}
+
+// Match `[GIFT:type(:subtype) "description"]`. Subtype is optional for
+// music/video but REQUIRED for image (enforced server-side too). Tag
+// must be on its own block — description can contain any non-quote char.
+const GIFT_TAG_REGEX =
+  /\[GIFT:(image|music|video)(?::([a-z]{3,16}))?\s+"([^"]{1,500})"\]/i;
+
+export function extractGift(content: string): {
+  cleaned: string;
+  gift: { type: GiftType; subtype: GiftImageSubtype | null; description: string } | null;
+} {
+  const m = content.match(GIFT_TAG_REGEX);
+  if (!m) return { cleaned: content, gift: null };
+  const type = m[1].toLowerCase() as GiftType;
+  const rawSub = m[2]?.toLowerCase() ?? null;
+  const subtype: GiftImageSubtype | null =
+    rawSub === 'realistic' || rawSub === 'comic' ? rawSub : null;
+  const description = m[3].trim();
+  const cleaned = content.replace(GIFT_TAG_REGEX, '').replace(/[ \t]+\n/g, '\n').trim();
+  return { cleaned, gift: { type, subtype, description } };
 }
 
 export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string) {
@@ -111,6 +147,55 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
 
       abortRef.current = false;
       let accumulated = '';
+      // The gift-trigger can arrive either from the server's dedicated
+      // SSE event OR (as a fallback) from the client regex over the
+      // streamed text. Whichever fires first wins; the other branch
+      // no-ops. Belt + suspenders during rollout of the server path.
+      let giftDispatched = false;
+
+      const dispatchGift = (params: {
+        type: GiftType;
+        subtype: GiftImageSubtype | null;
+        description: string;
+      }) => {
+        if (giftDispatched) return;
+        giftDispatched = true;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  gift: {
+                    type: params.type,
+                    subtype: params.subtype,
+                    description: params.description,
+                    status: 'pending',
+                  },
+                }
+              : m
+          )
+        );
+        generateGift(params.type, params.description, sessionId, params.subtype).then((result) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId || !m.gift) return m;
+              if (result.status === 'failed') {
+                return { ...m, gift: { ...m.gift, status: 'failed', reason: result.reason } };
+              }
+              return {
+                ...m,
+                gift: {
+                  ...m.gift,
+                  status: 'ready',
+                  url: result.url,
+                  content_type: result.content_type,
+                  caption: result.caption ?? null,
+                },
+              };
+            })
+          );
+        });
+      };
 
       await streamChat(
         apiMessages,
@@ -124,15 +209,20 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
           );
         },
         () => {
+          // Client-side regex fallback for GIFT tags, in case the
+          // server-side SSE stripping didn't catch it (old deployment,
+          // network hiccup, etc). Server event path is preferred.
+          const { cleaned, gift } = extractGift(accumulated);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, isStreaming: false } : m
+              m.id === assistantId ? { ...m, content: cleaned, isStreaming: false } : m
             )
           );
           setIsLoading(false);
           if (newTurnCount === MAX_TURNS) {
             setIsEnded(true);
           }
+          if (gift) dispatchGift(gift);
         },
         (err) => {
           console.error('API error after retries:', err.message);
@@ -153,7 +243,17 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
             setUserTurns(newTurnCount - 1);
           }
         },
-        { ...ROCKY_API_CONFIG, session_id: sessionId, lang, last_turn: newTurnCount === MAX_TURNS }
+        { ...ROCKY_API_CONFIG, session_id: sessionId, lang, last_turn: newTurnCount === MAX_TURNS },
+        // Server-side gift_trigger event: preferred path. Fires mid-
+        // stream as soon as the tag is fully received server-side.
+        (payload) => {
+          if (payload.type !== 'image' && payload.type !== 'music' && payload.type !== 'video') return;
+          dispatchGift({
+            type: payload.type,
+            subtype: payload.subtype,
+            description: payload.description,
+          });
+        }
       );
     },
     [messages, isLoading, isEnded, userTurns, lang, sessionId, mode]

@@ -23,11 +23,15 @@ import { auth } from "edgespark/http";
 import {
   audio_cache,
   buckets,
+  consolidation_jobs,
   daily_api_usage,
   favorites,
+  gifts,
   memories,
   messages as messagesTable,
   rapport,
+  rapport_thresholds,
+  register_rate_limit,
   sessions,
   users,
   voice_credit_ledger,
@@ -35,9 +39,9 @@ import {
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { consolidateSession } from "./consolidate";
+import { retryStuckConsolidationJobs, runConsolidationJob } from "./consolidate";
 import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
-import type { Lang as RockyLang } from "./prompts/rocky";
+import type { GiftCredits, Lang as RockyLang } from "./prompts/rocky";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -73,6 +77,108 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // TTS per-day cap reserved for regular user playback. Final MiniMax limit
 // is 11,000/day; we leave 1,100 for F6 gift generation (tts_gift scope).
 const TTS_DAILY_USER_CAP = 9900;
+
+// ─── Bot defenses (P5 Review compensation, no Turnstile) ───
+
+// Max new `users` rows a single IP may adopt per rolling UTC hour.
+// 10 is generous for a shared dorm / household but aggressive for bots.
+const REGISTER_HOURLY_CAP = 10;
+
+// Static disposable-email blacklist. Kept tiny — these are the big ones
+// that tradeshow spam scripts default to. Growable without migration.
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  "mailinator.com",
+  "guerrillamail.com",
+  "10minutemail.com",
+  "10minutemail.net",
+  "tempmail.com",
+  "temp-mail.org",
+  "throwaway.email",
+  "yopmail.com",
+  "getnada.com",
+  "sharklasers.com",
+  "dispostable.com",
+  "trashmail.com",
+  "maildrop.cc",
+  "fakeinbox.com",
+  "emailondeck.com",
+  "mohmal.com",
+  "moakt.com",
+]);
+
+// Credits to zero out for accounts that signed up >= this many days ago
+// and still have zero sessions. Defense against registered-never-used
+// bot armies that might later be weaponized for TTS spam.
+const IDLE_ZERO_DAYS = 7;
+
+function isDisposableEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  return DISPOSABLE_EMAIL_DOMAINS.has(email.slice(at + 1).toLowerCase());
+}
+
+function currentHourBucket(nowMs: number = Date.now()): number {
+  return Math.floor(nowMs / (1000 * 60 * 60));
+}
+
+// Return true if the IP is under its hourly register cap. Atomic CAS
+// increment — falls through 0→1 insert or N→N+1 update only when
+// count < cap. When cap is hit, .returning() comes back empty.
+async function tryConsumeRegisterSlot(ip: string): Promise<boolean> {
+  const now = Date.now();
+  const bucket = currentHourBucket(now);
+  const ret = await db
+    .insert(register_rate_limit)
+    .values({ ip, hour_bucket: bucket, count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [register_rate_limit.ip, register_rate_limit.hour_bucket],
+      set: { count: sql`${register_rate_limit.count} + 1`, updated_at: now },
+      setWhere: sql`${register_rate_limit.count} < ${REGISTER_HOURLY_CAP}`,
+    })
+    .returning({ count: register_rate_limit.count });
+  return ret.length > 0;
+}
+
+// If this user signed up ≥ IDLE_ZERO_DAYS ago and still has 0 sessions,
+// zero their voice_credits (if any). Fires lazily from /api/me so we
+// don't need a cron. Idempotent.
+async function zeroCreditsIfStale(user_id: string): Promise<void> {
+  try {
+    const urows = await db
+      .select({ created_at: users.created_at, voice_credits: users.voice_credits })
+      .from(users)
+      .where(eq(users.id, user_id))
+      .limit(1);
+    if (urows.length === 0) return;
+    const row = urows[0];
+    if (row.voice_credits <= 0) return;
+    const ageDays = (Date.now() - row.created_at) / (1000 * 60 * 60 * 24);
+    if (ageDays < IDLE_ZERO_DAYS) return;
+    const sessCount = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.user_id, user_id))
+      .limit(1);
+    if (sessCount.length > 0) return;
+    await db
+      .update(users)
+      .set({ voice_credits: 0 })
+      .where(eq(users.id, user_id));
+    await db.insert(voice_credit_ledger).values({
+      id: crypto.randomUUID(),
+      user_id,
+      delta: -row.voice_credits,
+      reason: "idle_7day_zero",
+      session_id: null,
+      created_at: Date.now(),
+    });
+    console.info(`bot-defense: zeroed ${row.voice_credits} credits for idle user ${user_id}`);
+  } catch (err) {
+    // Defensive-only; never block /api/me on this.
+    console.warn("zeroCreditsIfStale failed:", err);
+  }
+}
 
 function getDeviceId(c: { req: { header: (k: string) => string | undefined } }): string | null {
   const raw = c.req.header("x-device-id")?.trim();
@@ -232,21 +338,64 @@ async function buildMemoryContext(
 
 async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
   const allUsers = await db
-    .select({ id: users.id, created_at: users.created_at })
+    .select({
+      id: users.id,
+      created_at: users.created_at,
+      voice_credits: users.voice_credits,
+      affinity_level: users.affinity_level,
+      pending_level_up: users.pending_level_up,
+      image_credits: users.image_credits,
+      music_credits: users.music_credits,
+      video_credits: users.video_credits,
+      video_used_at: users.video_used_at,
+    })
     .from(users)
     .where(eq(users.auth_user_id, auth_user_id))
     .orderBy(asc(users.created_at));
 
   if (allUsers.length <= 1) return;
 
-  const primaryId = allUsers[0].id;
+  const primary = allUsers[0];
+  const primaryId = primary.id;
   const secondaryIds = allUsers.slice(1).map((u) => u.id);
 
+  // ── 1. Reparent child rows that reference users.id as an FK ──
+  // sessions + memories (always safe — no unique constraints on user_id).
   await db.batch([
     db.update(sessions).set({ user_id: primaryId }).where(inArray(sessions.user_id, secondaryIds)),
     db.update(memories).set({ user_id: primaryId }).where(inArray(memories.user_id, secondaryIds)),
+    db.update(voice_credit_ledger).set({ user_id: primaryId }).where(inArray(voice_credit_ledger.user_id, secondaryIds)),
+    db.update(gifts).set({ user_id: primaryId }).where(inArray(gifts.user_id, secondaryIds)),
   ]);
 
+  // favorites has UNIQUE(user_id, content_hash) — dedupe by keeping only
+  // the primary's copy if both exist. Reparent the rest.
+  const primaryHashes = new Set(
+    (
+      await db
+        .select({ content_hash: favorites.content_hash })
+        .from(favorites)
+        .where(eq(favorites.user_id, primaryId))
+    ).map((r) => r.content_hash)
+  );
+  const secondaryFavs = await db
+    .select({ id: favorites.id, content_hash: favorites.content_hash })
+    .from(favorites)
+    .where(inArray(favorites.user_id, secondaryIds));
+  const favIdsToReparent = secondaryFavs
+    .filter((f) => !primaryHashes.has(f.content_hash))
+    .map((f) => f.id);
+  const favIdsToDelete = secondaryFavs
+    .filter((f) => primaryHashes.has(f.content_hash))
+    .map((f) => f.id);
+  if (favIdsToReparent.length > 0) {
+    await db.update(favorites).set({ user_id: primaryId }).where(inArray(favorites.id, favIdsToReparent));
+  }
+  if (favIdsToDelete.length > 0) {
+    await db.delete(favorites).where(inArray(favorites.id, favIdsToDelete));
+  }
+
+  // ── 2. Merge rapport (best trust/warmth, latest mood, concat notes) ──
   const allRapport = await db
     .select()
     .from(rapport)
@@ -300,8 +449,45 @@ async function mergeUsersByAuthId(auth_user_id: string): Promise<void> {
     }
   }
 
+  // ── 3. Merge credit columns on users table INTO the primary row ──
+  // Take the MAX across all rows so credits I put on a dup via raw SQL
+  // (or credits granted before a merge) aren't lost.
+  let maxVoice = primary.voice_credits;
+  let maxAffinity = primary.affinity_level;
+  let maxPending = primary.pending_level_up;
+  let maxImage = primary.image_credits;
+  let maxMusic = primary.music_credits;
+  let maxVideo = primary.video_credits;
+  let earliestVideoUsed = primary.video_used_at;
+  for (const u of allUsers.slice(1)) {
+    if (u.voice_credits > maxVoice) maxVoice = u.voice_credits;
+    if (u.affinity_level > maxAffinity) maxAffinity = u.affinity_level;
+    if ((u.pending_level_up ?? 0) > (maxPending ?? 0)) maxPending = u.pending_level_up;
+    if (u.image_credits > maxImage) maxImage = u.image_credits;
+    if (u.music_credits > maxMusic) maxMusic = u.music_credits;
+    if (u.video_credits > maxVideo) maxVideo = u.video_credits;
+    if (u.video_used_at != null && (earliestVideoUsed == null || u.video_used_at < earliestVideoUsed)) {
+      earliestVideoUsed = u.video_used_at;
+    }
+  }
+  await db
+    .update(users)
+    .set({
+      voice_credits: maxVoice,
+      affinity_level: maxAffinity,
+      pending_level_up: maxPending,
+      image_credits: maxImage,
+      music_credits: maxMusic,
+      video_credits: maxVideo,
+      video_used_at: earliestVideoUsed,
+    })
+    .where(eq(users.id, primaryId));
+
+  // ── 4. Delete zombie secondary user rows ──
+  await db.delete(users).where(inArray(users.id, secondaryIds));
+
   console.info(
-    `merge: auth_user_id=${auth_user_id} → primary=${primaryId}, merged ${secondaryIds.length} secondary user(s)`
+    `merge: auth_user_id=${auth_user_id} → primary=${primaryId}, merged+deleted ${secondaryIds.length} secondary user(s)`
   );
 }
 
@@ -382,14 +568,68 @@ app.post("/api/adopt-device", async (c) => {
     return c.json({ error: "callsign_taken", callsign: requestedCallsign }, 409);
   }
 
+  // ── Disposable-email blacklist. Silent reject — disposable signups
+  // should see a generic rejection so scripts can't easily iterate.
+  if (isDisposableEmail(authUser.email)) {
+    return c.json({ error: "not_supported" }, 403);
+  }
+
+  // ── AUTH-FIRST LOOKUP: if this auth_user_id already has a row, just
+  // update it. This is the idempotent path that `useAuthSession` hits
+  // on every session change. Historically we keyed on device_id first,
+  // which meant a new browser / cleared localStorage spawned a fresh
+  // user row every time — driving the 16-dup-rows issue.
+  const existingByAuth = await db
+    .select({ id: users.id, callsign: users.callsign })
+    .from(users)
+    .where(eq(users.auth_user_id, authUser.id))
+    .orderBy(asc(users.created_at))
+    .limit(1);
+  if (existingByAuth.length > 0) {
+    const row = existingByAuth[0];
+    const resolvedCallsign =
+      requestedCallsign ??
+      row.callsign ??
+      authUser.email?.split("@")[0]?.slice(0, 64) ??
+      "friend";
+    await db
+      .update(users)
+      .set({
+        device_id,
+        email: authUser.email,
+        callsign: resolvedCallsign,
+        last_seen_at: now,
+      })
+      .where(eq(users.id, row.id));
+    // Safety-net merge — cleans historical dups from before this fix.
+    // Once the DB is clean this is effectively a no-op (<=1 row).
+    await mergeUsersByAuthId(authUser.id);
+    return c.json({ ok: true, user_id: row.id, callsign: resolvedCallsign, adopted: true });
+  }
+
+  // ── Legacy device_id fallback: pre-auth anon session adopting into
+  // a first-time login. Only reachable when auth_user_id has ZERO rows.
+  //
+  // BOT DEFENSE: we're about to create a new users row. Rate-limit by
+  // CF-Connecting-IP (falls back to X-Forwarded-For's first entry, then
+  // 'unknown' as a shared bucket). 10/hour is gentle for humans, hard
+  // stop for bot farms. Applies to both the fresh-insert branch and
+  // the cross-account synthetic-device-id branch below. ──
+  const ip =
+    c.req.header("cf-connecting-ip")?.trim() ||
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown";
+  const slotOk = await tryConsumeRegisterSlot(ip);
+  if (!slotOk) {
+    return c.json({ error: "rate_limited", detail: "too many accounts from this source" }, 429);
+  }
+
   const existing = await db
     .select({ id: users.id, auth_user_id: users.auth_user_id, callsign: users.callsign })
     .from(users)
     .where(eq(users.device_id, device_id))
     .limit(1);
 
-  // Decide what callsign to persist. Preserve existing value unless the
-  // caller explicitly supplied a new one.
   const existingCallsign = existing[0]?.callsign ?? null;
   const resolvedCallsign =
     requestedCallsign ??
@@ -498,6 +738,9 @@ app.get("/api/me", async (c) => {
       .where(eq(users.id, user.user_id))
       .limit(1);
     affinity_level = row[0]?.affinity_level ?? 1;
+    // Bot defense: lazily zero credits on idle-for-7-days accounts with
+    // zero sessions. Runs in background so /api/me stays snappy.
+    ctx.runInBackground(zeroCreditsIfStale(user.user_id));
   }
   return c.json({
     ok: true,
@@ -597,10 +840,17 @@ app.post("/api/session/end", async (c) => {
 
   if (result.length === 0) return c.json({ error: "session not found" }, 404);
 
+  // Wrapped in a consolidation_jobs-backed job — errors are persisted
+  // as failed/pending rows rather than silently logged. No need to
+  // catch here; runConsolidationJob never throws.
+  ctx.runInBackground(runConsolidationJob(body.session_id));
+
+  // Opportunistically sweep older stuck jobs while we have a warm
+  // worker. Cheap (capped at 25 rows, only jobs > 10min stale).
   ctx.runInBackground(
-    consolidateSession(body.session_id).catch((err) =>
-      console.error("consolidate error", err)
-    )
+    retryStuckConsolidationJobs().then((r) => {
+      if (r.retried > 0) console.info(`retryStuck: resumed ${r.retried} job(s)`);
+    })
   );
 
   return c.json({ ok: true });
@@ -674,7 +924,27 @@ app.post("/api/chat", async (c) => {
   const lang: RockyLang =
     body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
 
-  let systemContent = getRockySystemPrompt(lang);
+  // Fetch credits so the prompt only advertises gift capabilities the
+  // user can actually back. Failures are non-fatal — skip the block.
+  let giftCredits: GiftCredits | undefined;
+  try {
+    const rows = await db
+      .select({
+        image: users.image_credits,
+        music: users.music_credits,
+        video: users.video_credits,
+      })
+      .from(users)
+      .where(eq(users.id, user.user_id))
+      .limit(1);
+    if (rows.length > 0) {
+      giftCredits = { image: rows[0].image, music: rows[0].music, video: rows[0].video };
+    }
+  } catch (err) {
+    console.warn("gift credits lookup failed — chat will skip gift block:", err);
+  }
+
+  let systemContent = getRockySystemPrompt(lang, giftCredits);
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }
@@ -741,7 +1011,17 @@ app.post("/api/chat", async (c) => {
     return new Response(text, { status: upstream.status });
   }
 
-  return new Response(upstream.body, {
+  if (!upstream.body) {
+    return c.json({ error: "no_upstream_body" }, 502);
+  }
+
+  // ── SSE transform: strip [GIFT:type:sub? "desc"] tags out of the
+  // content stream and re-emit them as a dedicated `gift_trigger`
+  // SSE event. Prevents the raw tag ever rendering on the client,
+  // lets us validate server-side (level, credits) before the client
+  // kicks generation, and removes the client's trust-the-text
+  // regex from the critical path. (P5 Review §5.) ──
+  return new Response(upstream.body.pipeThrough(buildGiftStrippingTransform()), {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream",
@@ -750,6 +1030,167 @@ app.post("/api/chat", async (c) => {
     },
   });
 });
+
+// Runs on every /api/chat SSE stream. State is per-request — each
+// call to this factory returns a fresh TransformStream.
+function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const GIFT_MARKER = "[GIFT:";
+  // Anchored with lookahead for closing `]` and balanced double quotes.
+  const GIFT_FULL = /\[GIFT:(image|music|video)(?::([a-z]{3,16}))?\s+"([^"]{1,500})"\]/i;
+
+  // Running state between chunks.
+  let sseBuffer = ""; // incomplete SSE line tail
+  let contentHold = ""; // withheld text that might be a partial GIFT tag
+
+  function emitGiftEvent(
+    controller: TransformStreamDefaultController<Uint8Array>,
+    payload: { type: string; subtype: string | null; description: string }
+  ): void {
+    controller.enqueue(
+      encoder.encode(`event: gift_trigger\ndata: ${JSON.stringify(payload)}\n\n`)
+    );
+  }
+
+  function emitContentDelta(
+    controller: TransformStreamDefaultController<Uint8Array>,
+    originalJson: unknown,
+    deltaText: string
+  ): void {
+    if (!deltaText) return;
+    const base = originalJson as {
+      choices?: Array<{ delta?: { content?: string } }>;
+      [k: string]: unknown;
+    };
+    const first = base.choices?.[0] ?? {};
+    const synthetic = {
+      ...base,
+      choices: [
+        {
+          ...first,
+          delta: { ...(first.delta ?? {}), content: deltaText },
+        },
+      ],
+    };
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(synthetic)}\n`));
+  }
+
+  // Given an incoming text buffer, strip complete GIFT tags (emitting
+  // gift_trigger events for each) and determine how much of the tail
+  // may be a partial tag that must be withheld. Returns the clean
+  // text to forward + the new hold.
+  function processBuffer(
+    buffer: string,
+    controller: TransformStreamDefaultController<Uint8Array>
+  ): { emit: string; hold: string } {
+    let out = "";
+    let remaining = buffer;
+    while (true) {
+      const start = remaining.indexOf(GIFT_MARKER);
+      if (start === -1) {
+        // No marker. But the tail might be a prefix ("[GIF", "[GIFT" …).
+        let prefixLen = 0;
+        for (let k = 1; k <= Math.min(GIFT_MARKER.length, remaining.length); k++) {
+          if (remaining.endsWith(GIFT_MARKER.slice(0, k))) prefixLen = k;
+        }
+        if (remaining.endsWith("[") && prefixLen < 1) prefixLen = 1;
+        out += remaining.slice(0, remaining.length - prefixLen);
+        return { emit: out, hold: prefixLen > 0 ? remaining.slice(-prefixLen) : "" };
+      }
+      // Emit content before the marker.
+      out += remaining.slice(0, start);
+      const tagCandidate = remaining.slice(start);
+      const m = tagCandidate.match(GIFT_FULL);
+      if (!m) {
+        // Tag not yet fully received. Hold everything from marker on.
+        return { emit: out, hold: tagCandidate };
+      }
+      // Full tag matched — emit gift_trigger, drop the tag, keep scanning.
+      const [full, type, subtype, desc] = m;
+      emitGiftEvent(controller, {
+        type: type.toLowerCase(),
+        subtype: subtype ? subtype.toLowerCase() : null,
+        description: desc.trim(),
+      });
+      const tagEnd = start + (m.index ?? 0) + full.length;
+      remaining = remaining.slice(tagEnd);
+    }
+  }
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      sseBuffer += decoder.decode(chunk, { stream: true });
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() ?? "";
+
+      for (const rawLine of lines) {
+        const line = rawLine;
+        if (line === "") {
+          // Preserve blank line (SSE record separator).
+          controller.enqueue(encoder.encode("\n"));
+          continue;
+        }
+        if (line === "data: [DONE]") {
+          // Flush any held text before DONE.
+          if (contentHold) {
+            // Hold that never became a tag — emit as plain content on a
+            // synthetic chunk so the client sees the text it would
+            // have otherwise missed.
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  choices: [{ delta: { content: contentHold } }],
+                })}\n`
+              )
+            );
+            contentHold = "";
+          }
+          controller.enqueue(encoder.encode(`${line}\n`));
+          continue;
+        }
+        if (!line.startsWith("data: ")) {
+          // Unknown directive (event:, id:, retry:) — pass through.
+          controller.enqueue(encoder.encode(`${line}\n`));
+          continue;
+        }
+        let json: unknown;
+        try {
+          json = JSON.parse(line.slice(6));
+        } catch {
+          controller.enqueue(encoder.encode(`${line}\n`));
+          continue;
+        }
+        const delta = (json as { choices?: Array<{ delta?: { content?: string } }> })
+          .choices?.[0]?.delta?.content ?? "";
+        if (!delta) {
+          controller.enqueue(encoder.encode(`${line}\n`));
+          continue;
+        }
+        const { emit, hold } = processBuffer(contentHold + delta, controller);
+        contentHold = hold;
+        emitContentDelta(controller, json, emit);
+      }
+    },
+    flush(controller) {
+      // Drain any pending SSE line + held text.
+      if (sseBuffer) {
+        controller.enqueue(encoder.encode(sseBuffer));
+        sseBuffer = "";
+      }
+      if (contentHold) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              choices: [{ delta: { content: contentHold } }],
+            })}\n`
+          )
+        );
+        contentHold = "";
+      }
+    },
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  P5 F2 — /api/voice-credits  (GET balance)
@@ -909,6 +1350,157 @@ app.get("/api/probe-minimax", async (c) => {
       hit("I2V-01", `${base}/v1/video_generation`, {
         model: "I2V-01",
         prompt: "a slow zoom",
+      })
+    );
+  }
+
+  // Music-cover spike (P5 plan preferred route for audio gifts).
+  // Tries the MiniMax music_cover endpoint with rocky_voice_human.MP3
+  // (28s, hosted at /audio/rocky_ref.wav) as the reference voice.
+  // Field names vary across MiniMax docs — try several in parallel so
+  // the error messages tell us which is canonical.
+  if (what === "music-cover-rocky") {
+    const origin = new URL(c.req.url).origin;
+    const refVoiceUrl = `${origin}/audio/rocky_ref.wav`;
+    const lyrics = "Friend of mine, far away star, Rocky remembers you tonight.";
+    const baseBody = {
+      model: "music-cover",
+      lyrics,
+    };
+    tasks.push(
+      hit("mc_refer_voice", `${base}/v1/music_cover`, {
+        ...baseBody,
+        refer_voice: refVoiceUrl,
+      })
+    );
+    tasks.push(
+      hit("mc_reference_voice", `${base}/v1/music_cover`, {
+        ...baseBody,
+        reference_voice: refVoiceUrl,
+      })
+    );
+    tasks.push(
+      hit("mc_voice_reference", `${base}/v1/music_cover`, {
+        ...baseBody,
+        voice_reference: refVoiceUrl,
+      })
+    );
+    tasks.push(
+      hit("mc_audio_url", `${base}/v1/music_cover`, {
+        ...baseBody,
+        audio_url: refVoiceUrl,
+      })
+    );
+    tasks.push(
+      hit("mc_alt_endpoint_music_cover_generation", `${base}/v1/music_cover_generation`, {
+        ...baseBody,
+        refer_voice: refVoiceUrl,
+      })
+    );
+    tasks.push(
+      hit("mc_on_music_generation", `${base}/v1/music_generation`, {
+        model: "music-cover",
+        lyrics,
+        refer_voice: refVoiceUrl,
+      })
+    );
+  }
+
+  // Follow-up character-lock probe — earlier i2i probe tried
+  // `subject_reference` with sunny.png and got 1000 unknown error. We
+  // now suspect that variant IS the proper character-lock mode but it
+  // rejected the sun because it isn't character-shaped. Retry with the
+  // real Rocky reference hosted at /gifts/ref/.
+  if (what === "image-i2i-rocky") {
+    const origin = new URL(c.req.url).origin;
+    const refUrl = `${origin}/gifts/ref/rocky_realistic.jpeg`;
+    const baseBody = {
+      model: "image-01",
+      prompt: "Same character, standing in a dim spacecraft corridor with warm orange lighting, three-quarter view.",
+      aspect_ratio: "1:1",
+      n: 1,
+      prompt_optimizer: false,
+    };
+    tasks.push(
+      hit("rocky_subject_arr", `${base}/v1/image_generation`, {
+        ...baseBody,
+        subject_reference: [{ type: "character", image_url: [refUrl] }],
+      })
+    );
+    tasks.push(
+      hit("rocky_subject_str", `${base}/v1/image_generation`, {
+        ...baseBody,
+        subject_reference: [{ type: "character", image_url: refUrl }],
+      })
+    );
+    tasks.push(
+      hit("rocky_subject_object_single", `${base}/v1/image_generation`, {
+        ...baseBody,
+        subject_reference: { type: "character", image_url: [refUrl] },
+      })
+    );
+    tasks.push(
+      hit("rocky_reference_image_baseline", `${base}/v1/image_generation`, {
+        ...baseBody,
+        reference_image: refUrl,
+      })
+    );
+  }
+
+  // image-01 img2img probe — we need the model to accept a reference
+  // image so Rocky gifts stay on-character (plan Type C: Rocky holding
+  // a sign, Type A: Rocky selfie). Documented field names differ across
+  // MiniMax versions — try every plausible shape in parallel and let
+  // the error messages tell us which is canonical.
+  if (what === "image-i2i") {
+    const refUrl = "https://ssl.gstatic.com/onebox/weather/64/sunny.png";
+    const baseBody = {
+      model: "image-01",
+      prompt: "the sun wearing sunglasses, same subject",
+      aspect_ratio: "1:1",
+      n: 1,
+      prompt_optimizer: true,
+    };
+    tasks.push(
+      hit("i2i_subject_reference_arr", `${base}/v1/image_generation`, {
+        ...baseBody,
+        subject_reference: [{ type: "character", image_url: [refUrl] }],
+      })
+    );
+    tasks.push(
+      hit("i2i_subject_reference_url_str", `${base}/v1/image_generation`, {
+        ...baseBody,
+        subject_reference: [{ type: "character", image_url: refUrl }],
+      })
+    );
+    tasks.push(
+      hit("i2i_reference_image", `${base}/v1/image_generation`, {
+        ...baseBody,
+        reference_image: refUrl,
+      })
+    );
+    tasks.push(
+      hit("i2i_image_url", `${base}/v1/image_generation`, {
+        ...baseBody,
+        image_url: refUrl,
+      })
+    );
+    tasks.push(
+      hit("i2i_init_image", `${base}/v1/image_generation`, {
+        ...baseBody,
+        init_image: refUrl,
+      })
+    );
+    tasks.push(
+      hit("i2i_first_frame_image", `${base}/v1/image_generation`, {
+        ...baseBody,
+        first_frame_image: refUrl,
+      })
+    );
+    tasks.push(
+      hit("i2i_image_edit_endpoint", `${base}/v1/image_edit`, {
+        ...baseBody,
+        image_url: refUrl,
       })
     );
   }
@@ -1289,6 +1881,494 @@ app.get("/api/tts", async (c) => {
       "X-Audio-Cache": "miss",
     },
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  P5 F6 Phase 2 — Media gift generation
+//
+//  Triggered by a [GIFT:image|music "desc"] tag in Rocky's reply.
+//  Image  → requires affinity_level ≥ 2 + image_credits > 0
+//  Music  → requires affinity_level ≥ 3 + music_credits > 0
+//  Video is NOT wired here yet (needs two-step image-01 → I2V-01
+//  async + Hailuo daily_global_locks CAS + 48h SLA fallback).
+// ═══════════════════════════════════════════════════════════════════
+
+const MINIMAX_SYNC_API = "https://api.minimaxi.com";
+const GIFT_URL_TTL_SECS = 3600 * 24 * 7; // 7 days — long enough for a chat bubble to survive a reload
+
+async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
+  const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const byteLength = hex.length / 2;
+  const out = new Uint8Array(byteLength);
+  for (let i = 0; i < byteLength; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
+// Subtypes supported for image gifts. Each maps to a public reference
+// image at /gifts/ref/<file> served by the Worker's asset handler,
+// passed to MiniMax image-01 via `reference_image` so the generated
+// output sits in a consistent Rocky visual universe.
+const IMAGE_REF_FILE: Record<string, string> = {
+  realistic: "/gifts/ref/rocky_realistic.jpeg",
+  comic: "/gifts/ref/rocky_comic1.jpeg",
+};
+
+// Style prompts prepended to the scene description. Locked tightly to
+// the reference image — these are defensive prompts meant to keep the
+// character on-model and suppress spurious text/watermarks/signatures
+// the model sometimes hallucinates when a reference image is provided.
+const IMAGE_NEGATIVE =
+  "STRICT NEGATIVES: no text, no letters, no words, no numbers, no captions, no subtitles, no signatures, no watermarks, no logos, no handwriting, no UI, no frames, no borders. The output must contain zero visible characters of any kind.";
+
+const IMAGE_STYLE_PROMPT: Record<string, string> = {
+  realistic: [
+    "CHARACTER LOCK: the subject is the exact same rock-segmented alien creature shown in the reference image — same brown/tan stone body, blue-green mineral streaks, chunky multi-segment limbs, no face, no eyes, no mouth. Preserve the creature's anatomy and proportions from the reference exactly; only the pose and environment may change to match the scene description.",
+    "STYLE LOCK: photo-realistic 3D sculpture render, matte stone texture, soft studio-like lighting, shallow depth of field.",
+    IMAGE_NEGATIVE,
+    "SCENE:",
+  ].join(" "),
+  comic: [
+    "CHARACTER LOCK: Rocky is rendered as the same rock-segmented alien creature from the reference — brown/tan stone body, teal mineral patches, chunky limbs, no face. Anatomy matches reference.",
+    "STYLE LOCK: hand-drawn watercolor on textured cream paper, loose ink line-art, gentle pencil shading, soft earth-tone palette. The whole composition must look like a casual sketch drawn by Rocky on a piece of paper — naive, warm, friendly.",
+    IMAGE_NEGATIVE,
+    "SUBJECT OF THE DRAWING:",
+  ].join(" "),
+};
+
+app.post("/api/generate-media", async (c) => {
+  const authed = await getAuthedUser();
+  if (!authed) return c.json({ error: "not_authenticated" }, 401);
+  const userId = authed.user_id;
+
+  const body = await c.req.json<{
+    type?: unknown;
+    subtype?: unknown;
+    description?: unknown;
+    session_id?: unknown;
+  }>();
+
+  const type = body.type;
+  if (type !== "image" && type !== "music") {
+    return c.json({ error: "invalid_type" }, 400);
+  }
+  const description = typeof body.description === "string" ? body.description.trim() : "";
+  if (!description || description.length < 4 || description.length > 500) {
+    return c.json({ error: "invalid_description" }, 400);
+  }
+  // Subtype is required for image gifts (we no longer support free-form
+  // image generation without a reference style).
+  let subtype: string | null = null;
+  if (type === "image") {
+    const raw = typeof body.subtype === "string" ? body.subtype.trim().toLowerCase() : "";
+    if (!(raw in IMAGE_REF_FILE)) {
+      return c.json({ error: "invalid_subtype", accepted: Object.keys(IMAGE_REF_FILE) }, 400);
+    }
+    subtype = raw;
+  }
+  const sessionId = typeof body.session_id === "string" && body.session_id.length > 0 ? body.session_id : null;
+
+  const apiKey = secret.get("MINIMAX_API_KEY");
+  if (!apiKey) return c.json({ error: "missing_secret" }, 500);
+
+  // ── 1. CAS decrement (level gate + credit check in one round trip) ──
+  const minLevel = type === "image" ? 2 : 3;
+  const deducted =
+    type === "image"
+      ? await db
+          .update(users)
+          .set({ image_credits: sql`${users.image_credits} - 1` })
+          .where(
+            and(
+              eq(users.id, userId),
+              sql`${users.affinity_level} >= ${minLevel}`,
+              sql`${users.image_credits} > 0`
+            )
+          )
+          .returning({ remaining: users.image_credits })
+      : await db
+          .update(users)
+          .set({ music_credits: sql`${users.music_credits} - 1` })
+          .where(
+            and(
+              eq(users.id, userId),
+              sql`${users.affinity_level} >= ${minLevel}`,
+              sql`${users.music_credits} > 0`
+            )
+          )
+          .returning({ remaining: users.music_credits });
+
+  if (deducted.length === 0) {
+    return c.json({ error: "insufficient_credit_or_level", type, min_level: minLevel }, 402);
+  }
+
+  // Refund helper — used whenever downstream work fails AFTER the CAS
+  // succeeded. Credits that disappear into thin air are the worst
+  // class of support ticket so this path must be bulletproof.
+  async function refund(reason: string): Promise<void> {
+    try {
+      if (type === "image") {
+        await db
+          .update(users)
+          .set({ image_credits: sql`${users.image_credits} + 1` })
+          .where(eq(users.id, userId));
+      } else {
+        await db
+          .update(users)
+          .set({ music_credits: sql`${users.music_credits} + 1` })
+          .where(eq(users.id, userId));
+      }
+    } catch (err) {
+      console.error(`refund failed (${reason}):`, err);
+    }
+  }
+
+  // ── 2. Call MiniMax ──
+  let bytes: Uint8Array;
+  let contentType: string;
+  let ext: string;
+
+  try {
+    if (type === "image") {
+      // For realistic subtype the description is "scene | caption" —
+      // only feed the scene portion to MiniMax. For comic, the whole
+      // description is the scene (caption is fixed client-side).
+      const scene =
+        subtype === "realistic" && description.includes("|")
+          ? description.split("|")[0].trim()
+          : description;
+      const stylePrefix = subtype ? IMAGE_STYLE_PROMPT[subtype] : "";
+      const prompt = stylePrefix ? `${stylePrefix} ${scene}` : scene;
+      const origin = new URL(c.req.url).origin;
+      const refUrl = subtype ? `${origin}${IMAGE_REF_FILE[subtype]}` : undefined;
+
+      const upstream = await fetch(`${MINIMAX_SYNC_API}/v1/image_generation`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "image-01",
+          prompt,
+          aspect_ratio: "1:1",
+          n: 1,
+          // Off — optimizer rewrites our explicit style/negative locks
+          // and drifts away from the reference. Keep our prompt verbatim.
+          prompt_optimizer: false,
+          ...(refUrl ? { reference_image: refUrl } : {}),
+        }),
+      });
+      if (!upstream.ok) {
+        const errText = await upstream.text();
+        console.warn("image_generation non-ok:", upstream.status, errText.slice(0, 400));
+        await refund("image_api_not_ok");
+        return c.json({ error: "minimax_failed", status: upstream.status }, 502);
+      }
+      const json = (await upstream.json()) as {
+        data?: { image_urls?: string[] };
+        base_resp?: { status_code?: number; status_msg?: string };
+      };
+      if (json.base_resp?.status_code !== 0) {
+        console.warn("image_generation base_resp not 0:", json.base_resp);
+        await refund("image_base_resp_nonzero");
+        return c.json({ error: "minimax_rejected", detail: json.base_resp }, 502);
+      }
+      const ossUrl = json.data?.image_urls?.[0];
+      if (!ossUrl) {
+        await refund("image_no_url");
+        return c.json({ error: "minimax_no_url" }, 502);
+      }
+      // MiniMax OSS URLs expire after ~7 days — mirror immediately.
+      const ossRes = await fetch(ossUrl);
+      if (!ossRes.ok) {
+        await refund("oss_fetch_failed");
+        return c.json({ error: "oss_fetch_failed", status: ossRes.status }, 502);
+      }
+      const ab = await ossRes.arrayBuffer();
+      bytes = new Uint8Array(ab);
+      // MiniMax serves image as JPEG in most cases; trust the Content-Type
+      // but fall back to a safe default that browsers will sniff.
+      contentType = ossRes.headers.get("Content-Type") ?? "image/jpeg";
+      ext = contentType.includes("png") ? "png" : "jpg";
+    } else {
+      // music-2.6 needs a `lyrics` field. We use the description as
+      // lyrical prompt so the model has melodic material to sing over.
+      // Pure-BGM output via a different model (or ffmpeg mixing) is a
+      // v2 follow-up per plan.
+      const upstream = await fetch(`${MINIMAX_SYNC_API}/v1/music_generation`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "music-2.6",
+          lyrics: description,
+        }),
+      });
+      if (!upstream.ok) {
+        const errText = await upstream.text();
+        console.warn("music_generation non-ok:", upstream.status, errText.slice(0, 400));
+        await refund("music_api_not_ok");
+        return c.json({ error: "minimax_failed", status: upstream.status }, 502);
+      }
+      const json = (await upstream.json()) as {
+        data?: { audio?: string };
+        base_resp?: { status_code?: number; status_msg?: string };
+      };
+      if (json.base_resp?.status_code !== 0) {
+        console.warn("music_generation base_resp not 0:", json.base_resp);
+        await refund("music_base_resp_nonzero");
+        return c.json({ error: "minimax_rejected", detail: json.base_resp }, 502);
+      }
+      const hex = json.data?.audio;
+      if (!hex) {
+        await refund("music_no_audio");
+        return c.json({ error: "minimax_no_audio" }, 502);
+      }
+      bytes = hexToBytes(hex);
+      contentType = "audio/mpeg";
+      ext = "mp3";
+    }
+  } catch (err) {
+    console.error("generate-media upstream error:", err);
+    await refund("exception");
+    return c.json({ error: "proxy_error" }, 502);
+  }
+
+  // ── 3. Persist to R2 ──
+  const hash = await sha256HexBytes(bytes);
+  const r2Key = `gift/${type}/${hash.slice(0, 2)}/${hash}.${ext}`;
+  try {
+    await storage.from(buckets.rockyAudio).put(r2Key, bytes);
+  } catch (err) {
+    console.error("R2 put failed:", err);
+    await refund("r2_put_failed");
+    return c.json({ error: "storage_failed" }, 500);
+  }
+
+  // ── 4. Record gift + return presigned URL ──
+  const giftId = crypto.randomUUID();
+  const now = Date.now();
+  // For realistic subtype, extract the caption (right of `|`) so the
+  // client can overlay it at render time. Comic subtype's caption is
+  // a fixed localized string injected client-side.
+  let caption: string | null = null;
+  if (subtype === "realistic" && description.includes("|")) {
+    const raw = description.split("|").slice(1).join("|").trim();
+    if (raw) caption = raw.slice(0, 40);
+  }
+  await db.insert(gifts).values({
+    id: giftId,
+    user_id: userId,
+    type,
+    subtype,
+    description,
+    r2_key: r2Key,
+    r2_bucket: "rocky-audio",
+    source_session: sessionId,
+    status: "ready",
+    error: null,
+    created_at: now,
+    updated_at: now,
+  });
+
+  // Track daily API usage (telemetry only — no enforcement until we
+  // observe real volumes; plan allows 120/day image, 100/day music).
+  const today = utc8DateString(now);
+  ctx.runInBackground(
+    (async () => {
+      try {
+        await db
+          .insert(daily_api_usage)
+          .values({ date: today, api: type, scope: "__global__", count: 1, updated_at: now })
+          .onConflictDoUpdate({
+            target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+            set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+          });
+      } catch (err) {
+        console.warn("daily_api_usage increment failed:", err);
+      }
+    })()
+  );
+
+  const { downloadUrl, expiresAt } = await storage
+    .from(buckets.rockyAudio)
+    .createPresignedGetUrl(r2Key, GIFT_URL_TTL_SECS);
+
+  return c.json({
+    id: giftId,
+    type,
+    subtype,
+    status: "ready",
+    url: downloadUrl,
+    expires_at: expiresAt.getTime(),
+    content_type: contentType,
+    caption,
+    remaining: deducted[0].remaining,
+  });
+});
+
+// List this user's gifts (newest first) with fresh presigned URLs so
+// the client can re-render old gifts after a reload without needing
+// to hit /api/generate-media again.
+app.get("/api/gifts", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  const rows = await db
+    .select({
+      id: gifts.id,
+      type: gifts.type,
+      subtype: gifts.subtype,
+      description: gifts.description,
+      r2_key: gifts.r2_key,
+      status: gifts.status,
+      created_at: gifts.created_at,
+    })
+    .from(gifts)
+    .where(eq(gifts.user_id, user.user_id))
+    .orderBy(desc(gifts.created_at))
+    .limit(200);
+
+  const out = await Promise.all(
+    rows.map(async (r) => {
+      if (r.status !== "ready" || !r.r2_key) {
+        return { ...r, url: null };
+      }
+      try {
+        const { downloadUrl } = await storage
+          .from(buckets.rockyAudio)
+          .createPresignedGetUrl(r.r2_key, GIFT_URL_TTL_SECS);
+        return { ...r, url: downloadUrl };
+      } catch (err) {
+        console.warn(`presign failed for gift ${r.id}:`, err);
+        return { ...r, url: null };
+      }
+    })
+  );
+
+  return c.json({ gifts: out });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  Admin endpoints — gated by X-Admin-Token == secret ADMIN_TOKEN
+//
+//  (P5 Review §7 consolidation retry + rapport threshold recalibration)
+// ═══════════════════════════════════════════════════════════════════
+
+function isAdmin(c: { req: { header: (k: string) => string | undefined } }): boolean {
+  const expected = secret.get("ADMIN_TOKEN");
+  if (!expected) return false;
+  const got = c.req.header("x-admin-token")?.trim();
+  // Constant-time-ish compare — lengths differ → obviously wrong.
+  if (!got || got.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ got.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+// Manually retry stuck consolidation jobs. Returns how many were kicked.
+app.post("/api/admin/retry-consolidation", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const url = new URL(c.req.url);
+  const olderThanMs = Math.max(0, Number(url.searchParams.get("older_than_ms") ?? 0)) || 10 * 60 * 1000;
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? 0)) || 25);
+  const result = await retryStuckConsolidationJobs(olderThanMs, limit);
+  return c.json({ ok: true, ...result });
+});
+
+// Dead-letter inspection — list failed consolidation jobs.
+app.get("/api/admin/consolidation-failed", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const rows = await db
+    .select()
+    .from(consolidation_jobs)
+    .where(eq(consolidation_jobs.status, "failed"))
+    .orderBy(desc(consolidation_jobs.updated_at))
+    .limit(100);
+  return c.json({ failed: rows });
+});
+
+// Compute current rapport distribution + proposed thresholds.
+// Plan: Lv2 = P50, Lv3 = P75, Lv4 = P95 (using trust as the primary
+// percentile; warmth thresholds follow the same split of warmth).
+// DOES NOT apply — admin reviews and then POSTs the recalibrate call.
+app.get("/api/admin/rapport-percentiles", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const rows = await db
+    .select({ trust: rapport.trust, warmth: rapport.warmth })
+    .from(rapport);
+  if (rows.length === 0) {
+    return c.json({ sample_size: 0, warning: "no rapport rows yet" });
+  }
+  const trusts = rows.map((r) => r.trust).sort((a, b) => a - b);
+  const warmths = rows.map((r) => r.warmth).sort((a, b) => a - b);
+  const pct = (arr: number[], p: number) => {
+    const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)));
+    return arr[idx];
+  };
+  const trustP = { p50: pct(trusts, 0.5), p75: pct(trusts, 0.75), p95: pct(trusts, 0.95) };
+  const warmthP = { p50: pct(warmths, 0.5), p75: pct(warmths, 0.75), p95: pct(warmths, 0.95) };
+  const current = await db.select().from(rapport_thresholds);
+  return c.json({
+    sample_size: rows.length,
+    warning:
+      rows.length < 500
+        ? `Sample size ${rows.length} < 500 — plan says wait for more data before recalibrating.`
+        : null,
+    trust_percentiles: trustP,
+    warmth_percentiles: warmthP,
+    proposed: [
+      { level: 2, trust_min: trustP.p50, warmth_min: warmthP.p50, combinator: "OR" },
+      { level: 3, trust_min: trustP.p75, warmth_min: warmthP.p75, combinator: "AND" },
+      { level: 4, trust_min: trustP.p95, warmth_min: warmthP.p95, combinator: "AND" },
+    ],
+    current,
+  });
+});
+
+// Apply thresholds. Body: { levels: [{ level, trust_min, warmth_min, combinator }] }.
+// No auto-run — admin inspects /rapport-percentiles, then POSTs the payload
+// they want applied. Logs to console. Does NOT demote existing users.
+app.post("/api/admin/rapport-recalibrate", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const body = await c.req
+    .json<{ levels?: Array<{ level?: number; trust_min?: number; warmth_min?: number; combinator?: string }> }>()
+    .catch(() => ({} as { levels?: unknown }));
+  const levels = Array.isArray(body.levels) ? body.levels : [];
+  const applied: Array<{ level: number; trust_min: number; warmth_min: number; combinator: string }> = [];
+  for (const row of levels) {
+    const level = Number(row.level);
+    if (!Number.isInteger(level) || level < 2 || level > 4) continue;
+    const trust_min = Number(row.trust_min);
+    const warmth_min = Number(row.warmth_min);
+    const combinator = row.combinator === "AND" || row.combinator === "OR" ? row.combinator : null;
+    if (!Number.isFinite(trust_min) || !Number.isFinite(warmth_min) || !combinator) continue;
+    if (trust_min < 0 || trust_min > 1 || warmth_min < 0 || warmth_min > 1) continue;
+    await db
+      .insert(rapport_thresholds)
+      .values({ level, trust_min, warmth_min, combinator })
+      .onConflictDoUpdate({
+        target: rapport_thresholds.level,
+        set: { trust_min, warmth_min, combinator },
+      });
+    applied.push({ level, trust_min, warmth_min, combinator });
+    console.info(
+      `rapport_threshold lv${level}: trust≥${trust_min.toFixed(3)} ${combinator} warmth≥${warmth_min.toFixed(3)}`
+    );
+  }
+  return c.json({ ok: true, applied });
 });
 
 export default app;

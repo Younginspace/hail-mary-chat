@@ -28,6 +28,16 @@
   src: url('/fonts/JetBrainsMono-Bold.woff2') format('woff2');
 }
 
+/* Patrick Hand — 手绘 Latin 字体，用于 gift 图像 overlay。Latin-only，
+   CJK 会走 fallback 系统字体（KaiTi / 手写风）。 */
+@font-face {
+  font-family: 'Patrick Hand';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/PatrickHand-Regular.ttf') format('truetype');
+}
+
 /* Noto Sans SC — 用系统中文字体兜底，避免加载巨型 CJK 字体文件 */
 
 :root {
@@ -357,7 +367,9 @@ body {
   line-height: 1.7;
   font-size: 14px;
   position: relative;
-  animation: fadeIn 0.3s ease-out;
+  /* F5: GSAP owns the mount animation in MessageBubble.tsx. Keeping the
+     CSS keyframe definition intact for any legacy reduced-motion flows
+     that might still opt in. */
 }
 
 @keyframes fadeIn {
@@ -2827,6 +2839,28 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.echo-allanswered-cta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--accent-cyan);
+  background: none;
+  border: 1px solid rgba(0, 212, 170, 0.45);
+  padding: 5px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.echo-allanswered-cta:hover {
+  border-color: #00d4aa;
+  background: rgba(0, 212, 170, 0.12);
+  color: #00d4aa;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2962,6 +2996,15 @@ body {
 .status-iconbtn:hover {
   border-color: #00d4aa;
   background: rgba(0, 212, 170, 0.08);
+}
+.status-iconbtn.hangup {
+  border-color: rgba(255, 90, 90, 0.5);
+  color: #ff7070;
+}
+.status-iconbtn.hangup:hover {
+  border-color: #ff6060;
+  background: rgba(255, 90, 90, 0.12);
+  color: #ff9090;
 }
 
 .hero-account-fav {
@@ -3272,4 +3315,146 @@ body {
 @media (max-width: 640px) {
   .hero-topleft { top: 10px; left: 10px; gap: 6px; }
   .hero-favorites-pill { padding: 4px 9px; font-size: 11px; }
+}
+
+/* ========== F6 Phase 2 — gift bubble ========== */
+.gift-bubble {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 212, 170, 0.06);
+  border: 1px solid rgba(0, 212, 170, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: fadeIn 0.3s ease-out;
+}
+.gift-bubble.failed {
+  background: rgba(255, 120, 120, 0.05);
+  border-color: rgba(255, 120, 120, 0.3);
+}
+.gift-bubble .gift-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--accent-cyan-dim);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.gift-bubble .gift-status {
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gift-bubble .gift-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+.gift-bubble .gift-pulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.7);
+  animation: giftPulse 1.4s ease-in-out infinite;
+}
+@keyframes giftPulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.gift-bubble .gift-media {
+  display: block;
+  margin-top: 2px;
+  max-width: 100%;
+  border-radius: 6px;
+}
+.gift-bubble .gift-image {
+  max-height: 320px;
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.25);
+}
+.gift-bubble .gift-audio,
+.gift-bubble .gift-video { width: 100%; }
+.gift-bubble .gift-video { max-height: 320px; }
+.gift-bubble .gift-download {
+  align-self: flex-start;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--accent-cyan);
+  text-decoration: none;
+  padding: 3px 9px;
+  border: 1px solid rgba(0, 212, 170, 0.3);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+.gift-bubble .gift-download:hover {
+  background: rgba(0, 212, 170, 0.12);
+}
+
+/* Composed image layout — generated image + overlay text */
+.gift-bubble .gift-compose {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f4ead6;
+}
+.gift-bubble .gift-compose.comic {
+  background: #f6f1e8;
+}
+.gift-bubble .gift-compose .gift-media {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: cover;
+  margin: 0;
+  border-radius: 0;
+}
+.gift-bubble .gift-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  text-align: center;
+  pointer-events: none;
+  /* Hand-drawn rounded cartoon feel. Latin uses Patrick Hand (self-hosted);
+     CJK falls back to the most handwritten-looking system fonts. */
+  font-family: 'Patrick Hand', 'Comic Sans MS',
+    'LXGW WenKai', 'Ma Shan Zheng', 'KaiTi', 'STKaiti', '楷体',
+    system-ui, sans-serif;
+  line-height: 1.1;
+  word-break: break-word;
+}
+.gift-bubble .gift-overlay-top {
+  top: 0;
+  /* Yellow cartoon banner with brown stroke + drop shadow, matching
+     the "AMAZE!" treatment in rockyemoji.jpeg */
+  background: linear-gradient(to bottom, rgba(255, 210, 80, 0.92), rgba(255, 175, 45, 0.88));
+  color: #3a2612;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+  -webkit-text-stroke: 0.4px #3a2612;
+  border-bottom: 2px solid rgba(58, 38, 18, 0.35);
+}
+.gift-bubble .gift-overlay-bottom {
+  bottom: 0;
+  /* Subtle signature line matching EMERY PAINTING — watercolor
+     signature on bottom margin, no banner */
+  background: transparent;
+  color: #2f7a62;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  padding-bottom: 14px;
 }

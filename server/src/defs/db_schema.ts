@@ -303,5 +303,44 @@ export const favorites = sqliteTable(
   ]
 );
 
+// ═══════════════════════════════════════════════════════════════════
+//  Consolidation retry + dead-letter (P5 Review §7)
+// ═══════════════════════════════════════════════════════════════════
+
+// One row per session/end that kicks consolidation. Wraps the actual
+// consolidate() call so failures stop being swallowed by a bare .catch.
+// Status transitions: pending → running → (done | failed). 'failed'
+// only when attempts hits MAX (3); otherwise it flips back to pending
+// for a later retry (manual admin or cold-start sweep).
+export const consolidation_jobs = sqliteTable(
+  "consolidation_jobs",
+  {
+    session_id: text("session_id").primaryKey(),
+    status: text("status").notNull().default("pending"), // pending | running | done | failed
+    attempts: integer("attempts").notNull().default(0),
+    last_error: text("last_error"),
+    created_at: integer("created_at").notNull(),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_cjobs_status_updated").on(t.status, t.updated_at)]
+);
+
+// ═══════════════════════════════════════════════════════════════════
+//  Bot defenses (P5 Review compensation — no Turnstile)
+// ═══════════════════════════════════════════════════════════════════
+
+// Per-IP hourly register rate limit. hour_bucket = UTC epoch hour.
+// CAS-friendly: (ip, hour_bucket) PK, `count` bumped atomically.
+export const register_rate_limit = sqliteTable(
+  "register_rate_limit",
+  {
+    ip: text("ip").notNull(),
+    hour_bucket: integer("hour_bucket").notNull(),
+    count: integer("count").notNull().default(0),
+    updated_at: integer("updated_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.ip, t.hour_bucket] })]
+);
+
 // Keep the sql import reachable so future migrations adding defaults type-check.
 export { sql };

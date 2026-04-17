@@ -114,14 +114,25 @@ export default function ChatInterface({
     return () => window.removeEventListener('pagehide', onPageHide);
   }, [sessionId]);
 
-  // Smart auto-scroll: only pull to bottom if the user is already near the
-  // bottom. If they've scrolled up to read history, leave them alone.
+  // Smart auto-scroll. Rules:
+  //   1. If the user just sent a message (last entry is a 'user' role),
+  //      ALWAYS scroll to bottom — they want to see their own send.
+  //   2. Otherwise only scroll if they're already close to the bottom
+  //      so we don't yank them while reading history.
+  // Using `block: 'end'` + 'nearest' inline prevents the scroll from
+  // escaping the chat area and accidentally moving the window (which
+  // on mobile can even fire pull-to-refresh).
   useEffect(() => {
     const area = chatAreaRef.current;
     if (!area) return;
+    const last = messages[messages.length - 1];
     const distanceFromBottom = area.scrollHeight - area.scrollTop - area.clientHeight;
-    if (distanceFromBottom < 120) {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const justSent = last?.role === 'user';
+    if (justSent || distanceFromBottom < 200) {
+      // rAF so we measure after the DOM commits the new message height.
+      requestAnimationFrame(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+      });
     }
   }, [messages]);
 
@@ -135,7 +146,8 @@ export default function ChatInterface({
     if (lastMsg.id === 'greeting' && !greetingSpoken.current) {
       greetingSpoken.current = true;
       lastSpokenIdRef.current = lastMsg.id;
-      setTimeout(() => speak(lastMsg.content, lang, lastMsg.id), 500);
+      // Minimal defer so the greeting bubble paints before audio starts.
+      setTimeout(() => speak(lastMsg.content, lang, lastMsg.id), 120);
       return;
     }
 
@@ -302,6 +314,19 @@ export default function ChatInterface({
     setInput('');
     sendMessage(text);
   };
+
+  // Manual hang-up: end the session cleanly so consolidation still runs,
+  // then drop back to home. pagehide already fires endSession on tab
+  // close but a user-initiated exit should be immediate + visible.
+  const handleHangup = useCallback(() => {
+    stopTTS();
+    try {
+      endSession(sessionId);
+    } catch (err) {
+      console.warn('endSession on hangup failed', err);
+    }
+    onBack();
+  }, [stopTTS, sessionId, onBack]);
 
   // Enter submits; Shift+Enter inserts a newline (Slack-style).
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -494,6 +519,17 @@ export default function ChatInterface({
               </div>
             )}
           </div>
+          <button
+            type="button"
+            className="status-iconbtn hangup"
+            onClick={handleHangup}
+            title={t('chat.hangup', lang)}
+            aria-label={t('chat.hangup', lang)}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 12l-3-3a14 14 0 0 0-14 0l-3 3 2.5 2.5a1 1 0 0 0 1.4 0l2-2a1 1 0 0 1 1-.3 13 13 0 0 0 5.2 0 1 1 0 0 1 1 .3l2 2a1 1 0 0 0 1.4 0L22 12z" transform="rotate(135 12 12)" />
+            </svg>
+          </button>
           </div>
           {isAuthenticated && me?.callsign && (
             <span className="account-chip" title={me.email ?? ''}>
@@ -554,7 +590,13 @@ export default function ChatInterface({
         {isEnded ? (
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
         ) : (
-          <form className="input-area" onSubmit={handleSubmit}>
+          <form
+            className="input-area"
+            onSubmit={handleSubmit}
+            action="#"
+            noValidate
+            autoComplete="off"
+          >
             <textarea
               ref={textareaRef}
               value={input}

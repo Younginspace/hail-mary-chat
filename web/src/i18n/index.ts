@@ -57,9 +57,14 @@ const translations = {
     ja: '読み取り専用 · 質問をタップ',
   },
   'echo.allAnswered': {
-    zh: '所有预置问题都听过了。想自己问 Rocky？回去 Dial In。',
-    en: "That's all the presets. Want to ask Rocky yourself? Dial in.",
-    ja: 'プリセットは全部。自分で話したい？ダイヤルイン。',
+    zh: '所有预置问题都听过了。想自己问 Rocky？',
+    en: "That's all the presets. Want to ask Rocky yourself?",
+    ja: 'プリセットは全部。自分で話したい？',
+  },
+  'echo.allAnsweredCta': {
+    zh: 'Dial In',
+    en: 'Dial In',
+    ja: 'ダイヤルイン',
   },
   'echo.back': {
     zh: '返回首页',
@@ -421,6 +426,58 @@ const translations = {
     zh: '至少 8 位',
     en: 'At least 8 characters',
     ja: '8文字以上',
+  },
+
+  // ===== Gift bubble (F6 Phase 2) =====
+  'gift.typeImage': {
+    zh: 'Rocky 画给你的',
+    en: 'A sketch from Rocky',
+    ja: 'Rockyが描いた絵',
+  },
+  'gift.typeRealistic': {
+    zh: 'Rocky 现场打卡',
+    en: 'Rocky checking in',
+    ja: 'Rockyの現場写真',
+  },
+  'gift.typeComic': {
+    zh: 'Rocky 手绘',
+    en: "Rocky's hand-drawing",
+    ja: 'Rockyの手描き',
+  },
+  'gift.comicSignature': {
+    zh: '这是我手绘的',
+    en: 'This is my hand-drawing',
+    ja: 'これは手描きの',
+  },
+  'chat.hangup': {
+    zh: '结束通话',
+    en: 'End call',
+    ja: '通話終了',
+  },
+  'gift.typeMusic': {
+    zh: 'Rocky 送你的声音',
+    en: 'A sound from Rocky',
+    ja: 'Rockyからの音',
+  },
+  'gift.typeVideo': {
+    zh: 'Rocky 拍给你的',
+    en: 'A clip from Rocky',
+    ja: 'Rockyの映像',
+  },
+  'gift.pending': {
+    zh: 'Rocky 在做……',
+    en: 'Rocky is making it…',
+    ja: 'Rockyが作ってる…',
+  },
+  'gift.failed': {
+    zh: '这次传不过来，下次 Rocky 再试。',
+    en: 'Signal lost this time. Rocky will try again.',
+    ja: '今回は届かなかった。Rockyは次回また試す。',
+  },
+  'gift.download': {
+    zh: '下载',
+    en: 'Download',
+    ja: 'ダウンロード',
   },
 } as const;
 

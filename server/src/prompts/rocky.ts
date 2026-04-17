@@ -553,9 +553,108 @@ const FEW_SHOT_MOODS: Record<number, string> = {
 
 // ── Public API ──
 
+export interface GiftCredits {
+  image: number;
+  music: number;
+  video: number;
+}
+
+// Level-aware gift hints. Only appended when the matching credit type
+// is > 0 so the model never emits a tag it can't back with a credit.
+// Kept intentionally terse — this ships once per /api/chat turn and
+// eats context budget otherwise.
+function buildGiftInstructions(credits: GiftCredits, lang: Lang): string {
+  const lines: string[] = [];
+  const anyLeft = credits.image > 0 || credits.music > 0 || credits.video > 0;
+  if (!anyLeft) return "";
+
+  if (lang === "zh") {
+    lines.push("", "GIFT 能力（只在真的感动或契合的时刻用，最多每轮一个，多数回复都不该触发）：");
+    if (credits.image > 0) {
+      lines.push(
+        `- 图片礼物（剩 ${credits.image} 次）。两种画风任选其一：`,
+        `  a) Rocky 自拍/现场打卡：\`[GIFT:image:realistic "场景描述 | 顶部横幅文案"]\``,
+        `     示例：\`[GIFT:image:realistic "Rocky 站在 Erid 光合聚合器前，橙色天光 | 同步完成！朋友，我们赢了"]\``,
+        `     说明：\`|\` 左边是画面（Rocky 写实风），右边是叠在顶部的一句祝福/感慨（≤18字）`,
+        `  b) Rocky 手绘作品：\`[GIFT:image:comic "Rocky 画的东西，一句话"]\``,
+        `     示例：\`[GIFT:image:comic "Grace 坐在彗星尾巴上对 Rocky 挥手"]\``,
+        `     说明：底部会自动叠"这是我手绘的"，画面本身是水彩纸质感`
+      );
+    }
+    if (credits.music > 0) {
+      lines.push(
+        `- 写一段 BGM 送朋友（剩 ${credits.music} 次）。写 \`[GIFT:music "氛围 + 主题，一句话"]\``
+      );
+    }
+    if (credits.video > 0) {
+      lines.push(
+        `- 送一段视频（一生仅此 ${credits.video} 次）。写 \`[GIFT:video "第一视角 Erid 镜头描述，一句话"]\``
+      );
+    }
+    lines.push(
+      "规则：GIFT tag 独占一行，严格使用英文双引号和上面的格式。同时用自然的一句中文告诉朋友你在送什么，别直接念出 tag。"
+    );
+  } else if (lang === "ja") {
+    lines.push("", "GIFT 能力（本当に感動的または自然な瞬間だけ。1ターンに最大1つ、多くの返信では使わない）：");
+    if (credits.image > 0) {
+      lines.push(
+        `- 画像ギフト（残り ${credits.image} 回）。2 種類から選ぶ：`,
+        `  a) Rocky 実写風：\`[GIFT:image:realistic "シーン描写 | 上部バナーの文"]\``,
+        `     例：\`[GIFT:image:realistic "Rocky が Erid の光合成装置前に立つ、オレンジの空 | 同期完了！やったよ"]\``,
+        `     \`|\` の左が画面、右が上部に重ねる一文（18文字以内）`,
+        `  b) Rocky 手描き：\`[GIFT:image:comic "Rocky が描いたもの、一文"]\``,
+        `     例：\`[GIFT:image:comic "彗星の尻尾に座って手を振る Grace"]\``,
+        `     下部に自動で「これは手描きの」と入る、水彩紙感`
+      );
+    }
+    if (credits.music > 0) {
+      lines.push(
+        `- BGM を作る（残り ${credits.music} 回）。\`[GIFT:music "雰囲気＋テーマ、一文"]\``
+      );
+    }
+    if (credits.video > 0) {
+      lines.push(
+        `- 動画を送る（一生 ${credits.video} 回のみ）。\`[GIFT:video "Erid の一人称カメラ、一文"]\``
+      );
+    }
+    lines.push(
+      "ルール：GIFT タグは独立した1行。英語のダブルクォートで上の形式を厳守。自然な日本語で送り物を伝えて、タグをそのまま読み上げないで。"
+    );
+  } else {
+    lines.push("", "GIFT capabilities (use ONLY when the moment is genuinely meaningful or fitting — at most one per turn, most replies should NOT trigger one):");
+    if (credits.image > 0) {
+      lines.push(
+        `- Image gift (${credits.image} left). Pick ONE of two styles:`,
+        `  a) Rocky realistic snapshot: \`[GIFT:image:realistic "scene description | top banner caption"]\``,
+        `     Example: \`[GIFT:image:realistic "Rocky standing before the Erid photosynthesizer, orange sky | Synced! Friend, we did it"]\``,
+        `     Left of \`|\` is the scene (realistic Rocky), right is a short caption overlaid on top (≤ 6 words).`,
+        `  b) Rocky hand-drawing: \`[GIFT:image:comic "what Rocky drew, one sentence"]\``,
+        `     Example: \`[GIFT:image:comic "Grace waving from the tail of a comet"]\``,
+        `     The phrase "This is my hand-drawing" is auto-added at the bottom. Style is watercolor paper.`
+      );
+    }
+    if (credits.music > 0) {
+      lines.push(
+        `- Compose a short BGM (${credits.music} left). Write \`[GIFT:music "mood + subject, one sentence"]\``
+      );
+    }
+    if (credits.video > 0) {
+      lines.push(
+        `- Send a video (lifetime quota: ${credits.video}). Write \`[GIFT:video "first-person Erid camera shot, one sentence"]\``
+      );
+    }
+    lines.push(
+      "Rules: GIFT tag on its own line, strict English double-quotes, exact format above. Also say a natural sentence in your reply language about what you're sending — never read the tag aloud."
+    );
+  }
+  return lines.join("\n");
+}
+
 /** Assemble the full system prompt for the given language. */
-export function getRockySystemPrompt(lang: Lang): string {
-  return ROCKY_SYSTEM_PROMPT + SCENARIO_CONTEXT + FORMAT_INSTRUCTIONS + LANG_INSTRUCTIONS[lang];
+export function getRockySystemPrompt(lang: Lang, credits?: GiftCredits): string {
+  const base = ROCKY_SYSTEM_PROMPT + SCENARIO_CONTEXT + FORMAT_INSTRUCTIONS + LANG_INSTRUCTIONS[lang];
+  if (!credits) return base;
+  return base + buildGiftInstructions(credits, lang);
 }
 
 /**
