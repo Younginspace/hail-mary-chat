@@ -170,7 +170,6 @@ export default function StartScreen({ onConnected }: StartScreenProps) {
                 className="hero-cta hero-cta-primary"
                 onClick={handleDialIn}
               >
-                <span className="hero-cta-badge">{t('hero.recommended', lang)}</span>
                 <span className="hero-cta-label">{t('hero.dialInCta', lang)}</span>
                 <span className="hero-cta-sub">
                   {isAuthenticated && me?.callsign
