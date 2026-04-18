@@ -2637,6 +2637,48 @@ body {
   border-radius: 4px;
 }
 
+.hero-release {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 640px;
+  margin-top: 4px;
+  padding: 8px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.3px;
+  color: rgba(214, 241, 233, 0.78);
+  background: rgba(0, 212, 170, 0.06);
+  border: 1px solid rgba(0, 212, 170, 0.25);
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+}
+.hero-release-tag {
+  padding: 2px 8px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #00d4aa;
+  background: rgba(0, 212, 170, 0.18);
+  border: 1px solid rgba(0, 212, 170, 0.55);
+  border-radius: 3px;
+}
+.hero-release-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .hero-release {
+    border-radius: 8px;
+    font-size: 10.5px;
+    padding: 8px 12px;
+  }
+}
+
 /* FAQ drawer — appears below CTAs when OPEN CHANNEL clicked */
 .hero-channel-drawer {
   width: 100%;

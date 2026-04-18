@@ -20,9 +20,19 @@ const translations = {
 
   // ===== Hero landing =====
   'hero.title': {
-    zh: 'Rocky Chat',
-    en: 'Rocky Chat',
-    ja: 'Rocky Chat',
+    zh: 'Call Rocky',
+    en: 'Call Rocky',
+    ja: 'Call Rocky',
+  },
+  'hero.releaseLabel': {
+    zh: 'v2.0 更新',
+    en: "What's new in v2.0",
+    ja: 'v2.0 アップデート',
+  },
+  'hero.releaseBody': {
+    zh: 'Rocky 现在能记住你了 · 收藏音频 · 导出聊天 · 新增好感度系统',
+    en: 'Rocky remembers you now · favorite voice clips · export chats · new affinity system',
+    ja: 'Rockyは覚えてる · 音声お気に入り · チャット出力 · 好感度システム登場',
   },
   'hero.tagline': {
     zh: '来自 40 Eridani 的信号已连通',
