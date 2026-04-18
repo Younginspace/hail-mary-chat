@@ -45,7 +45,6 @@ interface ChatInterfaceProps {
   mode: ChatMode;
   sessionId: string;
   onBack: () => void;
-  onOpenFavorites: () => void;
   initialLevelUp: LevelUpPayload | null;
   onLevelUpDismiss: () => void;
 }
@@ -59,7 +58,6 @@ export default function ChatInterface({
   mode,
   sessionId,
   onBack,
-  onOpenFavorites,
   initialLevelUp,
   onLevelUpDismiss,
 }: ChatInterfaceProps) {
@@ -79,6 +77,7 @@ export default function ChatInterface({
   const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
+  const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
@@ -352,8 +351,10 @@ export default function ChatInterface({
 
   // Manual hang-up: end the session cleanly so consolidation still runs,
   // then drop back to home. pagehide already fires endSession on tab
-  // close but a user-initiated exit should be immediate + visible.
-  const handleHangup = useCallback(() => {
+  // close but a user-initiated exit should be immediate + visible. Two
+  // steps — the icon button opens a confirm modal; this actually ends.
+  const handleHangupConfirmed = useCallback(() => {
+    setHangupConfirmOpen(false);
     stopTTS();
     try {
       endSession(sessionId);
@@ -532,17 +533,6 @@ export default function ChatInterface({
             </svg>
             {voiceCredits != null && <span className="tts-credits">{voiceCredits}</span>}
           </button>
-          <button
-            type="button"
-            className="status-iconbtn"
-            onClick={onOpenFavorites}
-            title={t('chat.favorites', lang)}
-            aria-label={t('chat.favorites', lang)}
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-            </svg>
-          </button>
           {messages.some((m) => m.role === 'user') && (
             <div className="export-wrap">
               <button
@@ -571,7 +561,7 @@ export default function ChatInterface({
           <button
             type="button"
             className="status-iconbtn hangup"
-            onClick={handleHangup}
+            onClick={() => setHangupConfirmOpen(true)}
             title={t('chat.hangup', lang)}
             aria-label={t('chat.hangup', lang)}
           >
@@ -658,6 +648,37 @@ export default function ChatInterface({
           </>
         )}
       </div>
+
+      {hangupConfirmOpen && (
+        <div
+          className="hangup-confirm-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setHangupConfirmOpen(false)}
+        >
+          <div className="hangup-confirm-box" onClick={(e) => e.stopPropagation()}>
+            <div className="hangup-confirm-title">{t('chat.hangupConfirmTitle', lang)}</div>
+            <div className="hangup-confirm-desc">{t('chat.hangupConfirmDesc', lang)}</div>
+            <div className="hangup-confirm-actions">
+              <button
+                type="button"
+                className="hangup-confirm-cancel"
+                onClick={() => setHangupConfirmOpen(false)}
+                autoFocus
+              >
+                {t('chat.hangupConfirmNo', lang)}
+              </button>
+              <button
+                type="button"
+                className="hangup-confirm-ok"
+                onClick={handleHangupConfirmed}
+              >
+                {t('chat.hangupConfirmYes', lang)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

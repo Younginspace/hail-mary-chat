@@ -469,6 +469,26 @@ const translations = {
     en: 'End call',
     ja: '通話終了',
   },
+  'chat.hangupConfirmTitle': {
+    zh: '结束这次通讯？',
+    en: 'End this transmission?',
+    ja: 'この通信を終了する？',
+  },
+  'chat.hangupConfirmDesc': {
+    zh: 'Rocky 会记住你们的对话，下次拨入继续聊。',
+    en: 'Rocky will remember this talk. Dial in again any time.',
+    ja: 'Rockyは会話を覚えてる。またいつでもダイヤルインして。',
+  },
+  'chat.hangupConfirmYes': {
+    zh: '确认挂断',
+    en: 'End call',
+    ja: '通話終了',
+  },
+  'chat.hangupConfirmNo': {
+    zh: '继续聊',
+    en: 'Keep talking',
+    ja: '続ける',
+  },
   'gift.typeMusic': {
     zh: 'Rocky 送你的声音',
     en: 'A sound from Rocky',
