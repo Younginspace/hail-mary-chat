@@ -559,11 +559,18 @@ export interface GiftCredits {
   video: number;
 }
 
+// F6 Phase 2 kill-switch. MiniMax img2img character-lock isn't reliable
+// enough yet, so we never want Rocky to promise a picture / music / video
+// he can't deliver. Credit grants still accumulate in the DB for future
+// re-enable — flip this to true once the upstream pipeline is ready.
+const GIFTS_ENABLED = false;
+
 // Level-aware gift hints. Only appended when the matching credit type
 // is > 0 so the model never emits a tag it can't back with a credit.
 // Kept intentionally terse — this ships once per /api/chat turn and
 // eats context budget otherwise.
 function buildGiftInstructions(credits: GiftCredits, lang: Lang): string {
+  if (!GIFTS_ENABLED) return "";
   const lines: string[] = [];
   const anyLeft = credits.image > 0 || credits.music > 0 || credits.video > 0;
   if (!anyLeft) return "";

@@ -82,7 +82,7 @@ const translations = {
     ja: '読み取り専用 · 質問をタップ',
   },
   'echo.allAnswered': {
-    zh: '所有预置问题都听过了。想自己问 Rocky？',
+    zh: '所有常见问题都听过了。想自己问 Rocky？',
     en: "That's all the presets. Want to ask Rocky yourself?",
     ja: 'プリセットは全部。自分で話したい？',
   },
