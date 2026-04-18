@@ -890,6 +890,13 @@ body {
   justify-content: center;
   height: 100%;
   width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.start-overlay input,
+.start-overlay textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .start-content {
