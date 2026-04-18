@@ -1853,16 +1853,6 @@ body {
   border-radius: 12px;
   background: rgba(0, 212, 170, 0.08);
 }
-.account-chip .account-logout {
-  background: none;
-  border: none;
-  color: rgba(214, 241, 233, 0.55);
-  font-size: 10px;
-  cursor: pointer;
-  padding: 0 0 0 4px;
-}
-.account-chip .account-logout:hover { color: #ff8080; }
-
 /* "Give Rocky your callsign" hook button above chat input */
 .callsign-hook {
   margin: 8px 12px 0;

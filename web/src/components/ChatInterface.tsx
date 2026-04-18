@@ -69,7 +69,7 @@ export default function ChatInterface({
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, ttsQuotaExceeded, ttsInsufficientCredits } = useRockyTTS(!voiceEnabled);
-  const { isAuthenticated, me, signOut } = useAuthSession();
+  const { isAuthenticated, me } = useAuthSession();
   const [input, setInput] = useState('');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [exportOpen, setExportOpen] = useState(false);
@@ -543,29 +543,31 @@ export default function ChatInterface({
               <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
             </svg>
           </button>
-          <div className="export-wrap">
-            <button
-              type="button"
-              className="export-toggle"
-              onClick={() => setExportOpen((v) => !v)}
-              title={t('chat.exportLabel', lang)}
-              aria-label={t('chat.exportLabel', lang)}
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v13M6 10l6 6 6-6M5 21h14" />
-              </svg>
-            </button>
-            {exportOpen && (
-              <div className="export-menu" role="menu">
-                <button type="button" role="menuitem" onClick={handleExportMarkdown}>
-                  {t('chat.exportMarkdown', lang)}
-                </button>
-                <button type="button" role="menuitem" onClick={handleExportImage}>
-                  {t('chat.exportImage', lang)}
-                </button>
-              </div>
-            )}
-          </div>
+          {messages.some((m) => m.role === 'user') && (
+            <div className="export-wrap">
+              <button
+                type="button"
+                className="export-toggle"
+                onClick={() => setExportOpen((v) => !v)}
+                title={t('chat.exportLabel', lang)}
+                aria-label={t('chat.exportLabel', lang)}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v13M6 10l6 6 6-6M5 21h14" />
+                </svg>
+              </button>
+              {exportOpen && (
+                <div className="export-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={handleExportMarkdown}>
+                    {t('chat.exportMarkdown', lang)}
+                  </button>
+                  <button type="button" role="menuitem" onClick={handleExportImage}>
+                    {t('chat.exportImage', lang)}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             className="status-iconbtn hangup"
@@ -578,22 +580,17 @@ export default function ChatInterface({
             </svg>
           </button>
           </div>
-          {isAuthenticated && me?.callsign && (
-            <span className="account-chip" title={me.email ?? ''}>
-              {me.affinity_level != null && me.affinity_level > 1 && (
-                <span className={`level-badge lv-${me.affinity_level}`}>Lv{me.affinity_level}</span>
-              )}
-              ● {me.callsign}
-              <button
-                type="button"
-                className="account-logout"
-                onClick={() => signOut()}
-                title={t('login.signOut', lang)}
-              >
-                ✕
-              </button>
-            </span>
-          )}
+          {isAuthenticated && me?.callsign && (() => {
+            const lvl = Math.min(Math.max(me.affinity_level ?? 1, 1), 4) as 1 | 2 | 3 | 4;
+            return (
+              <span className="account-chip" title={me.email ?? ''}>
+                <span className={`level-badge lv-${lvl}`}>
+                  {t(`level.${lvl}.name`, lang)}
+                </span>
+                ● {me.callsign}
+              </span>
+            );
+          })()}
           <LangSwitcher />
         </div>
 
