@@ -6,12 +6,3 @@ path = "server"
 [web]
 path = "web"
 output_path = "web/dist"
-
-[db]
-# ⚠️  PRE-MERGE BLOCKER — see MERGE_CHECKLIST.md  ⚠️
-# The override below lets `edgespark db migrate` run on the feature
-# branch during development. It MUST be removed the moment this branch
-# is merged into `main`, otherwise production migrations will try to
-# run against a branch name that is no longer the default and silently
-# fail. Keep this comment block intact until merge day.
-migration_branch = "feat/edgespark-migration"
