@@ -240,13 +240,11 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
             </div>
 
             <div className="hero-release" aria-label={t('hero.releaseLabel', lang)}>
-              <span className="hero-release-tag">{t('hero.releaseLabel', lang)}</span>
-              <div className="hero-release-chips">
-                <span className="hero-release-chip">{t('hero.releaseFeature1', lang)}</span>
-                <span className="hero-release-chip">{t('hero.releaseFeature2', lang)}</span>
-                <span className="hero-release-chip">{t('hero.releaseFeature3', lang)}</span>
-                <span className="hero-release-chip">{t('hero.releaseFeature4', lang)}</span>
-              </div>
+              <div className="hero-release-title">{t('hero.releaseLabel', lang)}</div>
+              <div className="hero-release-item">{t('hero.releaseFeature1', lang)}</div>
+              <div className="hero-release-item">{t('hero.releaseFeature2', lang)}</div>
+              <div className="hero-release-item">{t('hero.releaseFeature3', lang)}</div>
+              <div className="hero-release-item">{t('hero.releaseFeature4', lang)}</div>
             </div>
 
             {startError && <div className="hero-error">{startError}</div>}

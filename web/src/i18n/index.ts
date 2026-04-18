@@ -25,9 +25,9 @@ const translations = {
     ja: 'Call Rocky',
   },
   'hero.releaseLabel': {
-    zh: 'v2.0',
-    en: 'v2.0',
-    ja: 'v2.0',
+    zh: 'v2.0 更新说明',
+    en: "What's new in v2.0",
+    ja: 'v2.0 アップデート',
   },
   'hero.releaseFeature1': {
     zh: 'Rocky 记得你',
