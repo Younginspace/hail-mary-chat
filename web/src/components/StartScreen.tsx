@@ -239,6 +239,11 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
               </button>
             </div>
 
+            <div className="hero-release" aria-label={t('hero.releaseLabel', lang)}>
+              <span className="hero-release-tag">{t('hero.releaseLabel', lang)}</span>
+              <span className="hero-release-body">{t('hero.releaseBody', lang)}</span>
+            </div>
+
             {startError && <div className="hero-error">{startError}</div>}
           </div>
         )}
