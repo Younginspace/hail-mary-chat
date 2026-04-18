@@ -17,9 +17,6 @@ function detectInitialLang(): Lang {
   } catch {
     // localStorage unavailable (private mode, SSR, etc.) — fall through.
   }
-  const nav = typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : '';
-  if (nav.startsWith('zh')) return 'zh';
-  if (nav.startsWith('ja')) return 'ja';
   return 'en';
 }
 
