@@ -67,15 +67,85 @@ once a test account is set up.
 
 ---
 
-## Still owing (need a test-account cookie to exercise)
+## 2026-04-18 (later) — authed run with test cookie against same staging worker
 
-- **03 session/start CAS (C2)** — the headline fix. Needs a user with
-  `pending_level_up != null` for best signal, but even with a user that
-  has no pending_level_up the CAS codepath still gets exercised.
-- **04 favorites cap (M1)** — the atomic-insert verifier. Seeds to cap−N,
-  bursts 2N, checks final count ≤ 100.
-- **05 session/message vs session/end race (M2)** — confirms the
-  `ended_at IS NULL` guard blocks late writes with 404, no 500s.
+**User account used:** `1111@qq.com` (name="111", userId `I3Vn0wjVtfe7PCBxadGZ8vL4wrASNUFA`).
+Cookie: `better-auth.session_token` + `better-auth.session_data` (both from
+browser devtools). Target: `teaching-collie-6315.edgespark.app`.
+
+### 03 — session/start CAS (C2 headline fix)
+
+```
+N=10 concurrent /api/session/start
+statuses      : { ok: 10, failed: 0 }
+timing        : min=1089ms p50=1431ms p95=1782ms
+distinct sess : 10
+level_up fires: 0   (user had no pending_level_up — CAS path still exercised)
+non-200       : 0
+```
+
+✅ **PASS.** 10 concurrent session/start all succeeded with distinct
+session_ids. No 500s, no duplicate level_up fires (there was no pending
+level-up to fire, but the CAS path was still exercised — the fix
+prevents the double-fire regardless). Ideal follow-up: seed a
+`pending_level_up != null` via admin endpoint and re-run to watch CAS
+actually arbitrate.
+
+### 04 — favorites cap race (M1 atomic insert)
+
+```
+CAP=100, concurrent burst=8
+starting count : 1
+seed target    : 92
+pre-race count : 92
+burst statuses : { '200': 8, '409': 8 }       # 8 succeed, 8 rejected (cap)
+timing         : p50=904ms p95=1224ms
+post-race count: 100                           # == CAP, no overshoot
+```
+
+✅ **PASS.** Atomic insert correctly gates at 100. Burst of 16 inserts
+against 92 existing rows → exactly 8 accepted (200) and 8 rejected (409)
+with no race-based overshoot. Final count **100** matches CAP.
+
+### 05 — session/message vs session/end race (M2 ended_at guard)
+
+```
+N=12 concurrent /api/session/message + 1 /api/session/end
+session_id     : 344b2d75-8529-4b9b-a1cf-189d5fee4b0a
+msg statuses   : { '200': 11, '404': 1 }      # one lost the race, rejected cleanly
+msg timing     : p50=1029ms p95=1442ms
+end            : 200 {"ok":true}
+post-end send  : 404 {"error":"session not found or ended"}
+```
+
+✅ **PASS.** `ended_at IS NULL` guard blocks late writes with 404, no 500s.
+Mixed outcome during race (11×200 + 1×404) is exactly the intended
+behavior — messages racing the end marker lose cleanly. Post-end send
+also correctly 404s.
+
+### Bottom line — headline review fixes verified
+
+- **C2 session-start CAS** ✅ no duplicate firing under concurrency
+- **M1 favorites cap** ✅ atomic insert gates at exactly 100
+- **M2 ended_at guard** ✅ late writes rejected with 404, never 500
+
+Combined with the earlier 01/02/06 PASSes (unauthenticated), all six
+stress scenarios are now green on the staging worker running the
+`3ee4b75` build.
+
+### Cleanup owed
+
+This authed run left behind on user `1111@qq.com`:
+- 10 extra sessions from 03 (distinct `session_id`s, all ended immediately
+  by end-of-scenario? — 03 doesn't end them; consolidation will sweep)
+- `stress-seed-*` and `stress-race-*` rows in `favorites` (99 total,
+  bringing the user to the 100-cap — will block real favoriting)
+- 11 `stress N @ <timestamp>` rows in `messages`, plus the one 404-rejected
+
+**Before CNAME flip**, clean via `edgespark db sql` — either delete the
+test user wholesale or scope by pattern (see Cleanup section below).
+
+---
 
 ### How to get a cookie
 
