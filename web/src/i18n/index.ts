@@ -103,10 +103,20 @@ const translations = {
     en: 'Too many calls today, resources exhausted. Please come back another day!',
     ja: '本日は通話が多すぎてリソース不足です。また別の日に来てね！',
   },
-  'chat.ttsQuotaBanner': {
-    zh: '今日通话人数太多，资源不足以播放语音',
-    en: 'Too many calls today — insufficient resources for voice playback',
-    ja: '本日は通話が多すぎて、音声再生のリソースが不足しています',
+  'chat.voiceExhausted': {
+    zh: '缺少语音资源，还有 {time} 刷新',
+    en: 'Out of voice resources — refreshes in {time}',
+    ja: '音声リソース不足 — {time}後にリセット',
+  },
+  'chat.durationHoursMinutes': {
+    zh: '{h} 小时 {m} 分钟',
+    en: '{h}h {m}m',
+    ja: '{h}時間{m}分',
+  },
+  'chat.durationMinutes': {
+    zh: '{m} 分钟',
+    en: '{m}m',
+    ja: '{m}分',
   },
   'chat.rockyQuotaReply': {
     zh: '[MOOD:unhappy]\n[翻译] 今日通话的人太多了，资源不足，请改天再来吧！',

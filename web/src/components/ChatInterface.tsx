@@ -77,6 +77,8 @@ export default function ChatInterface({
   const [favoritesList, setFavoritesList] = useState<FavoriteRow[]>([]);
   const [favError, setFavError] = useState<string | null>(null);
   const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
+  const [resetInLabel, setResetInLabel] = useState<string>('');
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
@@ -185,6 +187,34 @@ export default function ChatInterface({
     }
   }, [ttsInsufficientCredits]);
 
+  // Server daily quota resets at UTC+8 midnight — surface a live countdown
+  // in the input-area banner so users know when voice playback unlocks again.
+  const voiceExhausted =
+    (voiceCredits != null && voiceCredits <= 0) || ttsQuotaExceeded || globalQuotaHit;
+
+  useEffect(() => {
+    if (!voiceExhausted) {
+      setResetInLabel('');
+      return;
+    }
+    const compute = () => {
+      const now = Date.now();
+      const msIntoUtc8Day = (now + 8 * 3600 * 1000) % 86_400_000;
+      const msLeft = 86_400_000 - msIntoUtc8Day;
+      const totalMin = Math.max(1, Math.ceil(msLeft / 60_000));
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      setResetInLabel(
+        h > 0
+          ? t('chat.durationHoursMinutes', lang, { h, m })
+          : t('chat.durationMinutes', lang, { m })
+      );
+    };
+    compute();
+    const id = setInterval(compute, 30_000);
+    return () => clearInterval(id);
+  }, [voiceExhausted, lang]);
+
   // F3: load favorites once. The set only mutates via add/remove handlers.
   useEffect(() => {
     fetchFavorites().then((res) => {
@@ -236,6 +266,10 @@ export default function ChatInterface({
       if (res.status === 402) {
         setVoiceCredits(0);
         setVoiceEnabled(false);
+        return;
+      }
+      if (res.status === 429) {
+        setGlobalQuotaHit(true);
         return;
       }
       if (!res.ok) return;
@@ -571,10 +605,6 @@ export default function ChatInterface({
           </span>
         </div>
 
-        {mode === 'voice' && ttsQuotaExceeded && (
-          <div className="quota-bar">{t('chat.ttsQuotaBanner', lang)}</div>
-        )}
-
         <div ref={chatAreaRef} className="chat-area">
           {messages.map((msg) => (
             <MessageBubble
@@ -601,6 +631,12 @@ export default function ChatInterface({
         {isEnded ? (
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
         ) : (
+          <>
+            {voiceExhausted && resetInLabel && (
+              <div className="voice-exhausted-bar" role="status">
+                {t('chat.voiceExhausted', lang, { time: resetInLabel })}
+              </div>
+            )}
           <form
             className="input-area"
             onSubmit={handleSubmit}
@@ -622,6 +658,7 @@ export default function ChatInterface({
               {t('chat.sendButton', lang)}
             </button>
           </form>
+          </>
         )}
       </div>
     </div>
