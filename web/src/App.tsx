@@ -65,7 +65,6 @@ export default function App() {
           mode={chatMode}
           sessionId={sessionId}
           onBack={handleBackToStart}
-          onOpenFavorites={handleFavorites}
           initialLevelUp={pendingLevelUp}
           onLevelUpDismiss={() => setPendingLevelUp(null)}
         />
