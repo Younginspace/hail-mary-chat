@@ -3155,8 +3155,11 @@ body {
     font-size: 10px;
     gap: 4px;
   }
-  .chat-shell .chat-pane .status-bar .signal span {
-    display: none; /* keep signal bars only on tiny screens */
+  /* Hide the whole signal group (bars + "ERID-LINK v2.1" text) on
+     mobile. It's pure decoration and was pushing the real actions
+     (tts / export / hangup / chip / lang) into 2-3 wrapped rows. */
+  .chat-shell .chat-pane .status-bar .signal {
+    display: none;
   }
   .chat-shell .chat-pane .status-bar .account-chip {
     font-size: 10px;
