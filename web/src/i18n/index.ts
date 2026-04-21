@@ -77,9 +77,9 @@ const translations = {
 
   // ===== Echo screen =====
   'echo.hint': {
-    zh: '频道只读 · 点问题听 Rocky 回答',
-    en: 'Read-only channel · tap a question to hear Rocky',
-    ja: '読み取り専用 · 質問をタップ',
+    zh: 'Rocky 专属频道',
+    en: 'Rocky-only Channel',
+    ja: 'Rocky専用チャンネル',
   },
   'echo.allAnswered': {
     zh: '所有常见问题都听过了。想自己问 Rocky？',
