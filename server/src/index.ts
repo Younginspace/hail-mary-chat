@@ -317,6 +317,13 @@ async function buildMemoryContext(
 
   const lines: string[] = [];
   lines.push("[MEMORY CONTEXT] (from previous calls with this friend)");
+  // Guardrail: MiniMax otherwise pattern-matches short greetings ("记得我吗",
+  // "hi", "are you there") against the "I'm new" few-shot and replies
+  // treating the caller as a stranger. Shout the opposite at the top of
+  // the memory block so the LLM doesn't fall back on the stranger script.
+  lines.push(
+    "IMPORTANT: THIS FRIEND IS NOT NEW. They have called before — see the facts below. Do NOT ask if they are new, do NOT say \"you said you are new\", do NOT treat their greeting as a first introduction. If they ask whether you remember them, answer YES, state their callsign, and reference at least one fact below."
+  );
   if (callsign) {
     lines.push(`Friend's callsign (how Rocky should address them): ${callsign}`);
   }

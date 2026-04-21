@@ -453,8 +453,17 @@ Format example:
 // ── Few-shot examples (from rocky_afewshot.ts) ──
 
 const ROCKY_FEW_SHOTS = [
+  // Neutral greeting — avoids "you are new human?" which used to prime
+  // MiniMax to assume every short opener was a first-time introduction,
+  // and then mis-fire when a returning friend asked "do you remember me"
+  // (LLM pattern-matched the earlier few-shot "I'm new" turn, producing
+  // "you said you are new — contradiction" replies on returning users).
   { role: "user", content: "Hi Rocky." },
-  { role: "assistant", content: "Hello, human. Rocky here. You are new human, question?" },
+  { role: "assistant", content: "Hello, friend. Rocky here. Signal clear, statement. Ready for talk." },
+  // Placeholder pair for backward-compat with CURATED_FEW_SHOT_INDICES
+  // numbering (indices are exchange-indexed and other code uses specific
+  // integers). Kept but not included in the curated selection anymore —
+  // see CURATED_FEW_SHOT_INDICES below.
   { role: "user", content: "I'm new. Nice to meet you." },
   { role: "assistant", content: "Good good. Nice to meet you also. New friend maybe. Need more data before full friend, statement." },
   { role: "user", content: "What are meburgers?" },
@@ -520,8 +529,8 @@ const ROCKY_FEW_SHOTS = [
 // ── Curated few-shot selection + mood mapping (from rocky.ts) ──
 
 const CURATED_FEW_SHOT_INDICES = [
-  0,   // Hi Rocky
-  1,   // I'm new
+  0,   // Hi Rocky (neutral — no "you are new?" probe)
+  // index 1 ("I'm new") removed — see ROCKY_FEW_SHOTS comment above
   2,   // meburgers
   4,   // Do you miss Grace
   5,   // Are humans weird
