@@ -372,9 +372,13 @@ export async function consolidateSession(session_id: string): Promise<void> {
   }
 
   // 6. Upsert rapport.
+  // Delta cap ±0.08 (was ±0.20). Paired with the tighter Lv3 threshold in
+  // migration 0009 this gates 1→2 at ≥2 sessions even on max-positive
+  // conversations, stretches 2→3 to ~5 sessions typical, and 3→4 to
+  // ~11-14 sessions typical. See checkLevelUp below + rapport_thresholds.
   const delta = result.rapport_delta ?? {};
-  const trustDelta = clamp(typeof delta.trust === "number" ? delta.trust : 0, -0.2, 0.2);
-  const warmthDelta = clamp(typeof delta.warmth === "number" ? delta.warmth : 0, -0.2, 0.2);
+  const trustDelta = clamp(typeof delta.trust === "number" ? delta.trust : 0, -0.08, 0.08);
+  const warmthDelta = clamp(typeof delta.warmth === "number" ? delta.warmth : 0, -0.08, 0.08);
   const lastMood =
     typeof delta.last_mood === "string" && VALID_MOODS.has(delta.last_mood)
       ? delta.last_mood

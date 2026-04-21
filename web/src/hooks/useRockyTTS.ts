@@ -108,7 +108,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // ── TTS：走 EdgeSpark 代理（GET /api/tts?text=...），返回 audio/mpeg 二进制
-  const fetchTTS = useCallback((text: string, lang: Lang): Promise<HTMLAudioElement | null> => {
+  const fetchTTS = useCallback((text: string, lang: Lang, msgId?: string): Promise<HTMLAudioElement | null> => {
     if (skipTTS || !text.trim() || ttsQuotaExceeded || ttsInsufficientCredits) return Promise.resolve(null);
 
     const abortCtrl = new AbortController();
@@ -116,7 +116,10 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
 
     return (async () => {
       try {
-        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}`;
+        // Pass the client-generated message id so the server can link
+        // this audio back to the matching messages row via tts_content_hash.
+        const msgParam = msgId ? `&message_id=${encodeURIComponent(msgId)}` : '';
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgParam}`;
         const res = await fetch(url, {
           method: 'GET',
           credentials: 'include',
@@ -186,8 +189,8 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   }, []);
 
   // ── 请求+播放一步到位 ──
-  const speakWithTTS = useCallback(async (text: string, lang: Lang): Promise<void> => {
-    const audio = await fetchTTS(text, lang);
+  const speakWithTTS = useCallback(async (text: string, lang: Lang, msgId?: string): Promise<void> => {
+    const audio = await fetchTTS(text, lang, msgId);
     if (audio) await playTTSAudio(audio);
   }, [fetchTTS, playTTSAudio]);
 
@@ -252,7 +255,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
         await playInterruptible(getDirtyAudio());
         // dirty 之后还播正文（警告内容）
         if (text && !cancelledRef.current) {
-          await speakWithTTS(text, lang);
+          await speakWithTTS(text, lang, msgId);
         }
         setIsSpeaking(false);
         return;
@@ -262,7 +265,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
       if (hasIntro && !cancelledRef.current) {
         await playSequenceInterruptible(getIntroAudioSequence());
         if (text && !cancelledRef.current) {
-          await speakWithTTS(text, lang);
+          await speakWithTTS(text, lang, msgId);
         }
         setIsSpeaking(false);
         return;
@@ -271,7 +274,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
       // === 普通回复: mood 音频 + TTS 并行下载，串行播放 ===
 
       // 1. 并行：mood 音效播放 + TTS 下载
-      const ttsPromise = text ? fetchTTS(text, lang) : Promise.resolve(null);
+      const ttsPromise = text ? fetchTTS(text, lang, msgId) : Promise.resolve(null);
 
       if (!cancelledRef.current) {
         await playInterruptible(getMoodAudio(mood));

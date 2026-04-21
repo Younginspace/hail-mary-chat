@@ -8,6 +8,8 @@ import {
   removeFavorite,
   type FavoriteRow,
 } from '../utils/sessionApi';
+import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
+import type { Lang } from '../i18n';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -50,16 +52,30 @@ export default function FavoritesScreen({ onBack }: Props) {
     }
     audioRef.current?.pause();
 
-    const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
-    const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const audio = new Audio(blobUrl);
+    // Echo-sourced favorites are backed by a pre-rendered MP3 in
+    // /audio/defaults/. Those files never pass through /api/tts so the
+    // server has no audio_cache row — hitting /api/tts would cache-miss
+    // and burn a MiniMax call (or silently 429 when quota's tight). Play
+    // the static asset directly whenever we can match it.
+    const staticPath = findDefaultAudioByTtsText(fav.message_content, fav.lang as Lang);
+    let blobUrl: string | null = null;
+    let src: string;
+    if (staticPath) {
+      src = staticPath;
+    } else {
+      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      blobUrl = URL.createObjectURL(blob);
+      src = blobUrl;
+    }
+
+    const audio = new Audio(src);
     audioRef.current = audio;
     setPlayingId(fav.id);
     const cleanup = () => {
-      URL.revokeObjectURL(blobUrl);
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
       if (audioRef.current === audio) {
         audioRef.current = null;
         setPlayingId(null);
@@ -71,8 +87,13 @@ export default function FavoritesScreen({ onBack }: Props) {
   }, [playingId]);
 
   const download = useCallback(async (fav: FavoriteRow) => {
-    const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
-    const res = await fetch(url, { credentials: 'include' });
+    // Echo favorites: fetch the static pre-rendered MP3 so download works
+    // even when the TTS proxy is rate-limited.
+    const staticPath = findDefaultAudioByTtsText(fav.message_content, fav.lang as Lang);
+    const url = staticPath
+      ? staticPath
+      : `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+    const res = await fetch(url, staticPath ? undefined : { credentials: 'include' });
     if (!res.ok) return;
     const blob = await res.blob();
     const blobUrl = URL.createObjectURL(blob);

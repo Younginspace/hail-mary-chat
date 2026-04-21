@@ -3,6 +3,8 @@
 
 import type { Lang } from '../i18n';
 import type { RockyMood } from './rockyAudio';
+import { getRockyGreeting, getRockyFarewell } from '../prompts/rocky';
+import { extractPlayableText } from './messageCleanup';
 
 export interface DefaultDialog {
   question: string;        // 对应 suggest 按钮的文本
@@ -175,4 +177,37 @@ export function getDefaultDialogs(lang: Lang): DefaultDialog[] {
 export function findDefaultAudioByReply(reply: string, lang: Lang): string | null {
   const dialog = DIALOGS_BY_LANG[lang]?.find((d) => d.reply === reply);
   return dialog?.audioFile ?? null;
+}
+
+// Favorites stored from Rocky Echo (or the onboarding greeting /
+// farewell) carry the extractPlayableText-cleaned form — no [MOOD] /
+// [Translation] tags — which equals either `ttsText` for preset dialogs
+// or the cleaned form of getRockyGreeting / getRockyFarewell for the
+// onboarding messages. All of them are backed by pre-rendered MP3s
+// under /audio/defaults/, so the favorites screen (and anywhere else
+// replaying a cleaned message) must short-circuit /api/tts and play
+// the static asset directly — otherwise cache misses on those rows
+// burn a MiniMax call or 429 silently when quota's tight.
+//
+// Cache is built lazily per lang on first call; subsequent lookups are
+// O(dialog count + 2).
+const _prerecordedCache: Partial<Record<Lang, Array<{ text: string; audio: string }>>> = {};
+function getPrerecordedFor(lang: Lang): Array<{ text: string; audio: string }> {
+  const cached = _prerecordedCache[lang];
+  if (cached) return cached;
+  const list: Array<{ text: string; audio: string }> = [];
+  for (const d of DIALOGS_BY_LANG[lang] ?? []) {
+    list.push({ text: d.ttsText, audio: d.audioFile });
+  }
+  const greetingClean = extractPlayableText(getRockyGreeting(lang), lang);
+  if (greetingClean) list.push({ text: greetingClean, audio: `/audio/defaults/greeting_${lang}.mp3` });
+  const farewellClean = extractPlayableText(getRockyFarewell(lang), lang);
+  if (farewellClean) list.push({ text: farewellClean, audio: `/audio/defaults/farewell_${lang}.mp3` });
+  _prerecordedCache[lang] = list;
+  return list;
+}
+
+export function findDefaultAudioByTtsText(ttsText: string, lang: Lang): string | null {
+  const hit = getPrerecordedFor(lang).find((p) => p.text === ttsText);
+  return hit?.audio ?? null;
 }

@@ -17,7 +17,7 @@ import {
 import { extractPlayableText, extractMood } from '../utils/messageCleanup';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
-import { exportChatMarkdown, exportChatImage, ExportTooLargeError } from '../utils/exportChat';
+import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 import Starfield from './Starfield';
@@ -25,7 +25,10 @@ import RockyModel from './RockyModel';
 import MessageBubble from './MessageBubble';
 import LangSwitcher from './LangSwitcher';
 import LevelUpCeremony from './LevelUpCeremony';
+import ShareCard from './ShareCard';
 import type { LevelUpPayload } from '../utils/sessionApi';
+
+const SHARE_MAX = 6;
 
 function EndedPanel({ quotaExceeded, onBack }: { quotaExceeded: boolean; onBack: () => void }) {
   const { lang } = useLang();
@@ -67,7 +70,7 @@ export default function ChatInterface({
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, ttsQuotaExceeded, ttsInsufficientCredits } = useRockyTTS(!voiceEnabled);
-  const { isAuthenticated, me } = useAuthSession();
+  const { isAuthenticated, me, refreshMe } = useAuthSession();
   const [input, setInput] = useState('');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [exportOpen, setExportOpen] = useState(false);
@@ -88,16 +91,25 @@ export default function ChatInterface({
   const loggedIdsRef = useRef<Set<string>>(new Set());
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Log each user/assistant message to backend (fire-and-forget).
+  // Log each user/assistant message to backend (fire-and-forget). Pass
+  // msg.id so the server uses the same primary key; /api/tts will later
+  // update this row's tts_content_hash using that id.
   useEffect(() => {
     for (const msg of messages) {
       if (msg.id === 'greeting') continue;
       if (msg.isStreaming) continue;
       if (loggedIdsRef.current.has(msg.id)) continue;
       loggedIdsRef.current.add(msg.id);
-      logMessage(sessionId, msg.role, msg.content);
+      logMessage(sessionId, msg.role, msg.content, msg.id);
     }
   }, [messages, sessionId]);
+
+  // Refresh /api/me whenever session/start handed us a level-up — the
+  // status-bar affinity badge reads me.affinity_level, and without a
+  // refetch it stays pinned at the value from login.
+  useEffect(() => {
+    if (initialLevelUp) refreshMe();
+  }, [initialLevelUp, refreshMe]);
 
   // Close session on unmount
   useEffect(() => {
@@ -390,29 +402,62 @@ export default function ChatInterface({
     }
   }, [messages, me, lang]);
 
-  const handleExportImage = useCallback(async () => {
+  // Share-card mode: users pick up to 6 messages, we render a 4:5 card
+  // via ShareCard + html2canvas. Selection is chronological regardless
+  // of click order so the card reads top-to-bottom as it happened.
+  const shareCardRef = useRef<HTMLDivElement>(null);
+  const [shareSelectMode, setShareSelectMode] = useState(false);
+  const [shareSelectedIds, setShareSelectedIds] = useState<string[]>([]);
+  const [shareGenerating, setShareGenerating] = useState(false);
+
+  const handleEnterShareMode = useCallback(() => {
     setExportOpen(false);
     setExportError(null);
-    if (!chatPaneRef.current) return;
+    setShareSelectedIds([]);
+    setShareSelectMode(true);
+  }, []);
+
+  const handleCancelShare = useCallback(() => {
+    setShareSelectMode(false);
+    setShareSelectedIds([]);
+  }, []);
+
+  const handleToggleShareSelect = useCallback(
+    (msg: DisplayMessage) => {
+      setShareSelectedIds((prev) => {
+        if (prev.includes(msg.id)) {
+          return prev.filter((id) => id !== msg.id);
+        }
+        if (prev.length >= SHARE_MAX) return prev;
+        return [...prev, msg.id];
+      });
+    },
+    [],
+  );
+
+  const handleGenerateShareCard = useCallback(async () => {
+    if (shareSelectedIds.length === 0 || !shareCardRef.current) return;
+    setShareGenerating(true);
+    setExportError(null);
     try {
-      await exportChatImage(chatPaneRef.current);
+      // Wait one paint so the ShareCard with the just-updated message
+      // list has fully laid out before html2canvas reads it.
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      await renderShareCard(shareCardRef.current);
+      setShareSelectMode(false);
+      setShareSelectedIds([]);
     } catch (err) {
       console.error(err);
-      if (err instanceof ExportTooLargeError) {
-        // Long-chat rescue path: fall back to markdown export and tell
-        // the user why we couldn't render an image. Avoids a silent
-        // failure (or worse, an OOM on mobile Safari).
-        setExportError(t('chat.exportTooLong', lang));
-        try {
-          exportChatMarkdown(messages, me?.callsign ?? null, lang);
-        } catch (fallbackErr) {
-          console.error(fallbackErr);
-        }
-        return;
-      }
       setExportError(t('chat.exportFailed', lang));
+    } finally {
+      setShareGenerating(false);
     }
-  }, [lang, messages, me]);
+  }, [shareSelectedIds.length, lang]);
+
+  // Chronological ordering of the selected messages for the card.
+  const shareMessages = shareSelectMode
+    ? messages.filter((m) => shareSelectedIds.includes(m.id))
+    : [];
 
   // Close export menu on outside click / ESC
   useEffect(() => {
@@ -551,8 +596,8 @@ export default function ChatInterface({
                   <button type="button" role="menuitem" onClick={handleExportMarkdown}>
                     {t('chat.exportMarkdown', lang)}
                   </button>
-                  <button type="button" role="menuitem" onClick={handleExportImage}>
-                    {t('chat.exportImage', lang)}
+                  <button type="button" role="menuitem" onClick={handleEnterShareMode}>
+                    {t('chat.exportShareCard', lang)}
                   </button>
                 </div>
               )}
@@ -593,17 +638,37 @@ export default function ChatInterface({
         </div>
 
         <div ref={chatAreaRef} className="chat-area">
-          {messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              lang={lang}
-              onPlay={msg.role === 'assistant' ? handleMessagePlay : undefined}
-              onToggleFavorite={msg.role === 'assistant' ? handleToggleFavorite : undefined}
-              isFavorited={msg.role === 'assistant' ? findFavoriteFor(msg) != null : false}
-              isPlaying={playingMsgId === msg.id}
-            />
-          ))}
+          {messages.map((msg) => {
+            const selected = shareSelectedIds.includes(msg.id);
+            const capped = shareSelectedIds.length >= SHARE_MAX;
+            // Exclude greeting + streaming from share picks (nothing to
+            // share pre-answer).
+            const shareEligible =
+              shareSelectMode && msg.id !== 'greeting' && !msg.isStreaming;
+            return (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                lang={lang}
+                onPlay={
+                  !shareSelectMode && msg.role === 'assistant'
+                    ? handleMessagePlay
+                    : undefined
+                }
+                onToggleFavorite={
+                  !shareSelectMode && msg.role === 'assistant'
+                    ? handleToggleFavorite
+                    : undefined
+                }
+                isFavorited={msg.role === 'assistant' ? findFavoriteFor(msg) != null : false}
+                isPlaying={playingMsgId === msg.id}
+                shareSelectMode={shareEligible}
+                shareSelected={selected}
+                shareDisabled={capped && !selected}
+                onShareToggle={handleToggleShareSelect}
+              />
+            );
+          })}
           <div ref={chatEndRef} />
         </div>
 
@@ -678,6 +743,47 @@ export default function ChatInterface({
             </div>
           </div>
         </div>
+      )}
+
+      {shareSelectMode && (
+        <div className="share-toolbar" role="toolbar">
+          <span className="share-toolbar-hint">{t('share.hint', lang)}</span>
+          <span className="share-toolbar-counter">
+            {t('share.counter', lang, { n: shareSelectedIds.length })}
+          </span>
+          <button
+            type="button"
+            className="share-toolbar-cancel"
+            onClick={handleCancelShare}
+            disabled={shareGenerating}
+          >
+            {t('share.cancel', lang)}
+          </button>
+          <button
+            type="button"
+            className="share-toolbar-generate"
+            onClick={handleGenerateShareCard}
+            disabled={shareSelectedIds.length === 0 || shareGenerating}
+          >
+            {t('share.generate', lang)}
+          </button>
+        </div>
+      )}
+
+      {/* Off-screen card — only mounted during share mode so html2canvas
+          reads live DOM at the export dimensions (1080x1350). */}
+      {shareSelectMode && shareMessages.length > 0 && (
+        <ShareCard
+          ref={shareCardRef}
+          messages={shareMessages}
+          lang={lang}
+          callsign={me?.callsign ?? null}
+          affinityLevel={me?.affinity_level ?? 1}
+          levelName={t(
+            `level.${Math.min(Math.max(me?.affinity_level ?? 1, 1), 4)}.name` as never,
+            lang,
+          )}
+        />
       )}
     </div>
   );
