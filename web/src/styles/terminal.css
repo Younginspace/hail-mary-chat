@@ -1262,10 +1262,6 @@ body {
     display: none; /* hide latency on mobile */
   }
 
-  .status-bar .lang-switcher {
-    display: none; /* use floating fab instead */
-  }
-
   .status-bar .tts-toggle {
     font-size: 12px;
     padding: 2px 4px;
@@ -1435,21 +1431,6 @@ body {
   .connected-flash {
     font-size: 12px;
     letter-spacing: 1px;
-  }
-}
-
-/* ========== Mobile floating lang switcher ========== */
-.mobile-lang-fab {
-  display: none;
-}
-
-@media (max-width: 600px) {
-  .mobile-lang-fab {
-    display: block;
-    position: fixed;
-    top: calc(6px + env(safe-area-inset-top, 0px));
-    right: 10px;
-    z-index: 10;
   }
 }
 
@@ -2886,19 +2867,6 @@ body {
 }
 
 /* Echo screen — back button + badge + question chips */
-.echo-back {
-  background: none;
-  border: 1px solid rgba(214, 241, 233, 0.28);
-  color: rgba(214, 241, 233, 0.72);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.4px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.echo-back:hover { border-color: #00d4aa; color: #00d4aa; }
 .echo-badge {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
@@ -3565,4 +3533,308 @@ body {
   letter-spacing: 3px;
   text-transform: uppercase;
   padding-bottom: 14px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Share card — 4:5 portrait (1080 × 1350). Rendered off-screen; html2canvas
+   rasterizes it to a PNG. Pure CSS backgrounds (no three.js — html2canvas
+   can't capture WebGL). Mirrors the hero terminal-grid aesthetic.
+   ═══════════════════════════════════════════════════════════════════ */
+.sharecard {
+  position: fixed;
+  left: -20000px;
+  top: 0;
+  width: 1080px;
+  height: 1350px;
+  background: #050c12;
+  font-family: 'JetBrains Mono', monospace;
+  color: #d6f1e9;
+  overflow: hidden;
+  isolation: isolate;
+}
+.sharecard-bg-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background-image:
+    linear-gradient(rgba(0, 212, 170, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 170, 0.06) 1px, transparent 1px);
+  background-size: 60px 60px, 60px 60px;
+  opacity: 0.9;
+}
+.sharecard-bg-aurora {
+  position: absolute;
+  inset: -10%;
+  z-index: 2;
+  background:
+    radial-gradient(ellipse 80% 60% at 25% 20%, rgba(0, 212, 170, 0.22) 0%, transparent 60%),
+    radial-gradient(ellipse 65% 45% at 80% 78%, rgba(80, 180, 255, 0.14) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 35% at 50% 100%, rgba(255, 170, 68, 0.08) 0%, transparent 60%);
+}
+.sharecard-bg-horizon {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 45%;
+  z-index: 3;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 212, 170, 0.06) 60%, rgba(0, 212, 170, 0.14) 100%);
+  pointer-events: none;
+}
+.sharecard-bg-scan {
+  position: absolute;
+  left: 0; right: 0;
+  top: 18%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(0, 212, 170, 0.5) 50%, transparent 100%);
+  box-shadow: 0 0 28px rgba(0, 212, 170, 0.55);
+  z-index: 4;
+}
+/* Corner brackets — sci-fi terminal framing */
+.sharecard-bracket {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border: 2px solid rgba(0, 212, 170, 0.55);
+  z-index: 5;
+}
+.sharecard-bracket-tl { top: 40px; left: 40px; border-right: none; border-bottom: none; }
+.sharecard-bracket-tr { top: 40px; right: 40px; border-left: none; border-bottom: none; }
+.sharecard-bracket-bl { bottom: 40px; left: 40px; border-right: none; border-top: none; }
+.sharecard-bracket-br { bottom: 40px; right: 40px; border-left: none; border-top: none; }
+
+.sharecard-inner {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 96px 80px;
+  box-sizing: border-box;
+  height: 100%;
+}
+
+.sharecard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.sharecard-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: rgba(0, 212, 170, 0.12);
+  border: 1px solid rgba(0, 212, 170, 0.5);
+  border-radius: 4px;
+  font-size: 18px;
+  letter-spacing: 3px;
+  color: #00d4aa;
+  font-weight: 600;
+}
+.sharecard-badge-dot {
+  width: 9px;
+  height: 9px;
+  background: #00d4aa;
+  border-radius: 50%;
+  box-shadow: 0 0 10px #00d4aa;
+}
+.sharecard-timestamp {
+  font-size: 16px;
+  letter-spacing: 2px;
+  color: rgba(214, 241, 233, 0.6);
+}
+
+.sharecard-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+}
+.sharecard-msg {
+  padding: 18px 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 212, 170, 0.22);
+  background: rgba(4, 14, 20, 0.6);
+}
+.sharecard-msg-user {
+  border-left: 3px solid rgba(214, 241, 233, 0.45);
+  background: rgba(10, 18, 24, 0.7);
+}
+.sharecard-msg-rocky {
+  border-left: 3px solid #00d4aa;
+  background: rgba(0, 30, 40, 0.7);
+}
+.sharecard-msg-label {
+  font-size: 14px;
+  letter-spacing: 2.2px;
+  color: #00d4aa;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.sharecard-msg-user .sharecard-msg-label { color: rgba(214, 241, 233, 0.75); }
+.sharecard-msg-body {
+  font-size: 28px;
+  line-height: 1.45;
+  color: #eafff5;
+  /* 4-line soft clamp — if truncateBody didn't cut, visual clamp will.
+     -webkit-line-clamp renders reliably under html2canvas in Chromium. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.sharecard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 18px;
+  border-top: 1px solid rgba(0, 212, 170, 0.2);
+  font-size: 16px;
+  letter-spacing: 1.5px;
+  flex-shrink: 0;
+}
+.sharecard-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  color: rgba(214, 241, 233, 0.8);
+}
+.sharecard-level-badge {
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 212, 170, 0.5);
+  background: rgba(0, 212, 170, 0.15);
+  color: #00d4aa;
+  font-size: 14px;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+}
+.sharecard-level-badge.lv-4 {
+  border-color: rgba(255, 170, 68, 0.7);
+  background: rgba(255, 170, 68, 0.15);
+  color: #ffcc66;
+}
+.sharecard-footer-callsign { color: #00d4aa; }
+.sharecard-footer-right {
+  color: rgba(214, 241, 233, 0.55);
+  letter-spacing: 2px;
+}
+
+/* ─── Share-select mode (in-chat UI) ─── */
+.message.share-selectable {
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.message.share-selectable::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid rgba(0, 212, 170, 0.55);
+  border-radius: 4px;
+  background: rgba(4, 14, 20, 0.7);
+  pointer-events: none;
+}
+.message.share-selected {
+  border-color: #00d4aa !important;
+  box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.35), 0 0 16px rgba(0, 212, 170, 0.35);
+}
+.message.share-selected::before {
+  background: #00d4aa;
+  border-color: #00d4aa;
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.6);
+}
+.message.share-selected::after {
+  content: '✓';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #001018;
+  font-size: 14px;
+  font-weight: 700;
+  pointer-events: none;
+  z-index: 1;
+}
+.message.share-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Floating bottom toolbar during share-select mode */
+.share-toolbar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(5, 14, 20, 0.92);
+  border: 1px solid rgba(0, 212, 170, 0.55);
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  font-family: 'JetBrains Mono', monospace;
+}
+.share-toolbar-hint {
+  font-size: 11px;
+  color: rgba(214, 241, 233, 0.6);
+  letter-spacing: 0.4px;
+}
+.share-toolbar-counter {
+  font-size: 12px;
+  color: #00d4aa;
+  letter-spacing: 0.8px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+.share-toolbar button {
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  padding: 7px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.share-toolbar-cancel {
+  background: transparent;
+  border: 1px solid rgba(214, 241, 233, 0.3);
+  color: rgba(214, 241, 233, 0.75);
+}
+.share-toolbar-cancel:hover { border-color: #d6f1e9; color: #d6f1e9; }
+.share-toolbar-generate {
+  background: #00d4aa;
+  border: 1px solid #00d4aa;
+  color: #001018;
+  font-weight: 700;
+}
+.share-toolbar-generate:hover:not(:disabled) { background: #00e6b8; }
+.share-toolbar-generate:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 600px) {
+  .share-toolbar {
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100% - 24px);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .share-toolbar-hint { display: none; }
 }

@@ -202,11 +202,21 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
         onTouchEnd={onTouchEnd}
       >
         <div className="status-bar">
-          <button type="button" className="echo-back" onClick={onBack}>
-            {t('echo.back', lang)}
-          </button>
           <span className="echo-badge">ROCKY ECHO</span>
-          <LangSwitcher />
+          <div className="status-actions">
+            <button
+              type="button"
+              className="status-iconbtn hangup"
+              onClick={onBack}
+              title={t('echo.back', lang)}
+              aria-label={t('echo.back', lang)}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 12l-3-3a14 14 0 0 0-14 0l-3 3 2.5 2.5a1 1 0 0 0 1.4 0l2-2a1 1 0 0 1 1-.3 13 13 0 0 0 5.2 0 1 1 0 0 1 1 .3l2 2a1 1 0 0 0 1.4 0L22 12z" transform="rotate(135 12 12)" />
+              </svg>
+            </button>
+            <LangSwitcher />
+          </div>
         </div>
 
         <div className="mode-bar">

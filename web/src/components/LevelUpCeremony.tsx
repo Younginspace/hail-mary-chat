@@ -70,15 +70,6 @@ export default function LevelUpCeremony({ payload, onClose }: Props) {
         </div>
 
         <ul className="levelup-bonuses">
-          {payload.image_credits > 0 && (
-            <li>{t('level.upImageBonus', lang, { n: payload.image_credits })}</li>
-          )}
-          {payload.music_credits > 0 && (
-            <li>{t('level.upMusicBonus', lang, { n: payload.music_credits })}</li>
-          )}
-          {payload.video_credits > 0 && (
-            <li>{t('level.upVideoBonus', lang, { n: payload.video_credits })}</li>
-          )}
           <li>
             {/* voice bonus is computed server-side; the ceremony shows fixed per-level totals */}
             {t('level.upVoiceBonus', lang, {

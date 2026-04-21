@@ -136,7 +136,12 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
       }
 
       // === 非预置：走 LLM API ===
-      const assistantId = `assistant-${Date.now()}`;
+      // Use crypto.randomUUID so this ID survives the round-trip through
+      // /api/session/message as messages.id — admin views & the tts_content_hash
+      // link both key on this exact string. Special-cased ids (greeting,
+      // farewell-, default-, user-) stay as sentinels since speak() routes
+      // them to pre-recorded audio paths and the TTS link never matters.
+      const assistantId = crypto.randomUUID();
       setMessages((prev) => [
         ...prev,
         userMsg,

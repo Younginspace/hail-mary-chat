@@ -905,8 +905,8 @@ app.post("/api/session/message", async (c) => {
   if (!user) return c.json({ error: "not_authenticated" }, 401);
 
   const body = await c.req
-    .json<{ session_id?: string; role?: string; content?: string }>()
-    .catch(() => ({} as { session_id?: string; role?: string; content?: string }));
+    .json<{ session_id?: string; role?: string; content?: string; id?: string }>()
+    .catch(() => ({} as { session_id?: string; role?: string; content?: string; id?: string }));
   if (!body.session_id || !body.role || typeof body.content !== "string") {
     return c.json({ error: "session_id, role, content required" }, 400);
   }
@@ -931,13 +931,27 @@ app.post("/api/session/message", async (c) => {
     .limit(1);
   if (session.length === 0) return c.json({ error: "session not found or ended" }, 404);
 
-  await db.insert(messagesTable).values({
-    id: crypto.randomUUID(),
-    session_id: body.session_id,
-    role: body.role,
-    content,
-    created_at: Date.now(),
-  });
+  // Accept client-provided id so the same primary key flows through to
+  // /api/tts?message_id=... when the client TTS's this assistant row.
+  // Validate: string, reasonable length, not empty. Fallback to a fresh
+  // uuid for legacy clients. onConflictDoNothing dedups retries (same
+  // client sends a message twice due to a flaky network).
+  const clientId =
+    typeof body.id === "string" && body.id.length > 0 && body.id.length <= 64
+      ? body.id
+      : null;
+  const rowId = clientId ?? crypto.randomUUID();
+
+  await db
+    .insert(messagesTable)
+    .values({
+      id: rowId,
+      session_id: body.session_id,
+      role: body.role,
+      content,
+      created_at: Date.now(),
+    })
+    .onConflictDoNothing();
 
   if (body.role === "user") {
     // Only bump turn_count if the session is still open; if /api/session/end
@@ -1749,6 +1763,45 @@ app.get("/api/favorites", async (c) => {
 //  P5 F2 — /api/tts  (cache-first, credit-metered, global-quota-gated)
 // ═══════════════════════════════════════════════════════════════════
 
+// Best-effort backfill: UPDATE messages SET tts_content_hash = ? WHERE id = ?.
+// Retries once after 1s if the message row hasn't been inserted yet —
+// /api/session/message and this /api/tts call race in the client on every
+// assistant turn. After two misses we accept the trace link is lost and
+// move on. Runs in ctx.runInBackground, so it never blocks the audio
+// response. ~5% rows will still slip through under heavy concurrent
+// /api/session/end races; good enough for the analytics use-case.
+//
+// Ownership gate (sessions.user_id = userId) stops a caller forging a
+// tts_content_hash on another user's assistant row by guessing its id.
+async function linkMessageTts(
+  messageId: string,
+  contentHash: string,
+  userId: string,
+): Promise<void> {
+  for (const delayMs of [0, 1000]) {
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    try {
+      const result = await db
+        .update(messagesTable)
+        .set({ tts_content_hash: contentHash })
+        .where(
+          and(
+            eq(messagesTable.id, messageId),
+            eq(messagesTable.role, "assistant"),
+            sql`${messagesTable.session_id} IN (SELECT ${sessions.id} FROM ${sessions} WHERE ${sessions.user_id} = ${userId})`,
+          ),
+        )
+        .returning({ id: messagesTable.id });
+      if (result.length > 0) return;
+    } catch (err) {
+      console.warn(`linkMessageTts update failed (${delayMs}ms):`, err);
+      return;
+    }
+  }
+  // Not found after retry — row never made it, id mismatched, or it's
+  // not owned by this user. Silent.
+}
+
 app.get("/api/tts", async (c) => {
   const user = await getAuthedUser();
   if (!user) return c.json({ error: "not_authenticated" }, 401);
@@ -1759,6 +1812,7 @@ app.get("/api/tts", async (c) => {
     return c.json({ error: "text is required" }, 400);
   }
   const isFavorite = url.searchParams.get("favorite") === "true";
+  const messageId = url.searchParams.get("message_id")?.trim() || null;
 
   const apiUrl = vars.get("MINIMAX_TTS_API_URL") ?? DEFAULT_TTS_API_URL;
   const ttsModel = vars.get("MINIMAX_TTS_MODEL") ?? DEFAULT_TTS_MODEL;
@@ -1802,6 +1856,7 @@ app.get("/api/tts", async (c) => {
   if (cached.length > 0) {
     const file = await storage.from(buckets.rockyAudio).get(cached[0].r2_key);
     if (file) {
+      if (messageId) ctx.runInBackground(linkMessageTts(messageId, contentHash, user.user_id));
       return new Response(file.body, {
         status: 200,
         headers: {
@@ -1951,6 +2006,7 @@ app.get("/api/tts", async (c) => {
       }
     })()
   );
+  if (messageId) ctx.runInBackground(linkMessageTts(messageId, contentHash, user.user_id));
 
   return new Response(buf, {
     status: 200,
@@ -2455,6 +2511,261 @@ app.post("/api/admin/rapport-recalibrate", async (c) => {
     );
   }
   return c.json({ ok: true, applied });
+});
+
+// Browse audio_cache for spot-checking what MiniMax TTS has rendered.
+// Returns rows newest-first with presigned R2 download URLs (1h TTL).
+// Joins favorites so rows that anyone favorited come back with the text;
+// for the rest you'll see only the hash and have to download + listen.
+//
+// Filters: ?lang=zh|en|ja  ?limit=50 (max 200)  ?offset=0
+// Usage:
+//   curl -H "X-Admin-Token: $TOKEN" \
+//        "https://<host>/api/admin/audio-cache?limit=100&lang=zh"
+app.get("/api/admin/audio-cache", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const url = new URL(c.req.url);
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? 50)));
+  const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
+  const langFilter = url.searchParams.get("lang");
+
+  const rowsQ = db
+    .select({
+      content_hash: audio_cache.content_hash,
+      lang: audio_cache.lang,
+      voice_id: audio_cache.voice_id,
+      r2_key: audio_cache.r2_key,
+      byte_length: audio_cache.byte_length,
+      created_at: audio_cache.created_at,
+    })
+    .from(audio_cache)
+    .orderBy(desc(audio_cache.created_at))
+    .limit(limit)
+    .offset(offset);
+  const rows = langFilter
+    ? await rowsQ.where(eq(audio_cache.lang, langFilter))
+    : await rowsQ;
+
+  // Best-effort text via favorites.content_hash.
+  const hashes = rows.map((r) => r.content_hash);
+  const favs = hashes.length > 0
+    ? await db
+        .select({
+          content_hash: favorites.content_hash,
+          message_content: favorites.message_content,
+        })
+        .from(favorites)
+        .where(inArray(favorites.content_hash, hashes))
+    : [];
+  const textByHash = new Map<string, string>();
+  for (const f of favs) textByHash.set(f.content_hash, f.message_content);
+
+  const items = await Promise.all(
+    rows.map(async (r) => {
+      const { downloadUrl } = await storage
+        .from(buckets.rockyAudio)
+        .createPresignedGetUrl(r.r2_key, 3600);
+      return {
+        content_hash: r.content_hash,
+        lang: r.lang,
+        voice_id: r.voice_id,
+        byte_length: r.byte_length,
+        created_at: r.created_at,
+        text: textByHash.get(r.content_hash) ?? null,
+        download_url: downloadUrl,
+      };
+    })
+  );
+
+  const totalQ = db
+    .select({ n: sql<number>`count(*)`.as("n") })
+    .from(audio_cache);
+  const totalRow = langFilter
+    ? await totalQ.where(eq(audio_cache.lang, langFilter))
+    : await totalQ;
+
+  return c.json({
+    total: totalRow[0]?.n ?? 0,
+    limit,
+    offset,
+    items,
+  });
+});
+
+// Browse messages with the full trace chain attached:
+//   message.text
+//   → tts_audio (if voiced) via tts_content_hash → audio_cache → R2
+//   → favorited flag (favorites.content_hash match)
+//   → prior user message in same session (what question triggered this)
+//
+// Filters:
+//   ?session_id=<uuid>   — single session (sorted by created_at)
+//   ?user_id=<uuid>      — all sessions for a user
+//   ?limit / ?offset
+//   ?role=assistant|user — filter by role
+//
+// Example:
+//   curl -H "X-Admin-Token: $TOKEN" \
+//     "https://<host>/api/admin/messages?session_id=<id>&limit=200"
+app.get("/api/admin/messages", async (c) => {
+  if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
+  const url = new URL(c.req.url);
+  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 100)));
+  const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
+  const sessionFilter = url.searchParams.get("session_id");
+  const userFilter = url.searchParams.get("user_id");
+  const roleFilter = url.searchParams.get("role");
+
+  // Build the WHERE from the provided filters.
+  const wheres = [];
+  if (sessionFilter) wheres.push(eq(messagesTable.session_id, sessionFilter));
+  if (roleFilter === "user" || roleFilter === "assistant") {
+    wheres.push(eq(messagesTable.role, roleFilter));
+  }
+
+  // user_id filter needs a join through sessions.
+  let msgs;
+  if (userFilter) {
+    const joinQ = db
+      .select({
+        id: messagesTable.id,
+        session_id: messagesTable.session_id,
+        role: messagesTable.role,
+        content: messagesTable.content,
+        created_at: messagesTable.created_at,
+        tts_content_hash: messagesTable.tts_content_hash,
+        user_id: sessions.user_id,
+      })
+      .from(messagesTable)
+      .innerJoin(sessions, eq(messagesTable.session_id, sessions.id))
+      .orderBy(desc(messagesTable.created_at))
+      .limit(limit)
+      .offset(offset);
+    msgs = await joinQ.where(and(eq(sessions.user_id, userFilter), ...wheres));
+  } else {
+    const baseQ = db
+      .select({
+        id: messagesTable.id,
+        session_id: messagesTable.session_id,
+        role: messagesTable.role,
+        content: messagesTable.content,
+        created_at: messagesTable.created_at,
+        tts_content_hash: messagesTable.tts_content_hash,
+      })
+      .from(messagesTable)
+      .orderBy(sessionFilter ? asc(messagesTable.created_at) : desc(messagesTable.created_at))
+      .limit(limit)
+      .offset(offset);
+    msgs =
+      wheres.length > 0
+        ? await baseQ.where(wheres.length === 1 ? wheres[0] : and(...wheres))
+        : await baseQ;
+  }
+  if (msgs.length === 0) {
+    return c.json({ items: [], limit, offset });
+  }
+
+  // Pull audio_cache + favorites rows in one batch per table.
+  const hashes = Array.from(
+    new Set(msgs.map((m) => m.tts_content_hash).filter((h): h is string => !!h))
+  );
+  const caches = hashes.length > 0
+    ? await db
+        .select({ content_hash: audio_cache.content_hash, r2_key: audio_cache.r2_key, byte_length: audio_cache.byte_length, lang: audio_cache.lang })
+        .from(audio_cache)
+        .where(inArray(audio_cache.content_hash, hashes))
+    : [];
+  const cacheByHash = new Map(caches.map((c) => [c.content_hash, c]));
+
+  const favs = hashes.length > 0
+    ? await db
+        .select({ content_hash: favorites.content_hash, id: favorites.id, user_id: favorites.user_id })
+        .from(favorites)
+        .where(inArray(favorites.content_hash, hashes))
+    : [];
+  const favHashes = new Set(favs.map((f) => f.content_hash));
+
+  // For "what question triggered this?" lookup — grab prior user message
+  // per assistant row. One read-per-session: bulk fetch user-role rows
+  // for every unique session in the response, sorted by created_at.
+  const sessionIds = Array.from(new Set(msgs.map((m) => m.session_id)));
+  const userRows = sessionIds.length > 0
+    ? await db
+        .select({
+          id: messagesTable.id,
+          session_id: messagesTable.session_id,
+          content: messagesTable.content,
+          created_at: messagesTable.created_at,
+        })
+        .from(messagesTable)
+        .where(
+          and(
+            inArray(messagesTable.session_id, sessionIds),
+            eq(messagesTable.role, "user"),
+          ),
+        )
+        .orderBy(asc(messagesTable.created_at))
+    : [];
+  const userBySession = new Map<string, typeof userRows>();
+  for (const r of userRows) {
+    const list = userBySession.get(r.session_id) ?? [];
+    list.push(r);
+    userBySession.set(r.session_id, list);
+  }
+
+  const items = await Promise.all(
+    msgs.map(async (m) => {
+      // For assistant: the last user message in the same session before m.
+      let triggered_by: { id: string; content: string; created_at: number } | null = null;
+      if (m.role === "assistant") {
+        const list = userBySession.get(m.session_id) ?? [];
+        let prev: (typeof list)[number] | undefined;
+        for (const u of list) {
+          if (u.created_at < m.created_at) prev = u;
+          else break;
+        }
+        if (prev) {
+          triggered_by = { id: prev.id, content: prev.content, created_at: prev.created_at };
+        }
+      }
+
+      let tts: {
+        content_hash: string;
+        r2_key: string;
+        byte_length: number;
+        lang: string;
+        download_url: string;
+      } | null = null;
+      if (m.tts_content_hash) {
+        const cache = cacheByHash.get(m.tts_content_hash);
+        if (cache) {
+          const { downloadUrl } = await storage
+            .from(buckets.rockyAudio)
+            .createPresignedGetUrl(cache.r2_key, 3600);
+          tts = {
+            content_hash: cache.content_hash,
+            r2_key: cache.r2_key,
+            byte_length: cache.byte_length,
+            lang: cache.lang,
+            download_url: downloadUrl,
+          };
+        }
+      }
+
+      return {
+        id: m.id,
+        session_id: m.session_id,
+        role: m.role,
+        content: m.content,
+        created_at: m.created_at,
+        tts,
+        favorited: m.tts_content_hash ? favHashes.has(m.tts_content_hash) : false,
+        triggered_by,
+      };
+    }),
+  );
+
+  return c.json({ items, limit, offset });
 });
 
 export default app;

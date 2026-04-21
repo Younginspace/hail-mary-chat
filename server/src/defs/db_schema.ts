@@ -85,8 +85,16 @@ export const messages = sqliteTable(
     role: text("role").notNull(), // 'user' | 'assistant'
     content: text("content").notNull(),
     created_at: integer("created_at").notNull(),
+    // Points at audio_cache.content_hash once /api/tts renders (or
+    // cache-hits) this assistant message. Always NULL for user rows
+    // and for assistant rows that were never voiced. Lets the admin
+    // view join messages ↔ audio ↔ favorites without re-hashing.
+    tts_content_hash: text("tts_content_hash"),
   },
-  (t) => [index("idx_messages_session").on(t.session_id)]
+  (t) => [
+    index("idx_messages_session").on(t.session_id),
+    index("idx_messages_tts_hash").on(t.tts_content_hash),
+  ]
 );
 
 export const memories = sqliteTable(

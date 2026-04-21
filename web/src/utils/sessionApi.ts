@@ -72,13 +72,16 @@ export function endSession(session_id: string): void {
 export function logMessage(
   session_id: string,
   role: 'user' | 'assistant',
-  content: string
+  content: string,
+  id?: string,
 ): void {
   fetch(`${API_BASE}/api/session/message`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id, role, content }),
+    // Pass `id` so the server stores the same primary key the client uses.
+    // Lets /api/tts?message_id=<id> link audio back to this row.
+    body: JSON.stringify({ session_id, role, content, id }),
     keepalive: true,
   }).catch((err) => console.warn('logMessage failed', err));
 }

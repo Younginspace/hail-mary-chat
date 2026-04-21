@@ -97,6 +97,53 @@ const translations = {
     ja: 'ホームに戻る',
   },
 
+  // ===== Share card (export → 分享为图片) =====
+  'chat.exportShareCard': {
+    zh: '分享为图片',
+    en: 'Share as image',
+    ja: '画像として共有',
+  },
+  'share.hint': {
+    zh: '点消息选中 · 最多 6 条',
+    en: 'Tap messages to include · up to 6',
+    ja: 'メッセージをタップで選択・最大 6 件',
+  },
+  'share.counter': {
+    zh: '已选 {n}/6',
+    en: 'Selected {n}/6',
+    ja: '選択中 {n}/6',
+  },
+  'share.generate': {
+    zh: '生成图片',
+    en: 'Generate',
+    ja: '画像生成',
+  },
+  'share.cancel': {
+    zh: '取消',
+    en: 'Cancel',
+    ja: 'キャンセル',
+  },
+  'share.maxReached': {
+    zh: '最多选 6 条',
+    en: 'Max 6 messages',
+    ja: '最大 6 件まで',
+  },
+  'share.cardHeader': {
+    zh: 'ROCKY ECHO · 通讯片段',
+    en: 'ROCKY ECHO · TRANSMISSION LOG',
+    ja: 'ROCKY ECHO · 通信ログ',
+  },
+  'share.senderYou': {
+    zh: '你',
+    en: 'YOU',
+    ja: 'あなた',
+  },
+  'share.senderRocky': {
+    zh: 'ROCKY',
+    en: 'ROCKY',
+    ja: 'ROCKY',
+  },
+
   // ===== Chat Interface =====
   'chat.latency': {
     zh: 'LATENCY 4.2ly',
@@ -226,9 +273,9 @@ const translations = {
   'level.3.name': { zh: 'Friend', en: 'Friend', ja: 'Friend' },
   'level.4.name': { zh: 'Fist My Bump', en: 'Fist My Bump', ja: 'Fist My Bump' },
   'level.upTitle': {
-    zh: 'Rocky 升级了对你的看法',
-    en: 'Rocky has a new name for you',
-    ja: 'Rockyの呼び方が変わった',
+    zh: 'Rocky 跟你的好感度提升了！',
+    en: "Rocky's affinity with you went up!",
+    ja: 'Rockyとの親密度がアップ！',
   },
   'level.upSubtitle': {
     zh: '{from} → {to}',
