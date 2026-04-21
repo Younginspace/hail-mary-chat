@@ -805,6 +805,17 @@ export default function ChatInterface({
           )}
         />
       )}
+
+      {/* Full-viewport overlay during capture — covers the card that
+          renderShareCard briefly pulls into the painting area so the
+          user never sees the raw artwork flash on screen. Sits above
+          the card's z-index:1 but below any system UI. */}
+      {shareGenerating && (
+        <div className="share-generating-overlay" role="status" aria-live="polite">
+          <div className="share-generating-spinner" />
+          <div className="share-generating-label">{t('share.generate', lang)}…</div>
+        </div>
+      )}
     </div>
   );
 }

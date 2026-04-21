@@ -95,27 +95,57 @@ export function exportChatMarkdown(
 
 // ── Share card (4:5 PNG from the off-screen <ShareCard/>) ───────────
 
-// Rasterize the given card element at 1080×1350 and trigger a download.
-// Caller is responsible for mounting <ShareCard ... ref={cardRef}/>; we
-// just consume the DOM node. Runs at scale=1 (the card is already laid
-// out at the export dimensions) so total pixels = 1080*1350 = 1.46M,
-// well under every browser's canvas cap.
+// Rasterize the given card element and trigger a download.
+//
+// Shoving the card to `left: -20000px` produced a black PNG on every
+// browser we tested (Chrome + Safari desktop, mobile Safari) — html2canvas
+// couldn't reliably read paint data for an element outside the composited
+// area. Fix: while capturing, move the card to `left:0; top:0` with a
+// low z-index. The caller shows a full-viewport overlay above it, so the
+// user sees only the overlay and never the raw card.
+//
+// Capture at scale=2 → 2160×2700 retina output on the 1080×1350 layout.
+// Canvas pixel count = 5.83M, comfortably under every browser's cap.
 export async function renderShareCard(target: HTMLElement): Promise<void> {
-  const canvas = await html2canvas(target, {
-    backgroundColor: '#050c12',
-    scale: 1,
-    useCORS: true,
-    logging: false,
-    width: 1080,
-    height: 1350,
-    windowWidth: 1080,
-    windowHeight: 1350,
-  });
-  await new Promise<void>((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) return reject(new Error('toBlob returned null'));
-      triggerDownload(blob, `rocky-share_${formatTimestamp()}.png`);
-      resolve();
-    }, 'image/png');
-  });
+  const prev = {
+    left: target.style.left,
+    top: target.style.top,
+    opacity: target.style.opacity,
+    visibility: target.style.visibility,
+    zIndex: target.style.zIndex,
+    transform: target.style.transform,
+  };
+  target.style.left = '0';
+  target.style.top = '0';
+  target.style.opacity = '1';
+  target.style.visibility = 'visible';
+  target.style.zIndex = '1';
+  target.style.transform = 'none';
+
+  // Two rAFs to let layout + paint settle before the capture reads styles.
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  try {
+    const canvas = await html2canvas(target, {
+      backgroundColor: '#050c12',
+      scale: 2,
+      useCORS: true,
+      logging: false,
+    });
+    await new Promise<void>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) return reject(new Error('toBlob returned null'));
+        triggerDownload(blob, `rocky-share_${formatTimestamp()}.png`);
+        resolve();
+      }, 'image/png');
+    });
+  } finally {
+    target.style.left = prev.left;
+    target.style.top = prev.top;
+    target.style.opacity = prev.opacity;
+    target.style.visibility = prev.visibility;
+    target.style.zIndex = prev.zIndex;
+    target.style.transform = prev.transform;
+  }
 }
