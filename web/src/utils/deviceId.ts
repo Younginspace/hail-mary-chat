@@ -2,16 +2,12 @@
 // P4 will introduce real auth; at that point we "adopt" this device_id's
 // history into the newly-created account.
 
+import { genUuid } from './uuid';
+
 const STORAGE_KEY = 'rocky_device_id';
 
 function generate(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  // Fallback for older browsers — 32 hex chars
-  const rand = new Uint8Array(16);
-  (crypto as Crypto).getRandomValues(rand);
-  return Array.from(rand, (b) => b.toString(16).padStart(2, '0')).join('');
+  return genUuid();
 }
 
 export function getDeviceId(): string {
