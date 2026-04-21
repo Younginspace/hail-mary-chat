@@ -1,10 +1,14 @@
 // 一次性重新生成所有预录音频：greeting + farewell + 6 preset dialogs × 3 languages
-// Usage: node scripts/regen-all-audio.mjs
+// Usage: ELEVENLABS_API_KEY=sk_... node scripts/regen-all-audio.mjs
 
 import fs from 'fs';
 import path from 'path';
 
-const API_KEY = '***REMOVED-ELEVENLABS-KEY***';
+const API_KEY = process.env.ELEVENLABS_API_KEY;
+if (!API_KEY) {
+  console.error('Set ELEVENLABS_API_KEY env var before running this script.');
+  process.exit(1);
+}
 const VOICE_ID = 'cNTXpodjj84PbMqCBCZg';
 const MODEL = 'eleven_turbo_v2_5';
 const OUTPUT_DIR = path.resolve('public/audio/defaults');

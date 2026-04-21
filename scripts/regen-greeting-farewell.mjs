@@ -1,10 +1,14 @@
 // 生成 greeting + farewell 预录音频
-// Usage: node scripts/regen-greeting-farewell.mjs
+// Usage: ELEVENLABS_API_KEY=sk_... node scripts/regen-greeting-farewell.mjs
 
 import fs from 'fs';
 import path from 'path';
 
-const API_KEY = '***REMOVED-ELEVENLABS-KEY***';
+const API_KEY = process.env.ELEVENLABS_API_KEY;
+if (!API_KEY) {
+  console.error('Set ELEVENLABS_API_KEY env var before running this script.');
+  process.exit(1);
+}
 const VOICE_ID = 'cNTXpodjj84PbMqCBCZg';
 const MODEL = 'eleven_turbo_v2_5';
 const OUTPUT_DIR = path.resolve('public/audio/defaults');
