@@ -125,6 +125,12 @@ body {
   color: var(--accent-cyan);
   flex-shrink: 0;
   backdrop-filter: blur(8px);
+  /* Establish a high stacking context so the export dropdown
+     (.export-menu z-index:50) paints above .chat-area — which creates
+     its own stacking context via backdrop-filter and would otherwise
+     cover the menu because it comes later in the DOM. */
+  position: relative;
+  z-index: 50;
 }
 
 .status-bar .signal {
@@ -3545,9 +3551,11 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Share card — 4:5 portrait (1080 × 1350). Rendered off-screen; html2canvas
-   rasterizes it to a PNG. Pure CSS backgrounds (no three.js — html2canvas
-   can't capture WebGL). Mirrors the hero terminal-grid aesthetic.
+   Share card — 4:5 portrait (1080 × 1350). Rendered off-screen by
+   default; renderShareCard pulls it to left:0 top:0 for the capture
+   window, covered by .share-generating-overlay so the user only sees
+   the overlay. Pure CSS backgrounds — no three.js / WebGL, which
+   html2canvas can't capture.
    ═══════════════════════════════════════════════════════════════════ */
 .sharecard {
   position: fixed;
@@ -3560,6 +3568,44 @@ body {
   color: #d6f1e9;
   overflow: hidden;
   isolation: isolate;
+  pointer-events: none;
+}
+
+/* Full-viewport overlay shown while renderShareCard is capturing the
+   card. Sits above .sharecard (z-index:1 during capture) but below any
+   system UI. Doubles as a "generating…" status for the user. */
+.share-generating-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(5, 10, 16, 0.92);
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #00d4aa;
+  letter-spacing: 2px;
+  font-size: 13px;
+  pointer-events: auto;
+}
+.share-generating-spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid rgba(0, 212, 170, 0.25);
+  border-top-color: #00d4aa;
+  border-radius: 50%;
+  animation: share-spin 0.9s linear infinite;
+}
+@keyframes share-spin {
+  to { transform: rotate(360deg); }
+}
+.share-generating-label {
+  color: rgba(214, 241, 233, 0.85);
+  letter-spacing: 3px;
+  text-transform: uppercase;
 }
 .sharecard-bg-grid {
   position: absolute;
