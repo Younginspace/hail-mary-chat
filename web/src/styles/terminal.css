@@ -3150,16 +3150,16 @@ body {
 
 @media (max-width: 767px) {
   /* Chat status bar — let rows wrap rather than overlap + tighten.
-     Re-apply safe-area-top after the padding shorthand. 48px hard floor:
-     on iPhone 15 observed the status bar staying behind the Dynamic
-     Island even with env-based padding — max() guarantees the bar
-     clears the notch regardless of what env(safe-area-inset-top)
-     resolves to in the user's Safari. */
+     padding-top uses just env(safe-area-inset-top) with no extra
+     offset: on iPhone 15 the safe-area inset already puts content
+     right at the Dynamic Island's bottom, any additional offset is
+     pure whitespace. Dropped the base rule's +8px adjustment for
+     this override. */
   .chat-shell .chat-pane .status-bar {
     flex-wrap: wrap;
     row-gap: 4px;
     padding: 8px 10px 8px 54px; /* keeps pane-toggle clear */
-    padding-top: max(48px, calc(8px + env(safe-area-inset-top, 0px)));
+    padding-top: env(safe-area-inset-top, 6px);
     font-size: 10px;
     gap: 4px;
   }
@@ -3192,7 +3192,8 @@ body {
     font-size: 10px;
   }
   .mode-bar {
-    padding: 6px 12px;
+    padding: 6px 12px 6px 54px; /* same left indent as status-bar so
+                                    .pane-toggle can't clip the text */
     font-size: 10px;
   }
 }

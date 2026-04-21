@@ -635,17 +635,15 @@ export default function ChatInterface({
             </svg>
           </button>
           </div>
-          {isAuthenticated && me?.callsign && (() => {
-            const lvl = Math.min(Math.max(me.affinity_level ?? 1, 1), 4) as 1 | 2 | 3 | 4;
-            return (
-              <span className="account-chip" title={me.email ?? ''}>
-                <span className={`level-badge lv-${lvl}`}>
-                  {t(`level.${lvl}.name`, lang)}
-                </span>
-                ● {me.callsign}
-              </span>
-            );
-          })()}
+          {isAuthenticated && me?.callsign && (
+            // Level badge dropped from the Chat top bar so everything fits
+            // on a single row (was wrapping onto 2-3 rows on mobile). The
+            // affinity name still shows on the LevelUp ceremony + in any
+            // future profile surface — nothing lost, just reclaimed.
+            <span className="account-chip" title={me.email ?? ''}>
+              ● {me.callsign}
+            </span>
+          )}
           <LangSwitcher />
         </div>
 
