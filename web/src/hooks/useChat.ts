@@ -7,6 +7,7 @@ import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
 import { t } from '../i18n';
 import { generateGift, type GiftType } from '../utils/sessionApi';
+import { genUuid } from '../utils/uuid';
 
 export type GiftImageSubtype = 'realistic' | 'comic';
 
@@ -136,12 +137,14 @@ export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string
       }
 
       // === 非预置：走 LLM API ===
-      // Use crypto.randomUUID so this ID survives the round-trip through
-      // /api/session/message as messages.id — admin views & the tts_content_hash
-      // link both key on this exact string. Special-cased ids (greeting,
-      // farewell-, default-, user-) stay as sentinels since speak() routes
-      // them to pre-recorded audio paths and the TTS link never matters.
-      const assistantId = crypto.randomUUID();
+      // genUuid() is the polyfilled crypto.randomUUID — WeChat / QQ / UC /
+      // old WebView don't expose randomUUID and the raw call would TypeError,
+      // aborting sendMessage silently (the chat was reported as "can't send
+      // messages" by Chinese users after the v2.0 deploy). Special-cased
+      // ids (greeting, farewell-, default-, user-) keep their sentinels
+      // since speak() routes them to pre-recorded audio paths and the
+      // TTS link never matters.
+      const assistantId = genUuid();
       setMessages((prev) => [
         ...prev,
         userMsg,
