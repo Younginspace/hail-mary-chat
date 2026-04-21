@@ -208,6 +208,18 @@ function getPrerecordedFor(lang: Lang): Array<{ text: string; audio: string }> {
 }
 
 export function findDefaultAudioByTtsText(ttsText: string, lang: Lang): string | null {
-  const hit = getPrerecordedFor(lang).find((p) => p.text === ttsText);
-  return hit?.audio ?? null;
+  const list = getPrerecordedFor(lang);
+  // Fast path: exact match against the canonical cleaned form.
+  const exact = list.find((p) => p.text === ttsText);
+  if (exact) return exact.audio;
+  // Defensive: some legacy favorites were saved with residual tags
+  // ([MOOD:happy], [Translation], leading/trailing whitespace). Clean
+  // the input through the same extractor used when we first build the
+  // lookup table, then retry. If still no match, it's a real miss.
+  const normalized = extractPlayableText(ttsText, lang);
+  if (normalized !== ttsText) {
+    const hit = list.find((p) => p.text === normalized);
+    if (hit) return hit.audio;
+  }
+  return null;
 }
