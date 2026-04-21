@@ -15,6 +15,7 @@ import {
   type FavoriteRow,
 } from '../utils/sessionApi';
 import { extractPlayableText, extractMood } from '../utils/messageCleanup';
+import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -267,31 +268,47 @@ export default function ChatInterface({
       if (!text) return;
 
       setFavError(null);
-      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}`;
-      let res: Response;
-      try {
-        res = await fetch(url, { credentials: 'include' });
-      } catch {
-        return;
-      }
-      if (res.status === 402) {
-        setVoiceCredits(0);
-        setVoiceEnabled(false);
-        return;
-      }
-      if (res.status === 429) {
-        setGlobalQuotaHit(true);
-        return;
-      }
-      if (!res.ok) return;
 
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const audio = new Audio(blobUrl);
+      // Short-circuit: greeting / farewell / Echo preset replies are
+      // backed by static MP3s under /audio/defaults/. Those files never
+      // pass through /api/tts, so hitting the TTS endpoint would cache-
+      // miss and burn a MiniMax credit (or 402 when the user is out).
+      // Match the same cleaned-text lookup FavoritesScreen uses.
+      const staticPath = findDefaultAudioByTtsText(text, lang);
+      let blobUrl: string | null = null;
+      let src: string;
+      if (staticPath) {
+        src = staticPath;
+      } else {
+        const msgIdParam = msg.id ? `&message_id=${encodeURIComponent(msg.id)}` : '';
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgIdParam}`;
+        let res: Response;
+        try {
+          res = await fetch(url, { credentials: 'include' });
+        } catch {
+          return;
+        }
+        if (res.status === 402) {
+          setVoiceCredits(0);
+          setVoiceEnabled(false);
+          return;
+        }
+        if (res.status === 429) {
+          setGlobalQuotaHit(true);
+          return;
+        }
+        if (!res.ok) return;
+
+        const blob = await res.blob();
+        blobUrl = URL.createObjectURL(blob);
+        src = blobUrl;
+      }
+
+      const audio = new Audio(src);
       playbackAudioRef.current = audio;
       setPlayingMsgId(msg.id);
       const cleanup = () => {
-        URL.revokeObjectURL(blobUrl);
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
         if (playbackAudioRef.current === audio) {
           playbackAudioRef.current = null;
           setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
@@ -301,11 +318,14 @@ export default function ChatInterface({
       audio.onerror = cleanup;
       audio.play().catch(cleanup);
 
-      // Credits may have changed (cache miss on a non-favorite).
-      fetchVoiceCredits().then((r) => {
-        if (!r) return;
-        setVoiceCredits(r.remaining);
-      });
+      // Credits may have changed (cache miss on a non-favorite). Only
+      // worth a refresh if we actually hit /api/tts.
+      if (!staticPath) {
+        fetchVoiceCredits().then((r) => {
+          if (!r) return;
+          setVoiceCredits(r.remaining);
+        });
+      }
     },
     [playingMsgId, stopTTS, lang]
   );
