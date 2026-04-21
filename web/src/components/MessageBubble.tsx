@@ -14,6 +14,14 @@ interface Props {
   onToggleFavorite?: (msg: DisplayMessage) => void;
   isFavorited?: boolean;
   isPlaying?: boolean;
+  // Share-select mode: when true the whole bubble becomes clickable to
+  // toggle inclusion in the share card. shareDisabled suppresses taps
+  // when the 6-msg cap has been hit (except for already-selected rows
+  // so the user can still deselect).
+  shareSelectMode?: boolean;
+  shareSelected?: boolean;
+  shareDisabled?: boolean;
+  onShareToggle?: (msg: DisplayMessage) => void;
 }
 
 // Parse Rocky's message into music notes + translation sections
@@ -53,9 +61,19 @@ export default function MessageBubble({
   onToggleFavorite,
   isFavorited = false,
   isPlaying = false,
+  shareSelectMode = false,
+  shareSelected = false,
+  shareDisabled = false,
+  onShareToggle,
 }: Props) {
   const isRocky = message.role === 'assistant';
   const bubbleRef = useRef<HTMLDivElement>(null);
+  const shareClass = shareSelectMode
+    ? `share-selectable${shareSelected ? ' share-selected' : ''}${shareDisabled && !shareSelected ? ' share-disabled' : ''}`
+    : '';
+  const shareHandler = shareSelectMode && onShareToggle
+    ? () => onShareToggle(message)
+    : undefined;
 
   // F5: GSAP mount animation replacing the prior CSS `fadeIn`. Honor
   // prefers-reduced-motion — users who asked for no motion get no
@@ -81,7 +99,12 @@ export default function MessageBubble({
 
   if (!isRocky) {
     return (
-      <div ref={bubbleRef} className="message user">
+      <div
+        ref={bubbleRef}
+        className={`message user ${shareClass}`.trim()}
+        onClick={shareHandler}
+        role={shareHandler ? 'button' : undefined}
+      >
         <div className="message-sender">{t('chat.senderYou', lang)}</div>
         {message.content}
       </div>
@@ -100,7 +123,12 @@ export default function MessageBubble({
     !message.id?.startsWith('farewell-');
 
   return (
-    <div ref={bubbleRef} className="message rocky">
+    <div
+      ref={bubbleRef}
+      className={`message rocky ${shareClass}`.trim()}
+      onClick={shareHandler}
+      role={shareHandler ? 'button' : undefined}
+    >
       <div className="message-sender">Rocky (Erid)</div>
       {parts.map((part, i) => {
         switch (part.type) {

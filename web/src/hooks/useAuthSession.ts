@@ -140,6 +140,13 @@ export function useAuthSession() {
     resetDeviceId();
   }, []);
 
+  // Refetch /api/me — call after a level-up so the status-bar level badge
+  // and any other consumer reading me.affinity_level reflect the new state.
+  const refreshMe = useCallback(async () => {
+    const next = await fetchMe();
+    if (next) setMe(next);
+  }, []);
+
   return {
     session,
     me,
@@ -153,5 +160,6 @@ export function useAuthSession() {
     signInEmail,
     signUpEmail,
     signOut,
+    refreshMe,
   };
 }

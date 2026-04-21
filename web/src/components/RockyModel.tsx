@@ -186,7 +186,11 @@ export default function RockyModel({ isSpeaking }: Props) {
         const maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z);
         const fov = camera.fov * (Math.PI / 180);
         const isMobile = width < 600;
-        const distMult = isMobile ? 1.55 : 1.75;
+        // Pull the camera further back so Rocky reads as a small contained
+        // projection rather than filling the viewport. Mobile is much
+        // further since the hologram pane is full-screen there — target
+        // ~30% of screen width.
+        const distMult = isMobile ? 3.5 : 2.8;
         const dist = (maxDim / 2) / Math.tan(fov / 2) * distMult;
         // Lift camera well above the model and aim just below center so
         // Rocky and his base ring both sit in the lower portion of the
