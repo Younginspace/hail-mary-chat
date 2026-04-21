@@ -3150,18 +3150,21 @@ body {
 
 @media (max-width: 767px) {
   /* Chat status bar — let rows wrap rather than overlap + tighten.
-     padding-top uses just env(safe-area-inset-top) with no extra
-     offset: on iPhone 15 the safe-area inset already puts content
-     right at the Dynamic Island's bottom, any additional offset is
-     pure whitespace. Dropped the base rule's +8px adjustment for
-     this override. */
+     padding-top uses max(env, 36px): on well-behaved Safari env returns
+     54-59 so the floor is a no-op; when Safari reports 0 (seen on some
+     iPhone 15 builds with viewport-fit=cover) the 36px fallback keeps
+     the bar from disappearing under the Dynamic Island.
+     min-height guards against flex/layout edge cases where the bar
+     would otherwise collapse to zero and let mode-bar occupy its row
+     (observed on iPhone 15 — whole status-bar disappeared). */
   .chat-shell .chat-pane .status-bar {
     flex-wrap: wrap;
     row-gap: 4px;
     padding: 8px 10px 8px 54px; /* keeps pane-toggle clear */
-    padding-top: env(safe-area-inset-top, 6px);
+    padding-top: max(env(safe-area-inset-top, 0px), 36px);
     font-size: 10px;
     gap: 4px;
+    min-height: calc(max(env(safe-area-inset-top, 0px), 36px) + 36px);
   }
   /* Hide the whole signal group (bars + "ERID-LINK v2.1" text) on
      mobile. It's pure decoration and was pushing the real actions
