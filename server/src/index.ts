@@ -74,14 +74,21 @@ function utc8DateString(nowMs: number = Date.now()): string {
   return utc8.toISOString().slice(0, 10);
 }
 
-// TTS per-day cap reserved for end-user playback. MiniMax's total daily
-// TTS quota is 11,000 calls; we cap user-facing playback at 8,000 so the
-// remaining 3,000 are available for operator work (dev / debugging /
-// new-feature trials) without racing real users for the same pool. An
-// earlier 9,900 value let the daily TTS quota burn to 100% before our
-// soft ceiling ever engaged — observed the morning of 2026-04-23. 8,000
-// gives a clear 3k buffer while still covering organic day-peak traffic.
-const TTS_DAILY_USER_CAP = 8000;
+// TTS per-day CHARACTER cap reserved for end-user playback. MiniMax's
+// "Text to Speech HD" tier bills in input CHARACTERS per day, not
+// request count — confirmed against the vendor docs + billing console
+// on 2026-04-23. Total quota is 11,000 characters / day. We cap user
+// playback at 8,000 chars and leave 3,000 as the operator buffer (dev
+// / debugging / new-feature trials).
+//
+// Previous implementations counted requests and capped at 9,900 req/day,
+// which never bound the real spend: one session of moderate-length
+// replies burns ~30–100 chars × 10+ calls = ~500-1000 chars, and
+// MiniMax's 11k character ceiling hits well before the old 9,900-call
+// ceiling did. daily_api_usage.count is now interpreted as accumulated
+// characters, not calls (same column, new semantics — any historical
+// rows are low enough that the switch is invisible).
+const TTS_DAILY_USER_CHAR_CAP = 8000;
 
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
 
@@ -1903,15 +1910,22 @@ app.get("/api/tts", async (c) => {
     });
   }
 
-  // ── 3. Global daily TTS cap — atomic CAS ──
+  // ── 3. Global daily TTS cap — atomic CAS on CHARACTER count ──
+  // Atomically add text.length to today's global row, but only if the
+  // resulting total would still be ≤ cap. If cap would be crossed, CAS
+  // returns an empty result and we 429 the user. charCost is bounded
+  // server-side by what MiniMax actually renders, not what the client
+  // sent — after the cleanup pipeline drops mood tags / translation
+  // labels, the remaining text.length is the billable unit.
+  const charCost = text.length;
   const today = utc8DateString(now);
   const usage = await db
     .insert(daily_api_usage)
-    .values({ date: today, api: "tts", scope: "__global__", count: 1, updated_at: now })
+    .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
     .onConflictDoUpdate({
       target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
-      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
-      setWhere: sql`${daily_api_usage.count} < ${TTS_DAILY_USER_CAP}`,
+      set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_USER_CHAR_CAP}`,
     })
     .returning({ count: daily_api_usage.count });
 
