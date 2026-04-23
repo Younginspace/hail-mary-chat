@@ -55,6 +55,13 @@
   --rocky-border: #00d4aa33;
   --user-bg: #1a1a0dcc;
   --user-border: #f0a50033;
+  /* Grace cameo palette — warm beige/gold, distinct from the user's
+     orange-amber so side-by-side you can see "this is a third speaker,
+     the human crewmate". */
+  --accent-warm: #d8b080;
+  --accent-warm-dim: #a8875e;
+  --grace-bg: #1f1a10cc;
+  --grace-border: #d8b08040;
 
   /* Easing token — custom curve that feels intentional. Built-in CSS
      easings are too weak for UI polish. */
@@ -421,12 +428,29 @@ body {
   backdrop-filter: blur(8px);
 }
 
-.message.user {
-  align-self: flex-end;
-  background: var(--user-bg);
-  border: 1px solid var(--user-border);
-  border-radius: 12px 4px 12px 12px;
+/* Grace cameo bubble — also left-aligned (Grace stands next to Rocky),
+   warm beige instead of Rocky's cyan. Rendered only when the reply
+   contains a [GRACE] speaker block; see parseSpeakerBlocks in
+   utils/messageCleanup and the .message-multi wrapper below. */
+.message.grace {
+  align-self: flex-start;
+  background: var(--grace-bg);
+  border: 1px solid var(--grace-border);
+  border-radius: 4px 12px 12px 12px;
   backdrop-filter: blur(8px);
+}
+
+/* Wrapper for a multi-speaker assistant turn. Stacks the per-speaker
+   bubbles vertically with the same gap the chat-area already gives
+   between sibling .message nodes, so visually two consecutive cameo
+   bubbles read as the same chat rhythm. No visual chrome — the
+   wrapper exists so GSAP mount animation + share-select mode can
+   target one element per message. */
+.message-multi {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-self: stretch;
 }
 
 .message .music-notes {
@@ -478,9 +502,23 @@ body {
   color: var(--accent-cyan-dim);
 }
 
+.message.grace .message-sender {
+  color: var(--accent-warm-dim);
+}
+
 .message.user .message-sender {
   color: var(--accent-amber-dim);
   text-align: right;
+}
+
+/* Re-colour the translation-label inside Grace blocks (back-compat: if
+   a Grace block still emits a [Translation] line, keep the tone warm
+   instead of the Rocky cyan). Same for the streaming cursor — Grace
+   block cursor in warm tone. */
+.message.grace .translation-label { color: var(--accent-warm-dim); }
+.message.grace .streaming-cursor {
+  background: var(--accent-warm);
+  box-shadow: 0 0 4px rgba(216, 176, 128, 0.5);
 }
 
 /* ========== Suggested questions ========== */
@@ -3362,6 +3400,14 @@ body {
   padding: 6px 10px;
   background: rgba(0, 212, 170, 0.05);
   border-radius: 4px;
+}
+/* Grace cameo bonus — warm beige background + subtle gold text tone to
+   visually match .message.grace and signal "this is a Grace thing, not
+   a Rocky thing". */
+.levelup-bonuses li.levelup-bonus-grace {
+  background: rgba(216, 176, 128, 0.08);
+  color: var(--accent-warm);
+  border: 1px solid rgba(216, 176, 128, 0.25);
 }
 .levelup-continue {
   width: 100%;

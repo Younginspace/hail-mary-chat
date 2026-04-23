@@ -170,6 +170,13 @@ const translations = {
     en: 'You (Earth)',
     ja: 'あなた (Earth)',
   },
+  // Bubble header for Grace speaker blocks. Kept in English so the
+  // "Rocky (Erid)" / "Grace (Earth)" pairing reads symmetrically.
+  'chat.senderGrace': {
+    zh: 'Grace (Earth)',
+    en: 'Grace (Earth)',
+    ja: 'Grace (Earth)',
+  },
   'chat.quotaExceededPanel': {
     zh: '今日通话的人太多了，资源不足，请改天再来吧！',
     en: 'Too many calls today, resources exhausted. Please come back another day!',
@@ -306,6 +313,15 @@ const translations = {
     zh: '继续通讯',
     en: 'Continue',
     ja: '通信続行',
+  },
+  // Grace cameo bonus line — shown only after a level-up when
+  // grace_credits > 0. The number is the cumulative remaining budget,
+  // not the per-level delta (easier to understand as "how many more
+  // times Grace can drop by").
+  'level.upGraceBonus': {
+    zh: 'Grace 还能串场 {n} 次',
+    en: 'Grace can drop by {n} more time(s)',
+    ja: 'Graceがあと{n}回顔を出せる',
   },
 
   // ===== Accessibility (aria-label / title) =====

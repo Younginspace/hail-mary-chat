@@ -12,6 +12,10 @@ export interface LevelUpPayload {
   image_credits: number;
   music_credits: number;
   video_credits: number;
+  // Cumulative remaining Grace cameo credits after the level-up. The
+  // ceremony uses this to show "Grace can visit X more times" — it's
+  // the total budget, not the per-level delta.
+  grace_credits: number;
 }
 
 export interface StartSessionResult {

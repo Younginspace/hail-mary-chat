@@ -463,18 +463,22 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
   if (newLevel <= curLevel) return;
 
   // Credit bundle per milestone (plan table):
-  //   Lv2: +10 TTS · 3 image
-  //   Lv3: +30 TTS · 5 music
-  //   Lv4: +50 TTS · 1 video (lifetime)
+  //   Lv2: +10 TTS · 3 image · 3 grace
+  //   Lv3: +30 TTS · 5 music · 5 grace
+  //   Lv4: +50 TTS · 1 video (lifetime) · 10 grace
   const voiceBonusTable: Record<number, number> = { 2: 10, 3: 30, 4: 50 };
   const imageTable: Record<number, number> = { 2: 3 };
   const musicTable: Record<number, number> = { 3: 5 };
   const videoTable: Record<number, number> = { 4: 1 };
+  // Grace cameo credits — stack on top of the register-time 1. Keeps
+  // Grace appearances rare early and more generous at deep affinity.
+  const graceTable: Record<number, number> = { 2: 3, 3: 5, 4: 10 };
 
   let voiceBonus = 0;
   let imageBonus = 0;
   let musicBonus = 0;
   let videoBonus = 0;
+  let graceBonus = 0;
   // Grant every unlock between curLevel+1 .. newLevel (in case user jumps
   // two levels from a single session — possible with large trust/warmth delta).
   for (let l = curLevel + 1; l <= newLevel; l++) {
@@ -482,6 +486,7 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
     imageBonus += imageTable[l] ?? 0;
     musicBonus += musicTable[l] ?? 0;
     videoBonus += videoTable[l] ?? 0;
+    graceBonus += graceTable[l] ?? 0;
   }
 
   const now = Date.now();
@@ -498,6 +503,7 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
       image_credits: sql`${users.image_credits} + ${imageBonus}`,
       music_credits: sql`${users.music_credits} + ${musicBonus}`,
       video_credits: sql`${users.video_credits} + ${videoBonus}`,
+      grace_credits: sql`${users.grace_credits} + ${graceBonus}`,
     })
     .where(eq(users.id, user_id));
   if (voiceBonus > 0) {
@@ -515,7 +521,7 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
   }
 
   console.info(
-    `level_up: user ${user_id} ${curLevel} → ${newLevel} (trust=${trust.toFixed(2)}, warmth=${warmth.toFixed(2)}); +${voiceBonus} voice · +${imageBonus} image · +${musicBonus} music · +${videoBonus} video`
+    `level_up: user ${user_id} ${curLevel} → ${newLevel} (trust=${trust.toFixed(2)}, warmth=${warmth.toFixed(2)}); +${voiceBonus} voice · +${imageBonus} image · +${musicBonus} music · +${videoBonus} video · +${graceBonus} grace`
   );
 }
 

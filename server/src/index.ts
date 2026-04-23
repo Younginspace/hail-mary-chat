@@ -830,6 +830,7 @@ app.post("/api/session/start", async (c) => {
       image_credits: users.image_credits,
       music_credits: users.music_credits,
       video_credits: users.video_credits,
+      grace_credits: users.grace_credits,
     });
 
   let level_up: {
@@ -838,6 +839,7 @@ app.post("/api/session/start", async (c) => {
     image_credits: number;
     music_credits: number;
     video_credits: number;
+    grace_credits: number;
   } | null = null;
   let affinity_level = 1;
 
@@ -857,6 +859,7 @@ app.post("/api/session/start", async (c) => {
       image_credits: row.image_credits,
       music_credits: row.music_credits,
       video_credits: row.video_credits,
+      grace_credits: row.grace_credits,
     };
   } else {
     // No pending level-up, or we lost the CAS to a concurrent call.
@@ -1033,7 +1036,61 @@ app.post("/api/chat", async (c) => {
     console.warn("gift credits lookup failed — chat will skip gift block:", err);
   }
 
-  let systemContent = getRockySystemPrompt(lang, giftCredits);
+  // ── Grace cameo decision ──────────────────────────────────────────
+  // Four states, in priority order:
+  //   unavailable → credits exhausted → Grace narratively absent
+  //   invited     → user named Grace/gosling/etc → force-consider him
+  //   available   → ≥3 sessions AND dice roll passed → Rocky MAY invite
+  //   dormant     → default, Rocky alone, no speaker markers
+  // Consumption happens post-stream if the response actually contained
+  // a [GRACE] speaker block (see chatGraceConsume below).
+  let graceCue: import("./prompts/rocky").GraceCue = "dormant";
+  let graceCreditsAvail = 0;
+  try {
+    const graceRow = await db
+      .select({ credits: users.grace_credits })
+      .from(users)
+      .where(eq(users.id, user.user_id))
+      .limit(1);
+    graceCreditsAvail = graceRow[0]?.credits ?? 0;
+
+    if (graceCreditsAvail <= 0) {
+      graceCue = "unavailable";
+    } else {
+      // Does the user explicitly mention Grace this turn?
+      const lastUser = [...body.messages].reverse().find((m) => m.role === "user");
+      const mentionsGrace =
+        !!lastUser &&
+        /grace|gosling|ryland|格蕾丝|格雷斯|高司令/i.test(lastUser.content);
+
+      if (mentionsGrace) {
+        graceCue = "invited";
+      } else {
+        // Organic path: gated by session count (≥3) + dice roll.
+        const [{ n: sessionsCount }] = await db
+          .select({ n: sql<number>`count(*)`.as("n") })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.user_id, user.user_id),
+              isNotNull(sessions.ended_at),
+              sql`${sessions.turn_count} > 0`,
+            ),
+          );
+        if (sessionsCount < 3) {
+          graceCue = "dormant";
+        } else {
+          const prob = Math.min(0.5, 0.05 + (sessionsCount - 2) * 0.05);
+          graceCue = Math.random() < prob ? "available" : "dormant";
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("grace cue lookup failed — defaulting to dormant:", err);
+    graceCue = "dormant";
+  }
+
+  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue);
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }
@@ -1118,19 +1175,56 @@ app.post("/api/chat", async (c) => {
   // lets us validate server-side (level, credits) before the client
   // kicks generation, and removes the client's trust-the-text
   // regex from the critical path. (P5 Review §5.) ──
-  return new Response(upstream.body.pipeThrough(buildGiftStrippingTransform()), {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+  //
+  // The onComplete callback also inspects the full (post-transform)
+  // response for a [GRACE] speaker block to decide whether to charge
+  // a grace_credit. We only consume when the cue actually allowed
+  // Grace to appear and the LLM took the opening — dormant / unavailable
+  // turns never deduct.
+  const cueAllowedGrace = graceCue === "invited" || graceCue === "available";
+  const onComplete = cueAllowedGrace
+    ? (fullText: string) => {
+        if (/\[GRACE\]/i.test(fullText)) {
+          ctx.runInBackground(consumeGraceCredit(user.user_id));
+        }
+      }
+    : undefined;
+  return new Response(
+    upstream.body.pipeThrough(buildGiftStrippingTransform(onComplete)),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
     },
-  });
+  );
 });
+
+// Atomic decrement — only subtracts when grace_credits > 0 so
+// concurrent /api/chat calls that both land a [GRACE] block can't
+// push the balance negative.
+async function consumeGraceCredit(userId: string): Promise<void> {
+  try {
+    await db
+      .update(users)
+      .set({ grace_credits: sql`${users.grace_credits} - 1` })
+      .where(and(eq(users.id, userId), sql`${users.grace_credits} > 0`));
+  } catch (err) {
+    console.warn("grace credit consume failed:", err);
+  }
+}
 
 // Runs on every /api/chat SSE stream. State is per-request — each
 // call to this factory returns a fresh TransformStream.
-function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> {
+//
+// onComplete (optional) fires once at [DONE] with the full accumulated
+// content text the client ended up seeing (post-GIFT-strip). Used by
+// /api/chat to detect a [GRACE] speaker block and charge a grace_credit.
+function buildGiftStrippingTransform(
+  onComplete?: (fullText: string) => void,
+): TransformStream<Uint8Array, Uint8Array> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const GIFT_MARKER = "[GIFT:";
@@ -1140,6 +1234,8 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
   // Running state between chunks.
   let sseBuffer = ""; // incomplete SSE line tail
   let contentHold = ""; // withheld text that might be a partial GIFT tag
+  let fullContent = ""; // accumulated emitted content for onComplete
+  let completeFired = false; // fire onComplete at most once per request
 
   function emitGiftEvent(
     controller: TransformStreamDefaultController<Uint8Array>,
@@ -1156,6 +1252,7 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
     deltaText: string
   ): void {
     if (!deltaText) return;
+    fullContent += deltaText;
     const base = originalJson as {
       choices?: Array<{ delta?: { content?: string } }>;
       [k: string]: unknown;
@@ -1234,6 +1331,7 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
             // Hold that never became a tag — emit as plain content on a
             // synthetic chunk so the client sees the text it would
             // have otherwise missed.
+            fullContent += contentHold;
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
@@ -1244,6 +1342,12 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
             contentHold = "";
           }
           controller.enqueue(encoder.encode(`${line}\n`));
+          if (onComplete && !completeFired) {
+            completeFired = true;
+            try { onComplete(fullContent); } catch (err) {
+              console.warn("onComplete callback threw:", err);
+            }
+          }
           continue;
         }
         if (!line.startsWith("data: ")) {
@@ -1276,6 +1380,7 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
         sseBuffer = "";
       }
       if (contentHold) {
+        fullContent += contentHold;
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({
@@ -1284,6 +1389,14 @@ function buildGiftStrippingTransform(): TransformStream<Uint8Array, Uint8Array> 
           )
         );
         contentHold = "";
+      }
+      // Upstream may close without a [DONE] line on abort; fire the
+      // completion callback here too. Guarded to fire at most once
+      // per request across both paths.
+      if (onComplete) {
+        try { onComplete(fullContent); } catch (err) {
+          console.warn("onComplete callback threw:", err);
+        }
       }
     },
   });
@@ -1832,10 +1945,18 @@ app.get("/api/tts", async (c) => {
   }
   const isFavorite = url.searchParams.get("favorite") === "true";
   const messageId = url.searchParams.get("message_id")?.trim() || null;
+  // Speaker routing for Grace cameos — default Rocky for back-compat.
+  // Grace lines use a different cloned MiniMax voice; fall through to
+  // Rocky's voice if the Grace voice secret hasn't been set yet (so
+  // the feature degrades to single-voice rather than 500-ing).
+  const speakerParam = url.searchParams.get("speaker");
+  const speaker: "rocky" | "grace" = speakerParam === "grace" ? "grace" : "rocky";
 
   const apiUrl = vars.get("MINIMAX_TTS_API_URL") ?? DEFAULT_TTS_API_URL;
   const ttsModel = vars.get("MINIMAX_TTS_MODEL") ?? DEFAULT_TTS_MODEL;
-  const voiceId = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
+  const voiceId = speaker === "grace" ? graceVoice : rockyVoice;
   const apiKey = secret.get("MINIMAX_API_KEY");
   if (!apiKey) {
     return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);

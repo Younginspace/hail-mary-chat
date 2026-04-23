@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `grace_credits` integer DEFAULT 1 NOT NULL;
