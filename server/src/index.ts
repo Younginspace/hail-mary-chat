@@ -74,9 +74,14 @@ function utc8DateString(nowMs: number = Date.now()): string {
   return utc8.toISOString().slice(0, 10);
 }
 
-// TTS per-day cap reserved for regular user playback. Final MiniMax limit
-// is 11,000/day; we leave 1,100 for F6 gift generation (tts_gift scope).
-const TTS_DAILY_USER_CAP = 9900;
+// TTS per-day cap reserved for end-user playback. MiniMax's total daily
+// TTS quota is 11,000 calls; we cap user-facing playback at 8,000 so the
+// remaining 3,000 are available for operator work (dev / debugging /
+// new-feature trials) without racing real users for the same pool. An
+// earlier 9,900 value let the daily TTS quota burn to 100% before our
+// soft ceiling ever engaged — observed the morning of 2026-04-23. 8,000
+// gives a clear 3k buffer while still covering organic day-peak traffic.
+const TTS_DAILY_USER_CAP = 8000;
 
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
 
