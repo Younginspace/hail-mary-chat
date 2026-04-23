@@ -2,17 +2,46 @@ import { forwardRef } from 'react';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { Lang } from '../i18n';
 import { t } from '../i18n';
-import { extractPlayableText } from '../utils/messageCleanup';
+import {
+  extractBlockText,
+  extractPlayableText,
+  parseSpeakerBlocks,
+  type Speaker,
+} from '../utils/messageCleanup';
 
 // Per-message visual cap. Longer bodies get truncated with ellipsis so
 // the card fits 6 messages at 4:5 without overflow. Tuned empirically
 // against 4-line clamp at 30px/1.45.
 const CHAR_CAP_PER_MSG = 140;
 
-function truncateBody(raw: string, lang: Lang): string {
-  const clean = extractPlayableText(raw, lang);
+function truncate(clean: string): string {
   if (clean.length <= CHAR_CAP_PER_MSG) return clean;
   return clean.slice(0, CHAR_CAP_PER_MSG - 1).trimEnd() + '…';
+}
+
+function truncateBody(raw: string, lang: Lang): string {
+  return truncate(extractPlayableText(raw, lang));
+}
+
+interface AssistantBlock {
+  speaker: Speaker;
+  text: string;
+}
+
+// Parse an assistant message into one or more speaker-labelled blocks.
+// A reply that never used [ROCKY]/[GRACE] markers returns a single
+// rocky block — same text extractPlayableText would produce — so the
+// old single-bubble rendering is unchanged. When Grace is in the
+// reply, we return one block per speaker so the card can render each
+// under its own label (ROCKY / GRACE) with matching palette.
+function toAssistantBlocks(content: string): AssistantBlock[] {
+  const parsed = parseSpeakerBlocks(content);
+  const out: AssistantBlock[] = [];
+  for (const block of parsed) {
+    const text = truncate(extractBlockText(block.rawContent, block.speaker));
+    if (text) out.push({ speaker: block.speaker, text });
+  }
+  return out;
 }
 
 interface Props {
@@ -63,21 +92,28 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(function ShareCard(
 
         <div className="sharecard-messages">
           {messages.map((msg) => {
-            const isRocky = msg.role === 'assistant';
-            const body = truncateBody(msg.content, lang);
-            return (
+            if (msg.role !== 'assistant') {
+              return (
+                <div key={msg.id} className="sharecard-msg sharecard-msg-user">
+                  <div className="sharecard-msg-label">
+                    {(callsign ?? t('share.senderYou', lang)).toUpperCase()}
+                  </div>
+                  <div className="sharecard-msg-body">{truncateBody(msg.content, lang)}</div>
+                </div>
+              );
+            }
+            const blocks = toAssistantBlocks(msg.content);
+            return blocks.map((block, i) => (
               <div
-                key={msg.id}
-                className={`sharecard-msg ${isRocky ? 'sharecard-msg-rocky' : 'sharecard-msg-user'}`}
+                key={`${msg.id}-${i}`}
+                className={`sharecard-msg sharecard-msg-${block.speaker}`}
               >
                 <div className="sharecard-msg-label">
-                  {isRocky
-                    ? t('share.senderRocky', lang)
-                    : (callsign ?? t('share.senderYou', lang)).toUpperCase()}
+                  {t(block.speaker === 'grace' ? 'share.senderGrace' : 'share.senderRocky', lang)}
                 </div>
-                <div className="sharecard-msg-body">{body}</div>
+                <div className="sharecard-msg-body">{block.text}</div>
               </div>
-            );
+            ));
           })}
         </div>
 
