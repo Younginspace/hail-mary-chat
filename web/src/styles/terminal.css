@@ -55,12 +55,32 @@
   --rocky-border: #00d4aa33;
   --user-bg: #1a1a0dcc;
   --user-border: #f0a50033;
+
+  /* Easing tokens — custom curves that feel intentional. Built-in CSS
+     easings are too weak for UI polish. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Motion sensitivity — neuter transitions + keyframes for users who
+   asked for reduced motion. Leave opacity/color changes intact so
+   state comprehension survives; only motion (transform/animation) is
+   effectively disabled. Component-level JS checks layer on top of
+   this for GSAP tweens. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 html, body, #root {
@@ -471,7 +491,7 @@ body {
   font-size: 12px;
   cursor: pointer;
   font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
   white-space: nowrap;
   backdrop-filter: blur(4px);
 }
@@ -546,7 +566,7 @@ body {
   font-weight: 700;
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
   white-space: nowrap;
   letter-spacing: 1px;
 }
@@ -654,7 +674,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
   border: 1px solid;
 }
 
@@ -876,7 +896,7 @@ body {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  transition: all 0.2s ease;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
   flex-shrink: 0;
 }
 .tts-toggle:hover {
@@ -981,7 +1001,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: all 0.3s ease;
+  transition: background 0.3s var(--ease-out), border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
   color: var(--accent-cyan);
 }
 
@@ -989,7 +1009,6 @@ body {
   background: radial-gradient(circle, rgba(0, 212, 170, 0.25) 0%, rgba(0, 212, 170, 0.1) 70%, transparent 100%);
   border-color: var(--accent-cyan);
   box-shadow: 0 0 30px rgba(0, 212, 170, 0.3), 0 0 60px rgba(0, 212, 170, 0.1);
-  transform: scale(1.05);
 }
 
 .call-btn:active {
@@ -1060,7 +1079,7 @@ body {
   border: 1.5px solid rgba(0, 212, 170, 0.35);
   cursor: pointer;
   color: var(--accent-cyan);
-  transition: all 0.3s ease;
+  transition: background 0.3s var(--ease-out), border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
   text-align: left;
 }
 
@@ -1068,7 +1087,6 @@ body {
   background: radial-gradient(ellipse at left, rgba(0, 212, 170, 0.18) 0%, rgba(0, 212, 170, 0.04) 70%);
   border-color: var(--accent-cyan);
   box-shadow: 0 0 20px rgba(0, 212, 170, 0.2), 0 0 40px rgba(0, 212, 170, 0.06);
-  transform: translateY(-1px);
 }
 
 .mode-btn:active:not(.mode-btn-disabled) {
@@ -1227,7 +1245,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
   border-radius: 3px;
 }
 
@@ -1245,7 +1263,10 @@ body {
 
 .start-lang-corner {
   position: absolute;
-  top: 16px;
+  /* max() floors against the env=0 case observed on some iPhone 15
+     Safari builds with viewport-fit=cover — otherwise a working env
+     returns ~54px and dominates naturally. */
+  top: max(env(safe-area-inset-top, 0px), 16px);
   right: 20px;
   z-index: 2;
 }
@@ -1411,7 +1432,10 @@ body {
   }
 
   .start-lang-corner {
-    top: calc(12px + env(safe-area-inset-top, 0px));
+    /* Mobile: want a bit more breathing room under the notch/DI than
+       the base 16px floor, so add 6px of padding when env is present
+       and floor at 36px for the env=0 fallback. */
+    top: max(env(safe-area-inset-top, 0px), 36px);
     right: 12px;
   }
 
@@ -1505,7 +1529,7 @@ body {
   letter-spacing: 1.5px;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
 }
 
 .share-gate-btn:hover {
@@ -1565,7 +1589,7 @@ body {
   letter-spacing: 1.5px;
   border-radius: 5px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
 }
 
 .ended-play-btn:hover {
@@ -1584,7 +1608,7 @@ body {
   letter-spacing: 1px;
   border-radius: 5px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
 }
 
 .ended-share-btn:hover {
@@ -1603,13 +1627,13 @@ body {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  animation: loginFadeIn 0.18s ease-out;
+  /* Enter + exit both animated via class toggle. React adds
+     .is-visible one frame after mount; removes it just before
+     unmounting so the reverse transition plays. */
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out);
 }
-
-@keyframes loginFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+.login-backdrop.is-visible { opacity: 1; }
 
 .login-modal {
   width: 100%;
@@ -1621,6 +1645,16 @@ body {
   padding: 22px 22px 18px;
   color: var(--text-primary, #d6f1e9);
   font-family: 'JetBrains Mono', monospace;
+  /* Modal is an emil "transform-origin: center" exception — it
+     isn't anchored to a trigger, so scale from the middle. */
+  opacity: 0;
+  transform: scale(0.95);
+  transform-origin: center;
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+.login-modal.is-visible {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .login-header { margin-bottom: 18px; }
@@ -1654,7 +1688,7 @@ body {
   letter-spacing: 0.5px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .login-tab.active {
   color: #00d4aa;
@@ -1709,7 +1743,7 @@ body {
   padding: 9px 18px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .login-later {
   background: none;
@@ -2083,7 +2117,7 @@ body {
   font-weight: 600;
   cursor: pointer;
   border-radius: 4px;
-  transition: all 0.18s;
+  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
   box-shadow: 0 0 18px rgba(0, 212, 170, 0.18);
 }
 .channel-dialin-cta:hover {
@@ -2101,7 +2135,7 @@ body {
   padding: 6px 14px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .channel-logout:hover { border-color: rgba(214, 241, 233, 0.5); color: #fff; }
 .channel-error {
@@ -2171,7 +2205,7 @@ body {
   letter-spacing: 0.5px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .dialin-tab.active {
   color: #00d4aa;
@@ -2252,7 +2286,7 @@ body {
   border: 1px solid #00d4aa;
   color: #001018;
   font-weight: 600;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .dialin-submit:hover:not(:disabled) { background: #2ce7bc; }
 .dialin-submit:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2312,7 +2346,7 @@ body {
 /* Pane toggle button — mobile only (hidden on desktop) */
 .pane-toggle {
   position: fixed;
-  top: 12px;
+  top: max(env(safe-area-inset-top, 0px), 36px);
   left: 12px;
   z-index: 40;
   width: 38px;
@@ -2558,7 +2592,7 @@ body {
   color: var(--text-primary, #d6f1e9);
   font-family: 'JetBrains Mono', monospace;
   cursor: pointer;
-  transition: all 0.22s ease;
+  transition: background 0.22s var(--ease-out), border-color 0.22s var(--ease-out), color 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out), transform 0.22s var(--ease-out);
   overflow: hidden;
   backdrop-filter: blur(4px);
 }
@@ -2574,7 +2608,6 @@ body {
 }
 .hero-cta:hover {
   border-color: #00d4aa;
-  transform: translateY(-2px);
   box-shadow: 0 10px 30px rgba(0, 212, 170, 0.2);
 }
 .hero-cta:hover::before { opacity: 1; }
@@ -2618,7 +2651,7 @@ body {
   padding: 6px 14px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .hero-logout:hover { border-color: rgba(214, 241, 233, 0.5); color: #fff; }
 .hero-error {
@@ -2697,7 +2730,7 @@ body {
   color: var(--accent-cyan);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
   margin-left: 4px;
 }
 .export-toggle:hover {
@@ -2719,11 +2752,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  animation: exportMenuIn 0.15s ease-out;
+  /* Popover must scale from its trigger, not from center.
+     Trigger is the export-toggle in the status bar's right side,
+     so origin = top right of the menu (corner nearest the toggle). */
+  transform-origin: top right;
+  animation: exportMenuIn 0.18s var(--ease-out);
 }
 @keyframes exportMenuIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 .export-menu button {
   text-align: left;
@@ -2770,7 +2807,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   line-height: 1;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .status-bar .tts-toggle.tts-on {
   background: rgba(0, 212, 170, 0.18);
@@ -2808,7 +2845,7 @@ body {
   border-radius: 50%;
   cursor: pointer;
   margin-right: 10px;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .channel-play:hover {
   background: rgba(0, 212, 170, 0.2);
@@ -2826,7 +2863,7 @@ body {
 
 .hero-account-chip {
   position: fixed;
-  top: 16px;
+  top: max(env(safe-area-inset-top, 0px), 16px);
   left: 16px;
   z-index: 40;
   display: inline-flex;
@@ -2901,13 +2938,12 @@ body {
   letter-spacing: 0.3px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.18s;
+  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
 }
 .echo-question-chip:hover:not(:disabled) {
   background: rgba(0, 212, 170, 0.16);
   border-color: #00d4aa;
   color: #00d4aa;
-  transform: translateY(-1px);
 }
 .echo-question-chip:disabled {
   opacity: 0.45;
@@ -2937,7 +2973,7 @@ body {
   padding: 5px 14px;
   border-radius: 999px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .echo-allanswered-cta:hover {
   border-color: #00d4aa;
@@ -2968,7 +3004,7 @@ body {
   border-radius: 50%;
   color: rgba(214, 241, 233, 0.6);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .msg-action:hover {
   border-color: #00d4aa;
@@ -3043,7 +3079,7 @@ body {
   color: rgba(214, 241, 233, 0.7);
   border-radius: 50%;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .favorite-row-actions button:hover { border-color: #00d4aa; color: #00d4aa; }
 .favorite-row-actions .fav-remove:hover { border-color: #ff8080; color: #ff8080; background: rgba(255, 128, 128, 0.08); }
@@ -3073,7 +3109,7 @@ body {
   color: var(--accent-cyan);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .status-iconbtn:hover {
   border-color: #00d4aa;
@@ -3139,9 +3175,11 @@ body {
   .dialin-tab { font-size: 11px; }
   .dialin-label { font-size: 10.5px; }
 
-  /* Hero account chip more compact — callsign names can be long */
+  /* Hero account chip more compact — callsign names can be long.
+     Floor at 36px so Dynamic Island never clips the chip even when
+     Safari returns env=0 (observed under viewport-fit=cover). */
   .hero-account-chip {
-    top: 10px;
+    top: max(env(safe-area-inset-top, 0px), 36px);
     left: 10px;
     font-size: 11px;
     padding: 4px 6px 4px 10px;
@@ -3366,7 +3404,7 @@ body {
 
 .hero-topleft {
   position: fixed;
-  top: 16px;
+  top: max(env(safe-area-inset-top, 0px), 16px);
   left: 16px;
   z-index: 40;
   display: inline-flex;
@@ -3395,12 +3433,11 @@ body {
   cursor: pointer;
   backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  transition: all 0.18s;
+  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
 }
 .hero-favorites-pill:hover {
   background: rgba(255, 107, 138, 0.14);
   border-color: #ff6b8a;
-  transform: translateY(-1px);
 }
 .hero-favorites-count {
   font-size: 11px;
@@ -3408,7 +3445,11 @@ body {
 }
 
 @media (max-width: 640px) {
-  .hero-topleft { top: 10px; left: 10px; gap: 6px; }
+  .hero-topleft {
+    top: max(env(safe-area-inset-top, 0px), 36px);
+    left: 10px;
+    gap: 6px;
+  }
   .hero-favorites-pill { padding: 4px 9px; font-size: 11px; }
 }
 
@@ -3868,7 +3909,7 @@ body {
   padding: 7px 14px;
   border-radius: 5px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
 .share-toolbar-cancel {
   background: transparent;
@@ -3896,4 +3937,55 @@ body {
     justify-content: center;
   }
   .share-toolbar-hint { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Pointer-device-only hover transforms
+   Extracted from the :hover blocks above so touch taps don't leave
+   a lingering translated/scaled state on mobile.
+   ═══════════════════════════════════════════════════════════════ */
+@media (hover: hover) and (pointer: fine) {
+  .call-btn:hover { transform: scale(1.05); }
+  .mode-btn:hover:not(.mode-btn-disabled) { transform: translateY(-1px); }
+  .echo-question-chip:hover:not(:disabled) { transform: translateY(-1px); }
+  .hero-cta:hover { transform: translateY(-2px); }
+  .hero-favorites-pill:hover { transform: translateY(-1px); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Press feedback (emil design-eng)
+   Every clickable surface that doesn't already have a custom :active
+   transform gets scale(0.97). Custom transforms (call-btn 0.97,
+   mode-btn 0.98, pane-toggle 0.94, share-gate-btn 0.97,
+   suggested-btn 0.96, channel-dialin-cta translateY) are preserved.
+   Using :not(:disabled) keeps disabled controls from pretending to
+   react. :active is pointer-independent (fires on touch), so it does
+   NOT belong under @media (hover: hover).
+   ═══════════════════════════════════════════════════════════════ */
+.hero-cta:active,
+.hero-favorites-pill:active,
+.hero-account-logout:active,
+.hero-account-fav:active,
+.hero-logout:active,
+.login-submit:not(:disabled):active,
+.login-later:not(:disabled):active,
+.dialin-submit:not(:disabled):active,
+.dialin-back:active,
+.msg-action:active,
+.status-iconbtn:active,
+.export-toggle:active,
+.status-bar .tts-toggle:not(:disabled):active,
+.lang-btn:active,
+.send-btn:not(:disabled):active,
+.ended-play-btn:active,
+.ended-share-btn:active,
+.share-modal-btn:active,
+.channel-logout:active,
+.channel-play:active,
+.echo-allanswered-cta:active,
+.levelup-continue:active,
+.gift-bubble .gift-download:active,
+.share-toolbar-cancel:active,
+.share-toolbar-generate:not(:disabled):active {
+  transform: scale(0.97);
 }
