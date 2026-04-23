@@ -428,6 +428,19 @@ body {
   backdrop-filter: blur(8px);
 }
 
+/* User bubble — amber, aligned right so sender label sits directly above
+   the text it belongs to. Without align-self: flex-end the bubble stretches
+   to the chat-area's full width, which leaves the right-aligned "You
+   (Earth)" label floating far from the user's message. --user-bg and
+   --user-border tokens were already defined but nothing consumed them. */
+.message.user {
+  align-self: flex-end;
+  background: var(--user-bg);
+  border: 1px solid var(--user-border);
+  border-radius: 12px 4px 12px 12px;
+  backdrop-filter: blur(8px);
+}
+
 /* Grace cameo bubble — also left-aligned (Grace stands next to Rocky),
    warm beige instead of Rocky's cyan. Rendered only when the reply
    contains a [GRACE] speaker block; see parseSpeakerBlocks in

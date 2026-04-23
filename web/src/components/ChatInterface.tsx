@@ -14,7 +14,12 @@ import {
   removeFavorite,
   type FavoriteRow,
 } from '../utils/sessionApi';
-import { extractPlayableText, extractMood } from '../utils/messageCleanup';
+import {
+  extractBlockText,
+  extractMood,
+  extractPlayableText,
+  parseSpeakerBlocks,
+} from '../utils/messageCleanup';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
@@ -78,7 +83,9 @@ export default function ChatInterface({
   const [exportError, setExportError] = useState<string | null>(null);
   const [favoritesList, setFavoritesList] = useState<FavoriteRow[]>([]);
   const [favError, setFavError] = useState<string | null>(null);
-  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  // `${msg.id}#${blockIdx}` — tracks which single block is currently
+  // playing so each bubble's Play button toggles only its own audio.
+  const [playingKey, setPlayingKey] = useState<string | null>(null);
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
@@ -242,30 +249,48 @@ export default function ChatInterface({
     };
   }, []);
 
-  const findFavoriteFor = useCallback(
-    (msg: DisplayMessage): FavoriteRow | undefined => {
-      const clean = extractPlayableText(msg.content, lang);
-      if (!clean) return undefined;
-      return favoritesList.find((f) => f.message_content === clean);
+  // Extract a specific speaker block's playable text and speaker from a
+  // message. `blockIdx` is 0 for single-speaker replies (unchanged) and
+  // 0..n-1 for Grace cameos. Returns null when the block is missing or
+  // has no renderable text.
+  const getBlock = useCallback(
+    (msg: DisplayMessage, blockIdx: number) => {
+      const blocks = parseSpeakerBlocks(msg.content);
+      const block = blocks[blockIdx];
+      if (!block) return null;
+      const text = extractBlockText(block.rawContent, block.speaker);
+      if (!text) return null;
+      return { text, speaker: block.speaker, mood: block.mood };
     },
-    [favoritesList, lang]
+    []
+  );
+
+  const findFavoriteForBlock = useCallback(
+    (msg: DisplayMessage, blockIdx: number): FavoriteRow | undefined => {
+      const block = getBlock(msg, blockIdx);
+      if (!block) return undefined;
+      return favoritesList.find((f) => f.message_content === block.text);
+    },
+    [favoritesList, getBlock]
   );
 
   const handleMessagePlay = useCallback(
-    async (msg: DisplayMessage) => {
-      // Toggle-off if the same bubble is currently playing.
-      if (playingMsgId === msg.id) {
+    async (msg: DisplayMessage, blockIdx: number) => {
+      const key = `${msg.id}#${blockIdx}`;
+      // Toggle-off if this exact block's audio is currently playing.
+      if (playingKey === key) {
         playbackAudioRef.current?.pause();
         playbackAudioRef.current = null;
-        setPlayingMsgId(null);
+        setPlayingKey(null);
         return;
       }
       // Stop auto-TTS + any other manual clip first so only one thing plays.
       stopTTS();
       playbackAudioRef.current?.pause();
 
-      const text = extractPlayableText(msg.content, lang);
-      if (!text) return;
+      const block = getBlock(msg, blockIdx);
+      if (!block) return;
+      const { text, speaker } = block;
 
       setFavError(null);
 
@@ -281,7 +306,8 @@ export default function ChatInterface({
         src = staticPath;
       } else {
         const msgIdParam = msg.id ? `&message_id=${encodeURIComponent(msg.id)}` : '';
-        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgIdParam}`;
+        const speakerParam = speaker === 'grace' ? '&speaker=grace' : '';
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgIdParam}${speakerParam}`;
         let res: Response;
         try {
           res = await fetch(url, { credentials: 'include' });
@@ -306,12 +332,12 @@ export default function ChatInterface({
 
       const audio = new Audio(src);
       playbackAudioRef.current = audio;
-      setPlayingMsgId(msg.id);
+      setPlayingKey(key);
       const cleanup = () => {
         if (blobUrl) URL.revokeObjectURL(blobUrl);
         if (playbackAudioRef.current === audio) {
           playbackAudioRef.current = null;
-          setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
+          setPlayingKey((cur) => (cur === key ? null : cur));
         }
       };
       audio.onended = cleanup;
@@ -327,24 +353,28 @@ export default function ChatInterface({
         });
       }
     },
-    [playingMsgId, stopTTS, lang]
+    [playingKey, stopTTS, lang, getBlock]
   );
 
   const handleToggleFavorite = useCallback(
-    async (msg: DisplayMessage) => {
+    async (msg: DisplayMessage, blockIdx: number) => {
       setFavError(null);
-      const existing = findFavoriteFor(msg);
+      const existing = findFavoriteForBlock(msg, blockIdx);
       if (existing) {
         const ok = await removeFavorite(existing.id);
         if (ok) setFavoritesList((fs) => fs.filter((f) => f.id !== existing.id));
         return;
       }
-      const text = extractPlayableText(msg.content, lang);
-      if (!text) return;
+      const block = getBlock(msg, blockIdx);
+      if (!block) return;
       const res = await addFavorite({
-        message_content: text,
+        message_content: block.text,
         lang,
-        mood: extractMood(msg.content),
+        // Prefer the block's own mood (Grace blocks carry their own
+        // [MOOD:...]); fall back to the whole-message mood for legacy
+        // single-speaker replies where extractMood on rawContent yields
+        // null.
+        mood: block.mood ?? extractMood(msg.content),
         source_session: sessionId,
       });
       if (res.ok) {
@@ -354,7 +384,7 @@ export default function ChatInterface({
         setFavError(t('chat.favoritesFull', lang));
       }
     },
-    [findFavoriteFor, lang, sessionId]
+    [findFavoriteForBlock, getBlock, lang, sessionId]
   );
 
   // Auto-focus the input when Rocky finishes replying — desktop only.
@@ -678,8 +708,8 @@ export default function ChatInterface({
                     ? handleToggleFavorite
                     : undefined
                 }
-                isFavorited={msg.role === 'assistant' ? findFavoriteFor(msg) != null : false}
-                isPlaying={playingMsgId === msg.id}
+                isFavoritedFor={(i) => findFavoriteForBlock(msg, i) != null}
+                isPlayingFor={(i) => playingKey === `${msg.id}#${i}`}
                 shareSelectMode={shareEligible}
                 shareSelected={selected}
                 shareDisabled={capped && !selected}
