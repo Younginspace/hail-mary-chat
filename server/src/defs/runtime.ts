@@ -8,7 +8,11 @@ export type VarKey =
   | "MINIMAX_MODEL"
   | "MINIMAX_TTS_API_URL"
   | "MINIMAX_TTS_MODEL"
-  | "MINIMAX_TTS_VOICE_ID";
+  | "MINIMAX_TTS_VOICE_ID"
+  // Grace cameo voice (cloned Gosling sample). Optional — falls back to
+  // Rocky's voice when unset so Grace lines still play, just in the
+  // wrong voice, instead of 500-ing.
+  | "MINIMAX_TTS_VOICE_ID_GRACE";
 
 export type SecretKey =
   | "MINIMAX_API_KEY"

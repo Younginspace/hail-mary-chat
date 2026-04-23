@@ -11,6 +11,7 @@ import {
   type RockyMood,
 } from '../utils/rockyAudio';
 import { findDefaultAudioByReply } from '../utils/defaultDialogs';
+import { parseSpeakerBlocks, extractBlockText } from '../utils/messageCleanup';
 
 // ── TTS: 通过 EdgeSpark worker 代理（/api/tts，auth required）
 // 服务器端注入 MiniMax API key，浏览器不持有任何凭据
@@ -108,7 +109,12 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // ── TTS：走 EdgeSpark 代理（GET /api/tts?text=...），返回 audio/mpeg 二进制
-  const fetchTTS = useCallback((text: string, lang: Lang, msgId?: string): Promise<HTMLAudioElement | null> => {
+  const fetchTTS = useCallback((
+    text: string,
+    lang: Lang,
+    msgId?: string,
+    speaker: 'rocky' | 'grace' = 'rocky',
+  ): Promise<HTMLAudioElement | null> => {
     if (skipTTS || !text.trim() || ttsQuotaExceeded || ttsInsufficientCredits) return Promise.resolve(null);
 
     const abortCtrl = new AbortController();
@@ -119,7 +125,11 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
         // Pass the client-generated message id so the server can link
         // this audio back to the matching messages row via tts_content_hash.
         const msgParam = msgId ? `&message_id=${encodeURIComponent(msgId)}` : '';
-        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgParam}`;
+        // speaker=grace routes to the cloned Gosling voice on the server.
+        // Default 'rocky' matches legacy URLs so audio_cache hits from
+        // pre-Grace deploys stay valid.
+        const speakerParam = speaker === 'grace' ? `&speaker=grace` : '';
+        const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgParam}${speakerParam}`;
         const res = await fetch(url, {
           method: 'GET',
           credentials: 'include',
@@ -189,8 +199,13 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
   }, []);
 
   // ── 请求+播放一步到位 ──
-  const speakWithTTS = useCallback(async (text: string, lang: Lang, msgId?: string): Promise<void> => {
-    const audio = await fetchTTS(text, lang, msgId);
+  const speakWithTTS = useCallback(async (
+    text: string,
+    lang: Lang,
+    msgId?: string,
+    speaker: 'rocky' | 'grace' = 'rocky',
+  ): Promise<void> => {
+    const audio = await fetchTTS(text, lang, msgId, speaker);
     if (audio) await playTTSAudio(audio);
   }, [fetchTTS, playTTSAudio]);
 
@@ -237,6 +252,44 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
         }
         if (defaultAudio && !cancelledRef.current) {
           await playInterruptible(defaultAudio);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      // === Multi-speaker (Rocky + Grace cameo) ===
+      // parseSpeakerBlocks returns a single Rocky block for all legacy
+      // single-speaker messages, so the old playback path runs unchanged
+      // below. Only branch here when there's actual cross-speaker content.
+      const blocks = parseSpeakerBlocks(content);
+      if (blocks.length > 1) {
+        if (skipTTS) { setIsSpeaking(false); return; }
+        for (let i = 0; i < blocks.length; i++) {
+          if (cancelledRef.current) break;
+          const block = blocks[i];
+          const blockText = extractBlockText(block.rawContent, block.speaker);
+          if (!blockText.trim()) continue;
+          if (block.speaker === 'rocky') {
+            // Rocky blocks retain their full signature: mood chirp +
+            // optional LIKE, then TTS. DIRTY/INTRO intentionally skipped
+            // inside mid-turn Rocky blocks — those tags belong to
+            // whole-reply reactions; a cameo turn shouldn't retrigger
+            // them. If they ever appear, parseRockyReply on the full
+            // content still caught them for the opening block.
+            const { mood: bMood, hasLike: bLike } = parseRockyReply(block.rawContent);
+            if (!cancelledRef.current) await playInterruptible(getMoodAudio(bMood));
+            if (bLike && !cancelledRef.current) await playInterruptible(getLikeAudio());
+            if (!cancelledRef.current) await speakWithTTS(blockText, lang, msgId, 'rocky');
+          } else {
+            // Grace blocks: no mood chirp (that's a Rocky-only texture).
+            // Just the cloned Gosling voice speaking the line.
+            if (!cancelledRef.current) await speakWithTTS(blockText, lang, msgId, 'grace');
+          }
+          // Short silence between blocks so two different voices don't
+          // slam into each other. Not added after the last block.
+          if (i < blocks.length - 1 && !cancelledRef.current) {
+            await new Promise((r) => setTimeout(r, 300));
+          }
         }
         setIsSpeaking(false);
         return;

@@ -49,6 +49,16 @@ export const users = sqliteTable(
     // to honor the "one video per user, ever" commitment even after a
     // cross-device merge.
     video_used_at: integer("video_used_at"),
+    // Grace cameo budget — how many times Rocky can invite Grace (Ryland
+    // Grace from Project Hail Mary) into this user's calls. Scales with
+    // affinity:
+    //    register (Lv1 Earth Signal)   1
+    //    promoted to Lv2 Good Human   +3   (cumulative 4)
+    //    promoted to Lv3 Friend       +5   (cumulative 9)
+    //    promoted to Lv4 Fist My Bump +10  (cumulative 19)
+    // Consumed atomically by /api/chat after a response that contained
+    // a [GRACE] speaker block. No daily refresh — once spent, it's spent.
+    grace_credits: integer("grace_credits").notNull().default(1),
   },
   (t) => [
     index("idx_users_device_id").on(t.device_id),

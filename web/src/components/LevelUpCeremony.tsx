@@ -76,6 +76,11 @@ export default function LevelUpCeremony({ payload, onClose }: Props) {
               n: payload.to === 2 ? 10 : payload.to === 3 ? 30 : payload.to === 4 ? 50 : 0,
             })}
           </li>
+          {payload.grace_credits > 0 && (
+            <li className="levelup-bonus-grace">
+              {t('level.upGraceBonus', lang, { n: payload.grace_credits })}
+            </li>
+          )}
         </ul>
 
         <button
