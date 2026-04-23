@@ -56,11 +56,21 @@
   --user-bg: #1a1a0dcc;
   --user-border: #f0a50033;
 
-  /* Easing tokens — custom curves that feel intentional. Built-in CSS
+  /* Easing token — custom curve that feels intentional. Built-in CSS
      easings are too weak for UI polish. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Transition shorthand tokens. The 5-property list
+     (background, border-color, color, box-shadow, transform) covers
+     every common hover/focus/active state change without animating
+     unrelated properties like padding or font-size. Each duration
+     bucket maps to a token; callers write `transition: var(--tx-*)`
+     instead of repeating the full list. */
+  --tx-smooth-150: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  --tx-smooth-180: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  --tx-smooth-200: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  --tx-smooth-220: background 0.22s var(--ease-out), border-color 0.22s var(--ease-out), color 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out), transform 0.22s var(--ease-out);
+  --tx-smooth-300: background 0.3s var(--ease-out), border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
 }
 
 * {
@@ -491,7 +501,7 @@ body {
   font-size: 12px;
   cursor: pointer;
   font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
   white-space: nowrap;
   backdrop-filter: blur(4px);
 }
@@ -566,7 +576,7 @@ body {
   font-weight: 700;
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
   white-space: nowrap;
   letter-spacing: 1px;
 }
@@ -674,7 +684,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
   border: 1px solid;
 }
 
@@ -896,7 +906,7 @@ body {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
   flex-shrink: 0;
 }
 .tts-toggle:hover {
@@ -1001,7 +1011,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: background 0.3s var(--ease-out), border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
+  transition: var(--tx-smooth-300);
   color: var(--accent-cyan);
 }
 
@@ -1079,7 +1089,7 @@ body {
   border: 1.5px solid rgba(0, 212, 170, 0.35);
   cursor: pointer;
   color: var(--accent-cyan);
-  transition: background 0.3s var(--ease-out), border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), transform 0.3s var(--ease-out);
+  transition: var(--tx-smooth-300);
   text-align: left;
 }
 
@@ -1245,7 +1255,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   cursor: pointer;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
   border-radius: 3px;
 }
 
@@ -1529,7 +1539,7 @@ body {
   letter-spacing: 1.5px;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
 }
 
 .share-gate-btn:hover {
@@ -1589,7 +1599,7 @@ body {
   letter-spacing: 1.5px;
   border-radius: 5px;
   cursor: pointer;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
 }
 
 .ended-play-btn:hover {
@@ -1608,7 +1618,7 @@ body {
   letter-spacing: 1px;
   border-radius: 5px;
   cursor: pointer;
-  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+  transition: var(--tx-smooth-200);
 }
 
 .ended-share-btn:hover {
@@ -1688,7 +1698,7 @@ body {
   letter-spacing: 0.5px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .login-tab.active {
   color: #00d4aa;
@@ -1743,7 +1753,7 @@ body {
   padding: 9px 18px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .login-later {
   background: none;
@@ -2117,7 +2127,7 @@ body {
   font-weight: 600;
   cursor: pointer;
   border-radius: 4px;
-  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  transition: var(--tx-smooth-180);
   box-shadow: 0 0 18px rgba(0, 212, 170, 0.18);
 }
 .channel-dialin-cta:hover {
@@ -2135,7 +2145,7 @@ body {
   padding: 6px 14px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .channel-logout:hover { border-color: rgba(214, 241, 233, 0.5); color: #fff; }
 .channel-error {
@@ -2205,7 +2215,7 @@ body {
   letter-spacing: 0.5px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .dialin-tab.active {
   color: #00d4aa;
@@ -2286,7 +2296,7 @@ body {
   border: 1px solid #00d4aa;
   color: #001018;
   font-weight: 600;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .dialin-submit:hover:not(:disabled) { background: #2ce7bc; }
 .dialin-submit:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2592,7 +2602,7 @@ body {
   color: var(--text-primary, #d6f1e9);
   font-family: 'JetBrains Mono', monospace;
   cursor: pointer;
-  transition: background 0.22s var(--ease-out), border-color 0.22s var(--ease-out), color 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out), transform 0.22s var(--ease-out);
+  transition: var(--tx-smooth-220);
   overflow: hidden;
   backdrop-filter: blur(4px);
 }
@@ -2651,7 +2661,7 @@ body {
   padding: 6px 14px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .hero-logout:hover { border-color: rgba(214, 241, 233, 0.5); color: #fff; }
 .hero-error {
@@ -2730,7 +2740,7 @@ body {
   color: var(--accent-cyan);
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
   margin-left: 4px;
 }
 .export-toggle:hover {
@@ -2807,7 +2817,7 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   line-height: 1;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .status-bar .tts-toggle.tts-on {
   background: rgba(0, 212, 170, 0.18);
@@ -2845,7 +2855,7 @@ body {
   border-radius: 50%;
   cursor: pointer;
   margin-right: 10px;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .channel-play:hover {
   background: rgba(0, 212, 170, 0.2);
@@ -2938,7 +2948,7 @@ body {
   letter-spacing: 0.3px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  transition: var(--tx-smooth-180);
 }
 .echo-question-chip:hover:not(:disabled) {
   background: rgba(0, 212, 170, 0.16);
@@ -2973,7 +2983,7 @@ body {
   padding: 5px 14px;
   border-radius: 999px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .echo-allanswered-cta:hover {
   border-color: #00d4aa;
@@ -3004,7 +3014,7 @@ body {
   border-radius: 50%;
   color: rgba(214, 241, 233, 0.6);
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .msg-action:hover {
   border-color: #00d4aa;
@@ -3079,7 +3089,7 @@ body {
   color: rgba(214, 241, 233, 0.7);
   border-radius: 50%;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .favorite-row-actions button:hover { border-color: #00d4aa; color: #00d4aa; }
 .favorite-row-actions .fav-remove:hover { border-color: #ff8080; color: #ff8080; background: rgba(255, 128, 128, 0.08); }
@@ -3109,7 +3119,7 @@ body {
   color: var(--accent-cyan);
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .status-iconbtn:hover {
   border-color: #00d4aa;
@@ -3433,7 +3443,7 @@ body {
   cursor: pointer;
   backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  transition: background 0.18s var(--ease-out), border-color 0.18s var(--ease-out), color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  transition: var(--tx-smooth-180);
 }
 .hero-favorites-pill:hover {
   background: rgba(255, 107, 138, 0.14);
@@ -3909,7 +3919,7 @@ body {
   padding: 7px 14px;
   border-radius: 5px;
   cursor: pointer;
-  transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.15s var(--ease-out);
+  transition: var(--tx-smooth-150);
 }
 .share-toolbar-cancel {
   background: transparent;
