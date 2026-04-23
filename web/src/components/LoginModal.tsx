@@ -33,6 +33,24 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Two-step mount so CSS transitions play in BOTH directions.
+  // `mounted` = in the DOM; `visible` = .is-visible class present.
+  // Open: mount → next frame toggles visible → CSS tween runs.
+  // Close: drop visible → CSS tween runs → 240ms later unmount.
+  // 240ms matches the 220ms modal transform transition + a small margin.
+  const [mounted, setMounted] = useState(open);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      const raf = requestAnimationFrame(() => setVisible(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setVisible(false);
+    const t = setTimeout(() => setMounted(false), 240);
+    return () => clearTimeout(t);
+  }, [open]);
 
   // Reset phase when modal re-opens so a returning user sees the form.
   useEffect(() => {
@@ -68,7 +86,7 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
     return () => clearTimeout(timer);
   }, [open, phase, onClose]);
 
-  if (!open) return null;
+  if (!mounted) return null;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -102,9 +120,12 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
     'friend';
 
   return (
-    <div className="login-backdrop" onClick={phase === 'form' ? onClose : undefined}>
+    <div
+      className={`login-backdrop${visible ? ' is-visible' : ''}`}
+      onClick={phase === 'form' ? onClose : undefined}
+    >
       <div
-        className="login-modal"
+        className={`login-modal${visible ? ' is-visible' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="login-title"
