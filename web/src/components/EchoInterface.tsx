@@ -236,8 +236,8 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
                   ? handleToggleFavorite
                   : undefined
               }
-              isFavorited={!!findFavoriteFor(msg)}
-              isPlaying={playingMsgId === msg.id}
+              isFavoritedFor={() => !!findFavoriteFor(msg)}
+              isPlayingFor={() => playingMsgId === msg.id}
             />
           ))}
           <div ref={chatEndRef} />

@@ -11,10 +11,15 @@ interface Props {
   message: DisplayMessage;
   lang: Lang;
   // Optional actions (only wired in ChatInterface; EchoInterface omits them).
-  onPlay?: (msg: DisplayMessage) => void;
-  onToggleFavorite?: (msg: DisplayMessage) => void;
-  isFavorited?: boolean;
-  isPlaying?: boolean;
+  // blockIdx identifies which speaker block in a multi-speaker reply the
+  // user tapped — 0 for single-speaker (unchanged semantics), 0..n-1 for
+  // Grace cameos. Each block gets its own Play / Favorite buttons so
+  // users can play/favorite Rocky setup, Grace cameo, and Rocky closer
+  // independently.
+  onPlay?: (msg: DisplayMessage, blockIdx: number) => void;
+  onToggleFavorite?: (msg: DisplayMessage, blockIdx: number) => void;
+  isFavoritedFor?: (blockIdx: number) => boolean;
+  isPlayingFor?: (blockIdx: number) => boolean;
   // Share-select mode: when true the whole bubble becomes clickable to
   // toggle inclusion in the share card. shareDisabled suppresses taps
   // when the 6-msg cap has been hit (except for already-selected rows
@@ -60,8 +65,8 @@ export default function MessageBubble({
   lang,
   onPlay,
   onToggleFavorite,
-  isFavorited = false,
-  isPlaying = false,
+  isFavoritedFor,
+  isPlayingFor,
   shareSelectMode = false,
   shareSelected = false,
   shareDisabled = false,
@@ -127,15 +132,17 @@ export default function MessageBubble({
   const renderBlock = (
     speaker: Speaker,
     rawContent: string,
-    key: number,
+    blockIdx: number,
     isLast: boolean,
   ) => {
     const parts = parseRockyMessage(rawContent, lang);
     const senderLabel =
       speaker === 'grace' ? t('chat.senderGrace', lang) : 'Rocky (Erid)';
+    const isPlaying = isPlayingFor?.(blockIdx) ?? false;
+    const isFavorited = isFavoritedFor?.(blockIdx) ?? false;
     return (
       <div
-        key={key}
+        key={blockIdx}
         className={`message ${speaker} ${shareClass}`.trim()}
         onClick={shareHandler}
         role={shareHandler ? 'button' : undefined}
@@ -155,13 +162,13 @@ export default function MessageBubble({
         })}
         {isLast && message.isStreaming && <span className="streaming-cursor" />}
         {isLast && message.gift && <GiftBubble gift={message.gift} lang={lang} />}
-        {isLast && showActions && (
+        {showActions && (
           <div className="message-actions">
             {onPlay && (
               <button
                 type="button"
                 className={`msg-action msg-play ${isPlaying ? 'playing' : ''}`}
-                onClick={(e) => { e.stopPropagation(); onPlay(message); }}
+                onClick={(e) => { e.stopPropagation(); onPlay(message, blockIdx); }}
                 aria-label={isPlaying ? t('aria.stop', lang) : t('aria.play', lang)}
                 title={isPlaying ? t('aria.stop', lang) : t('aria.play', lang)}
               >
@@ -181,7 +188,7 @@ export default function MessageBubble({
               <button
                 type="button"
                 className={`msg-action msg-fav ${isFavorited ? 'favorited' : ''}`}
-                onClick={(e) => { e.stopPropagation(); onToggleFavorite(message); }}
+                onClick={(e) => { e.stopPropagation(); onToggleFavorite(message, blockIdx); }}
                 aria-label={isFavorited ? t('aria.unfavorite', lang) : t('aria.favorite', lang)}
                 title={isFavorited ? t('aria.unfavorite', lang) : t('aria.favorite', lang)}
               >
