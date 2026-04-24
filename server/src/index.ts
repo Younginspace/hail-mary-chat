@@ -1983,18 +1983,15 @@ app.get("/api/tts", async (c) => {
   const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
   const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
   const voiceId = speaker === "grace" ? graceVoice : rockyVoice;
-  // Grace speaker uses the pay-as-you-go key (sk-api-*). This is the
-  // same key that registered the cloned Gosling voice via /v1/voice_clone;
-  // MiniMax silently falls back to a preset voice when a cloned voice_id
-  // is invoked with a different key family (observed behaviour on sk-cp-,
-  // no error returned — just wrong voice). Small cash-wallet burn per
-  // Grace cameo char; Rocky continues on the subscription pool.
-  const apiKey = speaker === "grace"
-    ? secret.get("MINIMAX_API_KEY")
-    : secret.get("MINIMAX_CODING_PLAN_KEY");
+  // Both Rocky and Grace use the Coding Plan subscription key. MiniMax's
+  // cloned voices route through whichever key is used at synthesis time
+  // AFTER initial sk-api- registration. Rocky (cloned 2026-03-31) has
+  // rendered on sk-cp- for weeks without hitting the cash wallet; Grace's
+  // Rocky_Grace_v2 was activated by the admin voice-preview flow so it
+  // now behaves identically — subscription-backed TTS, one shared pool.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
-    const keyName = speaker === "grace" ? "MINIMAX_API_KEY" : "MINIMAX_CODING_PLAN_KEY";
-    return c.json({ error: "missing_secret", detail: `${keyName} not set` }, 500);
+    return c.json({ error: "missing_secret", detail: "MINIMAX_CODING_PLAN_KEY not set" }, 500);
   }
 
   // Memory context language is encoded with the system prompt, but the
@@ -2117,15 +2114,7 @@ app.get("/api/tts", async (c) => {
       return c.json({ error: "user_quota_exceeded" }, 429);
     }
 
-    // Skip the global 8000-char cap for Grace — that cap is sized for
-    // the sk-cp- subscription pool, but Grace now bills the sk-api-
-    // pay-as-you-go wallet via a separate MiniMax endpoint. Mixing the
-    // two in the same counter would cause false 429s (wallet still has
-    // headroom but counter says subscription pool is full). Per-user
-    // 1000/day still applies to Grace to bound wallet burn.
-    const usage = speaker === "grace"
-      ? [{ count: charCost }]  // synthetic pass-through, no global tracking
-      : await db
+    const usage = await db
       .insert(daily_api_usage)
       .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
       .onConflictDoUpdate({
