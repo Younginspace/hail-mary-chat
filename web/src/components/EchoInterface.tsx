@@ -36,7 +36,7 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
   // never fires because findDefaultDialog intercepts every message.
   const { messages, sendMessage, isEnded, turnsLeft } = useChat(lang, 'voice', undefined);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking } = useRockyTTS(false);
-  const { isAuthenticated } = useAuthSession();
+  const { isAuthenticated, me } = useAuthSession();
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
   const [favoritesList, setFavoritesList] = useState<FavoriteRow[]>([]);
@@ -230,6 +230,7 @@ export default function EchoInterface({ onBack }: EchoInterfaceProps) {
               key={msg.id}
               message={msg}
               lang={lang}
+              callsign={me?.callsign ?? null}
               onPlay={msg.role === 'assistant' ? handleMessagePlay : undefined}
               onToggleFavorite={
                 msg.role === 'assistant' && isAuthenticated
