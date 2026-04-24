@@ -1060,13 +1060,52 @@ app.post("/api/chat", async (c) => {
   // a [GRACE] speaker block (see chatGraceConsume below).
   let graceCue: import("./prompts/rocky").GraceCue = "dormant";
   let graceCreditsAvail = 0;
+  let graceAddress: "boy" | "girl" | "neither" | null = null;
   try {
     const graceRow = await db
-      .select({ credits: users.grace_credits })
+      .select({ credits: users.grace_credits, address: users.grace_address })
       .from(users)
       .where(eq(users.id, user.user_id))
       .limit(1);
     graceCreditsAvail = graceRow[0]?.credits ?? 0;
+    const rawAddr = graceRow[0]?.address ?? null;
+    graceAddress = rawAddr === "boy" || rawAddr === "girl" || rawAddr === "neither" ? rawAddr : null;
+
+    // ── Gender detection: if the last assistant reply contained a
+    // [GRACE] block that asked about gender, AND this user turn looks
+    // like an answer, persist it. One-shot per user — once non-null
+    // we never overwrite from later messages (to avoid false positives
+    // from unrelated conversations about other people). See rocky.ts
+    // PROTOCOL for why we record this (affects Grace's affectionate
+    // close: "Good girl" / "Good boy" / stays on "Earth kid" for neither).
+    if (graceAddress === null) {
+      const prevAssistant = [...body.messages].reverse().find((m) => m.role === "assistant");
+      const lastUserMsg = [...body.messages].reverse().find((m) => m.role === "user");
+      const graceAskedGender =
+        !!prevAssistant &&
+        /\[GRACE\][\s\S]*?(guy|boy|girl|man|woman|男|女)[\s\S]{0,80}\?/i.test(prevAssistant.content);
+      if (graceAskedGender && lastUserMsg) {
+        const t = lastUserMsg.content;
+        let detected: "boy" | "girl" | "neither" | null = null;
+        if (/\b(girl|woman|female|she|her)\b/i.test(t) || /(^|[^a-z])女(生|孩|性)?([^a-z]|$)/.test(t)) {
+          detected = "girl";
+        } else if (/\b(guy|boy|man|male|he|him|dude)\b/i.test(t) || /(^|[^a-z])男(生|孩|性)?([^a-z]|$)/.test(t)) {
+          detected = "boy";
+        } else if (
+          /(nonbinary|non-binary|enby|neither|none|prefer not|rather not|don'?t (say|tell|want))/i.test(t) ||
+          /(不想说|不告诉|都不是|非二元|保密|不说)/.test(t)
+        ) {
+          detected = "neither";
+        }
+        if (detected) {
+          await db
+            .update(users)
+            .set({ grace_address: detected })
+            .where(eq(users.id, user.user_id));
+          graceAddress = detected;
+        }
+      }
+    }
 
     if (graceCreditsAvail <= 0) {
       graceCue = "unavailable";
@@ -1104,7 +1143,7 @@ app.post("/api/chat", async (c) => {
     graceCue = "dormant";
   }
 
-  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue);
+  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue, graceAddress);
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }

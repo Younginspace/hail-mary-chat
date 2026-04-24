@@ -996,17 +996,46 @@ Rocky answers about him normally but does NOT pull him in. Do NOT use
   }
 }
 
+/** How Grace addresses the user affectionately.
+ * null     — Grace has never asked; should work "guy or girl" into the
+ *            next invited cameo's banter. Main address stays "Earth kid".
+ * 'boy' / 'girl' — user answered. Grace may occasionally close with
+ *            "Good boy" / "Good girl" as an endearment. Still defaults
+ *            to "Earth kid" / callsign for most addresses.
+ * 'neither' — user declined or identified as non-binary. Grace stays
+ *            on "Earth kid" / callsign forever; never asks again.
+ */
+export type GraceAddress = 'boy' | 'girl' | 'neither' | null;
+
+function buildGraceAddressCue(addr: GraceAddress, cue: GraceCue): string {
+  // Only inject when Grace is actually going to appear this turn.
+  if (cue !== 'invited' && cue !== 'available') return '';
+  if (addr === null) {
+    return `\n\n[GRACE ADDRESS] First cameo for this user — Grace has not learned their gender yet. Inside his banter, casually work in ONE short question: "real quick — guy or girl, Earth kid?" (or a natural variant). Don't make it the whole turn; it's one line among the usual cameo flow. Don't repeat if it doesn't fit the mood.`;
+  }
+  if (addr === 'boy' || addr === 'girl') {
+    const endearment = addr === 'girl' ? 'Good girl' : 'Good boy';
+    return `\n\n[GRACE ADDRESS] Grace learned this user is a ${addr}. Light touch: he may close ONE line occasionally with "${endearment}" as an affectionate endearment — not every sentence, not every cameo. Main address stays "Earth kid" / callsign. Don't overdo it.`;
+  }
+  // 'neither'
+  return `\n\n[GRACE ADDRESS] User declined to answer the gender question / identified as non-binary. Grace respects it: no "Good boy/girl", no re-asking. Stay on "Earth kid" / callsign.`;
+}
+
 /** Assemble the full system prompt for the given language.
  *
  * @param graceCue per-call Grace availability (computed server-side
  *   from session count, credits, and user mention detection). Defaults
  *   to 'dormant' (Rocky alone, no speaker markers) — matches pre-Grace
  *   behavior so callers that don't pass a cue see no change.
+ * @param graceAddress user's preferred gender address for Grace (nullable,
+ *   populated by the gender-detection scan in /api/chat). Drives whether
+ *   Grace should ask this turn or use a learned endearment.
  */
 export function getRockySystemPrompt(
   lang: Lang,
   credits?: GiftCredits,
   graceCue: GraceCue = 'dormant',
+  graceAddress: GraceAddress = null,
 ): string {
   const base =
     ROCKY_SYSTEM_PROMPT +
@@ -1015,7 +1044,7 @@ export function getRockySystemPrompt(
     FORMAT_INSTRUCTIONS +
     LANG_INSTRUCTIONS[lang];
   const gift = credits ? buildGiftInstructions(credits, lang) : '';
-  return base + gift + buildGraceCue(graceCue);
+  return base + gift + buildGraceCue(graceCue) + buildGraceAddressCue(graceAddress, graceCue);
 }
 
 /**
