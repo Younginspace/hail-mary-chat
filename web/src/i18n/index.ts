@@ -175,12 +175,15 @@ const translations = {
     en: 'You (Earth)',
     ja: 'あなた (Earth)',
   },
-  // Bubble header for Grace speaker blocks. Kept in English so the
-  // "Rocky (Erid)" / "Grace (Earth)" pairing reads symmetrically.
+  // Bubble header for Grace speaker blocks. Grace lives on Erid with
+  // Rocky (canonical: stayed after the Hail Mary mission, refused the
+  // ride home — see GRACE_CANONICAL_MEMORY). Location name kept in
+  // English across all locales so "Rocky (Erid)" / "Grace (Erid)"
+  // read as a matched pair regardless of UI language.
   'chat.senderGrace': {
-    zh: 'Grace (Earth)',
-    en: 'Grace (Earth)',
-    ja: 'Grace (Earth)',
+    zh: 'Grace (Erid)',
+    en: 'Grace (Erid)',
+    ja: 'Grace (Erid)',
   },
   'chat.quotaExceededPanel': {
     zh: '今日通话的人太多了，资源不足，请改天再来吧！',
