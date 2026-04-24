@@ -1943,6 +1943,17 @@ app.get("/api/tts", async (c) => {
   if (!text) {
     return c.json({ error: "text is required" }, 400);
   }
+  // Authoritative guard against 1–2 char requests. Grace cameo blocks
+  // and tag-cleanup residue occasionally reduce to "." or a single
+  // letter, which MiniMax still bills as a full request and clutters
+  // the dashboard with useless audio. The client has the same rule
+  // (isTtsTextMeaningful in web/src/utils/messageCleanup.ts) but the
+  // server is the last line of defense — any client skipping the
+  // check (stale cache, third-party tool) still gets 400 here,
+  // BEFORE we spend on MiniMax.
+  if (text.replace(/[\s\p{P}]/gu, "").length < 2) {
+    return c.json({ error: "text_too_short" }, 400);
+  }
   const isFavorite = url.searchParams.get("favorite") === "true";
   const messageId = url.searchParams.get("message_id")?.trim() || null;
   // Speaker routing for Grace cameos — default Rocky for back-compat.

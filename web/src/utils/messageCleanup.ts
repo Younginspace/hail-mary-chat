@@ -121,3 +121,16 @@ export function extractMood(content: string): string | null {
   const m = content.match(/\[MOOD:(\w+)\]/);
   return m ? m[1] : null;
 }
+
+// Guard against firing a TTS request for text that's just whitespace /
+// punctuation / a single residual character. A short Grace cameo block
+// or a Rocky closer trimmed down to "." has been producing 1-2 char
+// MiniMax requests that show up in the dashboard as noise — MiniMax
+// bills per request regardless of length, and 1-char audio is useless
+// to the user anyway. The server enforces the same rule as the last
+// line of defense (see `/api/tts` in server/src/index.ts); clients
+// duplicate the check to avoid the round-trip.
+export function isTtsTextMeaningful(text: string): boolean {
+  if (!text) return false;
+  return text.replace(/[\s\p{P}]/gu, '').length >= 2;
+}

@@ -18,6 +18,7 @@ import {
   extractBlockText,
   extractMood,
   extractPlayableText,
+  isTtsTextMeaningful,
   parseSpeakerBlocks,
 } from '../utils/messageCleanup';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
@@ -291,6 +292,10 @@ export default function ChatInterface({
       const block = getBlock(msg, blockIdx);
       if (!block) return;
       const { text, speaker } = block;
+      // Don't burn a MiniMax request on a 1-char block or a block that's
+      // just punctuation. Server enforces the same rule (400 without
+      // charging); catching it here skips the round-trip.
+      if (!isTtsTextMeaningful(text)) return;
 
       setFavError(null);
 
