@@ -139,9 +139,11 @@ async function callExtractor(
 ): Promise<ExtractionResult | null> {
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
-  const apiKey = secret.get("MINIMAX_API_KEY");
+  // Memory consolidation is an LLM call, not a clone op — use the
+  // Coding Plan subscription key, same as /api/chat.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
-    console.error("consolidate: MINIMAX_API_KEY missing");
+    console.error("consolidate: MINIMAX_CODING_PLAN_KEY missing");
     return null;
   }
 

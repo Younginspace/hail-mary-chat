@@ -15,7 +15,17 @@ export type VarKey =
   | "MINIMAX_TTS_VOICE_ID_GRACE";
 
 export type SecretKey =
+  // MiniMax pay-as-you-go key (sk-api-*). DEDICATED to /v1/voice_clone
+  // since that endpoint rejects Coding Plan keys with a misleading 1008
+  // "insufficient balance". Only /api/admin/clone-voice should read this
+  // secret. Every char rendered under this key bills the cash wallet.
   | "MINIMAX_API_KEY"
+  // MiniMax Coding Plan subscription key (sk-cp-*). Billed through the
+  // operator's monthly subscription (chars / month), not the cash
+  // wallet. Use for /api/chat, /api/tts, and future /api/generate-media
+  // (image / music / video). Must NOT be used for /v1/voice_clone —
+  // that endpoint isn't gated to this key type and returns 1008.
+  | "MINIMAX_CODING_PLAN_KEY"
   // Gate admin-only endpoints (rapport recalibration, stuck-job retry).
   // Pass as `X-Admin-Token: <value>` header. Set via `edgespark secret set ADMIN_TOKEN`.
   | "ADMIN_TOKEN";

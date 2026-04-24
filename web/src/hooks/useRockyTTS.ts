@@ -11,7 +11,7 @@ import {
   type RockyMood,
 } from '../utils/rockyAudio';
 import { findDefaultAudioByReply } from '../utils/defaultDialogs';
-import { parseSpeakerBlocks, extractBlockText } from '../utils/messageCleanup';
+import { parseSpeakerBlocks, extractBlockText, isTtsTextMeaningful } from '../utils/messageCleanup';
 
 // ── TTS: 通过 EdgeSpark worker 代理（/api/tts，auth required）
 // 服务器端注入 MiniMax API key，浏览器不持有任何凭据
@@ -115,7 +115,7 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
     msgId?: string,
     speaker: 'rocky' | 'grace' = 'rocky',
   ): Promise<HTMLAudioElement | null> => {
-    if (skipTTS || !text.trim() || ttsQuotaExceeded || ttsInsufficientCredits) return Promise.resolve(null);
+    if (skipTTS || !isTtsTextMeaningful(text) || ttsQuotaExceeded || ttsInsufficientCredits) return Promise.resolve(null);
 
     const abortCtrl = new AbortController();
     abortCtrlRef.current = abortCtrl;
