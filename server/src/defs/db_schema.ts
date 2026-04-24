@@ -59,6 +59,16 @@ export const users = sqliteTable(
     // Consumed atomically by /api/chat after a response that contained
     // a [GRACE] speaker block. No daily refresh — once spent, it's spent.
     grace_credits: integer("grace_credits").notNull().default(1),
+    // How Grace should address this user affectionately. NULL = Grace
+    // hasn't asked yet (first cameo should ask). 'boy' / 'girl' = user
+    // answered, Grace may occasionally close with "Good boy" / "Good
+    // girl" as an endearment (not every sentence; light touch). 'neither'
+    // = user declined / identified as non-binary; Grace stops asking and
+    // stays on "Earth kid" / callsign. Populated by the gender-detection
+    // scan in /api/chat when a [GRACE]-asked-gender turn is followed by
+    // a matching user reply. See README or the minimax_api_key_types
+    // memory for the full flow.
+    grace_address: text("grace_address"),
   },
   (t) => [
     index("idx_users_device_id").on(t.device_id),

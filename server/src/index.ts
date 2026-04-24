@@ -1060,13 +1060,52 @@ app.post("/api/chat", async (c) => {
   // a [GRACE] speaker block (see chatGraceConsume below).
   let graceCue: import("./prompts/rocky").GraceCue = "dormant";
   let graceCreditsAvail = 0;
+  let graceAddress: "boy" | "girl" | "neither" | null = null;
   try {
     const graceRow = await db
-      .select({ credits: users.grace_credits })
+      .select({ credits: users.grace_credits, address: users.grace_address })
       .from(users)
       .where(eq(users.id, user.user_id))
       .limit(1);
     graceCreditsAvail = graceRow[0]?.credits ?? 0;
+    const rawAddr = graceRow[0]?.address ?? null;
+    graceAddress = rawAddr === "boy" || rawAddr === "girl" || rawAddr === "neither" ? rawAddr : null;
+
+    // ── Gender detection: if the last assistant reply contained a
+    // [GRACE] block that asked about gender, AND this user turn looks
+    // like an answer, persist it. One-shot per user — once non-null
+    // we never overwrite from later messages (to avoid false positives
+    // from unrelated conversations about other people). See rocky.ts
+    // PROTOCOL for why we record this (affects Grace's affectionate
+    // close: "Good girl" / "Good boy" / stays on "Earth kid" for neither).
+    if (graceAddress === null) {
+      const prevAssistant = [...body.messages].reverse().find((m) => m.role === "assistant");
+      const lastUserMsg = [...body.messages].reverse().find((m) => m.role === "user");
+      const graceAskedGender =
+        !!prevAssistant &&
+        /\[GRACE\][\s\S]*?(guy|boy|girl|man|woman|男|女)[\s\S]{0,80}\?/i.test(prevAssistant.content);
+      if (graceAskedGender && lastUserMsg) {
+        const t = lastUserMsg.content;
+        let detected: "boy" | "girl" | "neither" | null = null;
+        if (/\b(girl|woman|female|she|her)\b/i.test(t) || /(^|[^a-z])女(生|孩|性)?([^a-z]|$)/.test(t)) {
+          detected = "girl";
+        } else if (/\b(guy|boy|man|male|he|him|dude)\b/i.test(t) || /(^|[^a-z])男(生|孩|性)?([^a-z]|$)/.test(t)) {
+          detected = "boy";
+        } else if (
+          /(nonbinary|non-binary|enby|neither|none|prefer not|rather not|don'?t (say|tell|want))/i.test(t) ||
+          /(不想说|不告诉|都不是|非二元|保密|不说)/.test(t)
+        ) {
+          detected = "neither";
+        }
+        if (detected) {
+          await db
+            .update(users)
+            .set({ grace_address: detected })
+            .where(eq(users.id, user.user_id));
+          graceAddress = detected;
+        }
+      }
+    }
 
     if (graceCreditsAvail <= 0) {
       graceCue = "unavailable";
@@ -1104,7 +1143,7 @@ app.post("/api/chat", async (c) => {
     graceCue = "dormant";
   }
 
-  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue);
+  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue, graceAddress);
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }
@@ -1983,18 +2022,15 @@ app.get("/api/tts", async (c) => {
   const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
   const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
   const voiceId = speaker === "grace" ? graceVoice : rockyVoice;
-  // Grace speaker uses the pay-as-you-go key (sk-api-*). This is the
-  // same key that registered the cloned Gosling voice via /v1/voice_clone;
-  // MiniMax silently falls back to a preset voice when a cloned voice_id
-  // is invoked with a different key family (observed behaviour on sk-cp-,
-  // no error returned — just wrong voice). Small cash-wallet burn per
-  // Grace cameo char; Rocky continues on the subscription pool.
-  const apiKey = speaker === "grace"
-    ? secret.get("MINIMAX_API_KEY")
-    : secret.get("MINIMAX_CODING_PLAN_KEY");
+  // Both Rocky and Grace use the Coding Plan subscription key. MiniMax's
+  // cloned voices route through whichever key is used at synthesis time
+  // AFTER initial sk-api- registration. Rocky (cloned 2026-03-31) has
+  // rendered on sk-cp- for weeks without hitting the cash wallet; Grace's
+  // Rocky_Grace_v2 was activated by the admin voice-preview flow so it
+  // now behaves identically — subscription-backed TTS, one shared pool.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
-    const keyName = speaker === "grace" ? "MINIMAX_API_KEY" : "MINIMAX_CODING_PLAN_KEY";
-    return c.json({ error: "missing_secret", detail: `${keyName} not set` }, 500);
+    return c.json({ error: "missing_secret", detail: "MINIMAX_CODING_PLAN_KEY not set" }, 500);
   }
 
   // Memory context language is encoded with the system prompt, but the
@@ -2117,15 +2153,7 @@ app.get("/api/tts", async (c) => {
       return c.json({ error: "user_quota_exceeded" }, 429);
     }
 
-    // Skip the global 8000-char cap for Grace — that cap is sized for
-    // the sk-cp- subscription pool, but Grace now bills the sk-api-
-    // pay-as-you-go wallet via a separate MiniMax endpoint. Mixing the
-    // two in the same counter would cause false 429s (wallet still has
-    // headroom but counter says subscription pool is full). Per-user
-    // 1000/day still applies to Grace to bound wallet burn.
-    const usage = speaker === "grace"
-      ? [{ count: charCost }]  // synthetic pass-through, no global tracking
-      : await db
+    const usage = await db
       .insert(daily_api_usage)
       .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
       .onConflictDoUpdate({

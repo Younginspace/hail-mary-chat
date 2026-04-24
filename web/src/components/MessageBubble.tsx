@@ -10,6 +10,11 @@ import GiftBubble from './GiftBubble';
 interface Props {
   message: DisplayMessage;
   lang: Lang;
+  // Caller's callsign — rendered as "<callsign> (Earth)" on the user
+  // bubble header for immersion. Falls back to the generic localized
+  // "You (Earth)" when null (unauthed / pre-adoption, shouldn't
+  // normally happen in ChatInterface but EchoInterface can hit it).
+  callsign?: string | null;
   // Optional actions (only wired in ChatInterface; EchoInterface omits them).
   // blockIdx identifies which speaker block in a multi-speaker reply the
   // user tapped — 0 for single-speaker (unchanged semantics), 0..n-1 for
@@ -63,6 +68,7 @@ function parseRockyMessage(content: string, lang: Lang) {
 export default function MessageBubble({
   message,
   lang,
+  callsign = null,
   onPlay,
   onToggleFavorite,
   isFavoritedFor,
@@ -104,6 +110,12 @@ export default function MessageBubble({
   }, []);
 
   if (!isRocky) {
+    // Bubble header: prefer "<callsign> (Earth)" for immersion (matches
+    // the "Rocky (Erid)" / "Grace (Erid)" pairing). Fall back to the
+    // localized generic when callsign is missing (unauthed preview paths).
+    const userLabel = callsign && callsign.trim().length > 0
+      ? `${callsign.trim()} (Earth)`
+      : t('chat.senderYou', lang);
     return (
       <div
         ref={bubbleRef}
@@ -111,7 +123,7 @@ export default function MessageBubble({
         onClick={shareHandler}
         role={shareHandler ? 'button' : undefined}
       >
-        <div className="message-sender">{t('chat.senderYou', lang)}</div>
+        <div className="message-sender">{userLabel}</div>
         {message.content}
       </div>
     );

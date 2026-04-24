@@ -15,10 +15,12 @@ export type VarKey =
   | "MINIMAX_TTS_VOICE_ID_GRACE";
 
 export type SecretKey =
-  // MiniMax pay-as-you-go key (sk-api-*). DEDICATED to /v1/voice_clone
-  // since that endpoint rejects Coding Plan keys with a misleading 1008
-  // "insufficient balance". Only /api/admin/clone-voice should read this
-  // secret. Every char rendered under this key bills the cash wallet.
+  // MiniMax pay-as-you-go key (sk-api-*). Required for MiniMax's
+  // /v1/voice_clone endpoint (Coding Plan keys are rejected with a
+  // misleading 1008 "insufficient balance"). Kept for ops tools:
+  // /api/admin/list-voices and /api/admin/voice-preview. Do NOT use
+  // for regular TTS — Grace's cloned voice renders fine on the
+  // subscription key after its first sk-api- activation call.
   | "MINIMAX_API_KEY"
   // MiniMax Coding Plan subscription key (sk-cp-*). Billed through the
   // operator's monthly subscription (chars / month), not the cash

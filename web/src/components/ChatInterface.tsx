@@ -703,6 +703,7 @@ export default function ChatInterface({
                 key={msg.id}
                 message={msg}
                 lang={lang}
+                callsign={me?.callsign ?? null}
                 onPlay={
                   !shareSelectMode && msg.role === 'assistant'
                     ? handleMessagePlay
