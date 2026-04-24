@@ -88,7 +88,18 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // ceiling did. daily_api_usage.count is now interpreted as accumulated
 // characters, not calls (same column, new semantics — any historical
 // rows are low enough that the switch is invisible).
-const TTS_DAILY_USER_CHAR_CAP = 8000;
+//
+// Two tiers, enforced independently in /api/tts:
+//   * Per-user cap: 1000 chars/day per authed user.id. Prevents any
+//     single user burning the whole operator-facing pool.
+//   * Global cap: 8000 chars/day across all users. Leaves ~3000 chars
+//     of MiniMax's daily 11k ceiling as operator reserve (absorbed by
+//     manual MiniMax dashboard testing, since admin-token bypass was
+//     removed per the no-secrets-through-agent rule).
+// The previous constant name was misleading — "_USER_" lived on what
+// was actually a __global__ scope row. Renamed for clarity.
+const TTS_DAILY_PER_USER_CHAR_CAP = 1000;
+const TTS_DAILY_GLOBAL_CHAR_CAP = 8000;
 
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
 
@@ -1007,9 +1018,12 @@ app.post("/api/chat", async (c) => {
 
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
-  const apiKey = secret.get("MINIMAX_API_KEY");
+  // Chat uses the Coding Plan subscription key (sk-cp-*). Don't use
+  // MINIMAX_API_KEY — that's reserved for pay-as-you-go voice_clone
+  // ops and would drain the cash wallet on every turn.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
-    return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
+    return c.json({ error: "missing_secret", detail: "MINIMAX_CODING_PLAN_KEY not set" }, 500);
   }
 
   const session_id = typeof body.session_id === "string" ? body.session_id : null;
@@ -1431,7 +1445,8 @@ app.get("/api/voice-credits", async (c) => {
 app.get("/api/probe-minimax", async (c) => {
   const user = await getAuthedUser();
   if (!user) return c.json({ error: "not_authenticated" }, 401);
-  const apiKey = secret.get("MINIMAX_API_KEY");
+  // Probe the subscription key — the one we actually care about for chat/TTS.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) return c.json({ error: "no_key" }, 500);
 
   const what = c.req.query("what") ?? "all";
@@ -1968,9 +1983,18 @@ app.get("/api/tts", async (c) => {
   const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
   const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
   const voiceId = speaker === "grace" ? graceVoice : rockyVoice;
-  const apiKey = secret.get("MINIMAX_API_KEY");
+  // Grace speaker uses the pay-as-you-go key (sk-api-*). This is the
+  // same key that registered the cloned Gosling voice via /v1/voice_clone;
+  // MiniMax silently falls back to a preset voice when a cloned voice_id
+  // is invoked with a different key family (observed behaviour on sk-cp-,
+  // no error returned — just wrong voice). Small cash-wallet burn per
+  // Grace cameo char; Rocky continues on the subscription pool.
+  const apiKey = speaker === "grace"
+    ? secret.get("MINIMAX_API_KEY")
+    : secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
-    return c.json({ error: "missing_secret", detail: "MINIMAX_API_KEY not set" }, 500);
+    const keyName = speaker === "grace" ? "MINIMAX_API_KEY" : "MINIMAX_CODING_PLAN_KEY";
+    return c.json({ error: "missing_secret", detail: `${keyName} not set` }, 500);
   }
 
   // Memory context language is encoded with the system prompt, but the
@@ -2042,42 +2066,93 @@ app.get("/api/tts", async (c) => {
     });
   }
 
-  // ── 3. Global daily TTS cap — atomic CAS on CHARACTER count ──
-  // Atomically add text.length to today's global row, but only if the
-  // resulting total would still be ≤ cap. If cap would be crossed, CAS
-  // returns an empty result and we 429 the user. charCost is bounded
-  // server-side by what MiniMax actually renders, not what the client
-  // sent — after the cleanup pipeline drops mood tags / translation
-  // labels, the remaining text.length is the billable unit.
   const charCost = text.length;
   const today = utc8DateString(now);
-  const usage = await db
-    .insert(daily_api_usage)
-    .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
-    .onConflictDoUpdate({
-      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
-      set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
-      setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_USER_CHAR_CAP}`,
-    })
-    .returning({ count: daily_api_usage.count });
 
-  if (usage.length === 0) {
-    // Global cap hit. Refund the credit so the user isn't punished for it.
-    if (!freePlay) {
-      await db
-        .update(users)
-        .set({ voice_credits: sql`${users.voice_credits} + 1` })
-        .where(eq(users.id, user.user_id));
-      await db.insert(voice_credit_ledger).values({
-        id: crypto.randomUUID(),
-        user_id: user.user_id,
-        delta: 1,
-        reason: "refund_global_cap",
-        session_id: url.searchParams.get("session_id"),
-        created_at: now,
-      });
+  // ── 3. Daily TTS caps — two tiers, CAS on CHARACTER count ──
+  // Tier 1: per-user (1000 chars/day). Prevents a single heavy user
+  // from burning the whole operator pool in an afternoon. Scope =
+  // user.user_id.
+  // Tier 2: global across all users (8000 chars/day). Keeps ~3000
+  // chars of MiniMax's 11k ceiling available for operator/admin
+  // testing via X-Admin-Token.
+  // Both are CAS so two concurrent /api/tts calls can't both sneak past
+  // the ceiling. charCost is bounded server-side by what MiniMax actually
+  // renders, not what the client sent — after the cleanup pipeline drops
+  // mood tags / translation labels, the remaining text.length is the
+  // billable unit.
+  //
+  // Caveat: D1 has no cross-row transactions. If per-user passes but
+  // global fails, the per-user counter stays inflated by charCost for
+  // this user today. Bounded (~60 chars per hit) and only occurs when
+  // we're already refunding the user's credit, so acceptable.
+  {
+    const userUsage = await db
+      .insert(daily_api_usage)
+      .values({ date: today, api: "tts", scope: user.user_id, count: charCost, updated_at: now })
+      .onConflictDoUpdate({
+        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+        set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
+        setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_PER_USER_CHAR_CAP}`,
+      })
+      .returning({ count: daily_api_usage.count });
+
+    if (userUsage.length === 0) {
+      // Per-user cap hit. Refund the credit so the user isn't punished
+      // for hitting their own ceiling.
+      if (!freePlay) {
+        await db
+          .update(users)
+          .set({ voice_credits: sql`${users.voice_credits} + 1` })
+          .where(eq(users.id, user.user_id));
+        await db.insert(voice_credit_ledger).values({
+          id: crypto.randomUUID(),
+          user_id: user.user_id,
+          delta: 1,
+          reason: "refund_user_cap",
+          session_id: url.searchParams.get("session_id"),
+          created_at: now,
+        });
+      }
+      return c.json({ error: "user_quota_exceeded" }, 429);
     }
-    return c.json({ error: "global_quota_exceeded" }, 429);
+
+    // Skip the global 8000-char cap for Grace — that cap is sized for
+    // the sk-cp- subscription pool, but Grace now bills the sk-api-
+    // pay-as-you-go wallet via a separate MiniMax endpoint. Mixing the
+    // two in the same counter would cause false 429s (wallet still has
+    // headroom but counter says subscription pool is full). Per-user
+    // 1000/day still applies to Grace to bound wallet burn.
+    const usage = speaker === "grace"
+      ? [{ count: charCost }]  // synthetic pass-through, no global tracking
+      : await db
+      .insert(daily_api_usage)
+      .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
+      .onConflictDoUpdate({
+        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+        set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
+        setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_GLOBAL_CHAR_CAP}`,
+      })
+      .returning({ count: daily_api_usage.count });
+
+    if (usage.length === 0) {
+      // Global cap hit. Refund the credit so the user isn't punished.
+      if (!freePlay) {
+        await db
+          .update(users)
+          .set({ voice_credits: sql`${users.voice_credits} + 1` })
+          .where(eq(users.id, user.user_id));
+        await db.insert(voice_credit_ledger).values({
+          id: crypto.randomUUID(),
+          user_id: user.user_id,
+          delta: 1,
+          reason: "refund_global_cap",
+          session_id: url.searchParams.get("session_id"),
+          created_at: now,
+        });
+      }
+      return c.json({ error: "global_quota_exceeded" }, 429);
+    }
   }
 
   // ── 4. Render via MiniMax ──
@@ -2268,7 +2343,9 @@ app.post("/api/generate-media", async (c) => {
   }
   const sessionId = typeof body.session_id === "string" && body.session_id.length > 0 ? body.session_id : null;
 
-  const apiKey = secret.get("MINIMAX_API_KEY");
+  // Media generation (image/music/video) bills through the Coding Plan
+  // subscription, same pool as chat/TTS. MINIMAX_API_KEY is clone-only.
+  const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) return c.json({ error: "missing_secret" }, 500);
 
   // ── 1. CAS decrement (level gate + credit check in one round trip) ──
@@ -2924,6 +3001,137 @@ app.get("/api/admin/messages", async (c) => {
   );
 
   return c.json({ items, limit, offset });
+});
+
+// Allowlist of session email identities trusted to call operator-only
+// voice endpoints (list-voices, voice-preview). Gated via EdgeSpark's
+// path-based auth (`/api/*` already enforces login at the edge) plus
+// this check — no X-Admin-Token dance, per the EdgeSpark principle
+// that secrets must never transit the agent context.
+//
+// Both emails are kept so that (a) the actual project owner can call
+// these from their own browser session, and (b) test-account-driven
+// Playwright runs from future agent sessions still work without code
+// edits. Add new operator emails here as needed.
+const VOICE_ADMIN_OPERATOR_EMAILS = new Set<string>([
+  "yangyihan@youware.com",
+  "gracetest@hailmary.space",
+]);
+
+function isVoiceAdmin(): boolean {
+  if (!auth.isAuthenticated()) return false;
+  const email = (auth.user.email ?? "").toLowerCase();
+  return VOICE_ADMIN_OPERATOR_EMAILS.has(email);
+}
+
+// `/api/admin/clone-voice` used to live here. It was a one-off admin
+// endpoint wrapping MiniMax `/v1/voice_clone` so the operator could
+// register `Rocky_Grace_v2` (and previously `rocky_hailmary_v2`)
+// without ever handling the pay-as-you-go `MINIMAX_API_KEY` directly.
+// Removed after the Grace cameo roster stabilized — keeping it on prod
+// is pointless attack surface since no new clones are planned, and
+// MiniMax's own browser UI remains available if a future clone is
+// needed. See past session `4fd7aa22-...` for the original implementation
+// and the `minimax_api_key_types.md` memory for why clone MUST go
+// through sk-api- and not sk-cp-. [REMOVED 2026-04-25]
+
+// ── GET /api/admin/list-voices ──────────────────────────────────────
+// Diagnostic — list voices registered to the MiniMax pay-as-you-go
+// account (sk-api-*). Cloned voice_ids only appear in the
+// voice_cloning array AFTER their first successful synthesis, per
+// MiniMax docs. This lets us verify a voice_id we think we cloned
+// is actually live.
+//
+// Usage: open in browser while logged in (or fetch via Playwright
+// with credentials:include). Returns the raw MiniMax response.
+app.get("/api/admin/list-voices", async (c) => {
+  if (!isVoiceAdmin()) return c.json({ error: "forbidden" }, 403);
+  const apiKey = secret.get("MINIMAX_API_KEY");
+  if (!apiKey) return c.json({ error: "missing_secret" }, 500);
+
+  const res = await fetch("https://api.minimaxi.com/v1/get_voice", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ voice_type: "all" }),
+  });
+  const json = await res.json().catch(() => null);
+  return c.json({ http_status: res.status, minimax: json });
+});
+
+// ── POST /api/admin/voice-preview ────────────────────────────────────
+// Operator-only preview endpoint. Renders arbitrary text through
+// MiniMax /v1/t2a_v2 using the sk-api- (pay-as-you-go) key, bypassing
+// /api/tts's per-user and global daily caps. Billed against the cash
+// wallet (sees the 9.9 clone fee land here on first use of a cloned
+// voice_id). Use for QA / sanity checks on cloned voices.
+//
+// Request JSON: { voice_id: string, text: string, model?: string }
+// Response: audio/mpeg binary on success, JSON error otherwise.
+app.post("/api/admin/voice-preview", async (c) => {
+  if (!isVoiceAdmin()) return c.json({ error: "forbidden" }, 403);
+  const apiKey = secret.get("MINIMAX_API_KEY");
+  if (!apiKey) return c.json({ error: "missing_secret" }, 500);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    voice_id?: string;
+    text?: string;
+    model?: string;
+  };
+  const voiceId = typeof body.voice_id === "string" ? body.voice_id.trim() : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const model = typeof body.model === "string" && body.model.trim().length > 0
+    ? body.model.trim()
+    : (vars.get("MINIMAX_TTS_MODEL") ?? DEFAULT_TTS_MODEL);
+
+  if (!voiceId || !text) {
+    return c.json({ error: "bad_request", detail: "voice_id and text are required" }, 400);
+  }
+
+  const apiUrl = vars.get("MINIMAX_TTS_API_URL") ?? DEFAULT_TTS_API_URL;
+  const res = await fetch(`${apiUrl}/v1/t2a_v2`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      text,
+      voice_setting: { voice_id: voiceId, speed: 1.0, vol: 1.0, pitch: 0 },
+      audio_setting: {
+        format: "mp3",
+        sample_rate: 44100,
+        bitrate: 128000,
+        channel: 1,
+      },
+    }),
+  });
+
+  const mmJson = (await res.json().catch(() => null)) as
+    | { data?: { audio?: string }; base_resp?: { status_code?: number; status_msg?: string } }
+    | null;
+  const statusCode = mmJson?.base_resp?.status_code;
+  const hexAudio = mmJson?.data?.audio;
+  if (!res.ok || statusCode !== 0 || !hexAudio) {
+    return c.json({ error: "preview_failed", http_status: res.status, minimax: mmJson }, 502);
+  }
+  // MiniMax returns hex-encoded MP3 in data.audio. Decode and pipe as
+  // audio/mpeg so the browser can play it directly.
+  const bytes = new Uint8Array(hexAudio.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hexAudio.substr(i * 2, 2), 16);
+  }
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": "audio/mpeg",
+      "Content-Length": String(bytes.length),
+      "X-Voice-Id": voiceId,
+    },
+  });
 });
 
 export default app;
