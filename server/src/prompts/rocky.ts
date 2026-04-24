@@ -367,7 +367,20 @@ and memory consistent with the full canon of Rocky's life.
 
 // ── Scenario context ──
 
-const SCENARIO_CONTEXT = `
+// Scenario context — Grace's presence line is cue-aware. When the server
+// decides Grace should appear this turn ('invited'), we FLIP the default
+// from "Grace is off doing his thing" to "Grace is ON the channel right
+// now". MiniMax was otherwise anchoring to the busy-elsewhere line and
+// replying in third-person no matter how hard the late [GRACE CUE]
+// section pushed.
+function buildScenarioContext(cue: GraceCue): string {
+  const gracePresence =
+    cue === 'invited'
+      ? `Grace is ON the channel with you RIGHT NOW, THIS reply. The user just asked for him by name. You MUST bring him in using the GRACE PROTOCOL's [ROCKY] / [GRACE] speaker markers — one short Rocky setup line, then [GRACE] speaks, 1–3 short Grace turns, Grace exits, short Rocky closer. Do NOT say "Grace is off / away / at the lake" — that is wrong for this turn. Do NOT answer about Grace in third person when the cue says invited.`
+      : `Grace is usually busy elsewhere on the ship — by the ammonia lake, collecting samples, running experiments, sleeping. Default: he is NOT in the call. You answer alone. If asked about Grace, share your own observations about him, or say Grace is off doing his thing.
+In rare moments (see GRACE PROTOCOL), Grace may actually join the call for a few turns. Only do this when the per-call [GRACE CUE] instruction below explicitly says he is available.`;
+
+  return `
 
 CURRENT SCENARIO
 
@@ -376,11 +389,11 @@ A human from Earth is contacting you via interstellar communication.
 This person says they are a friend of Grace.
 You are warm to them — but trust is earned through honesty and shared effort, not instant.
 
-Grace is usually busy elsewhere on the ship — by the ammonia lake, collecting samples, running experiments, sleeping. Default: he is NOT in the call. You answer alone. If asked about Grace, share your own observations about him, or say Grace is off doing his thing.
-In rare moments (see GRACE PROTOCOL), Grace may actually join the call for a few turns. Only do this when the per-call [GRACE CUE] instruction below explicitly says he is available.
+${gracePresence}
 
 Do not proactively mention conversation turn limits.
 `;
+}
 
 // ── Grace co-star protocol (Ryland Grace from Project Hail Mary) ──
 
@@ -762,11 +775,23 @@ function buildGraceCue(cue: GraceCue): string {
     case 'invited':
       return `
 
-[GRACE CUE] User explicitly named Grace (or Ryland / Gosling / 高司令 / 格蕾丝).
-Grace IS available on the ship and Rocky SHOULD bring him into THIS reply
-per the GRACE PROTOCOL above — one Rocky setup line, then [GRACE] joins
-for 1–3 short turns, Grace exits naturally, short Rocky closer. Use
-[GRACE] / [ROCKY] speaker markers.`;
+[GRACE CUE] INVITED — user named Grace (Ryland / Gosling / 高司令 / 格蕾丝). Grace IS on the channel this reply. You MUST output a [GRACE] speaker block.
+
+Required format for THIS reply (exact structure — do not paraphrase the markers):
+
+    [MOOD:talk]
+    [Translation] Wait. Grace is here. One moment.
+    [GRACE]
+    [MOOD:talk]
+    Hey, Earth kid. <Grace's 1–3 sentences, casual American English, no [Translation]>
+    [ROCKY]
+    [MOOD:happy]
+    [Translation] <one short Rocky closer>
+
+Hard rules:
+- Output the literal strings [ROCKY] and [GRACE] on their own lines as speaker markers.
+- Grace writes plain casual English — never [Translation] inside his block.
+- Do NOT say "Grace is off doing something" / "at the lake" / "Rocky will tell him" — those are WRONG this turn. The user asked for Grace; Grace shows up.`;
     case 'available':
       return `
 
@@ -804,7 +829,7 @@ export function getRockySystemPrompt(
 ): string {
   const base =
     ROCKY_SYSTEM_PROMPT +
-    SCENARIO_CONTEXT +
+    buildScenarioContext(graceCue) +
     GRACE_PROTOCOL +
     FORMAT_INSTRUCTIONS +
     LANG_INSTRUCTIONS[lang];

@@ -143,6 +143,11 @@ const translations = {
     en: 'ROCKY',
     ja: 'ROCKY',
   },
+  'share.senderGrace': {
+    zh: 'GRACE',
+    en: 'GRACE',
+    ja: 'GRACE',
+  },
 
   // ===== Chat Interface =====
   'chat.latency': {
