@@ -290,9 +290,9 @@ const translations = {
     ja: 'このお気に入りを削除？',
   },
   'chat.favoritesRemoveConfirmDesc': {
-    zh: '删除后无法恢复，但你可以重新收藏同一句话。',
-    en: 'Once removed, this favorite is gone — but you can favorite the same line again later.',
-    ja: '削除すると元に戻せないけど、同じセリフをまたお気に入りに入れることはできるよ。',
+    zh: '删除后这条收藏将永久消失，无法恢复。',
+    en: 'This favorite will be permanently removed.',
+    ja: 'このお気に入りは完全に削除され、元に戻せません。',
   },
   'chat.favoritesRemoveConfirmYes': {
     zh: '删除',
