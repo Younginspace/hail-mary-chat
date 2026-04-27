@@ -91,6 +91,12 @@ export default function ChatInterface({
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
+  // AbortController for the most recent in-flight /api/tts fetch behind
+  // a Play tap. Without this, rapidly tapping Play on different blocks
+  // would race two concurrent pipelines past `await fetch(...)`, both
+  // constructing Audio elements that played simultaneously. Each new
+  // play aborts the previous fetch + rejects stale post-await commits.
+  const playbackRequestRef = useRef<AbortController | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const chatPaneRef = useRef<HTMLDivElement>(null);
@@ -242,11 +248,14 @@ export default function ChatInterface({
     });
   }, []);
 
-  // Stop any per-message playback on unmount.
+  // Stop any per-message playback on unmount, plus abort any in-flight
+  // TTS fetch so it doesn't race a re-mount.
   useEffect(() => {
     return () => {
       playbackAudioRef.current?.pause();
       playbackAudioRef.current = null;
+      playbackRequestRef.current?.abort();
+      playbackRequestRef.current = null;
     };
   }, []);
 
@@ -280,14 +289,23 @@ export default function ChatInterface({
       const key = `${msg.id}#${blockIdx}`;
       // Toggle-off if this exact block's audio is currently playing.
       if (playingKey === key) {
+        playbackRequestRef.current?.abort();
+        playbackRequestRef.current = null;
         playbackAudioRef.current?.pause();
         playbackAudioRef.current = null;
         setPlayingKey(null);
         return;
       }
-      // Stop auto-TTS + any other manual clip first so only one thing plays.
+      // Different block — kill any in-flight fetch + current playback,
+      // plus auto-TTS, so only the new pipeline survives. Without the
+      // abort, rapid taps on different blocks would overlap audio.
+      playbackRequestRef.current?.abort();
       stopTTS();
       playbackAudioRef.current?.pause();
+      playbackAudioRef.current = null;
+
+      const ctrl = new AbortController();
+      playbackRequestRef.current = ctrl;
 
       const block = getBlock(msg, blockIdx);
       if (!block) return;
@@ -315,10 +333,14 @@ export default function ChatInterface({
         const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgIdParam}${speakerParam}`;
         let res: Response;
         try {
-          res = await fetch(url, { credentials: 'include' });
-        } catch {
+          res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
+        } catch (err) {
+          if ((err as Error).name === 'AbortError') return;
           return;
         }
+        // Stale-result guard: a newer tap may have replaced the ref
+        // mid-flight. Drop everything before touching audio state.
+        if (playbackRequestRef.current !== ctrl) return;
         if (res.status === 402) {
           setVoiceCredits(0);
           setVoiceEnabled(false);
@@ -331,8 +353,15 @@ export default function ChatInterface({
         if (!res.ok) return;
 
         const blob = await res.blob();
+        if (playbackRequestRef.current !== ctrl) return;
         blobUrl = URL.createObjectURL(blob);
         src = blobUrl;
+      }
+
+      // Final guard before binding the Audio element.
+      if (playbackRequestRef.current !== ctrl) {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        return;
       }
 
       const audio = new Audio(src);
@@ -344,6 +373,7 @@ export default function ChatInterface({
           playbackAudioRef.current = null;
           setPlayingKey((cur) => (cur === key ? null : cur));
         }
+        if (playbackRequestRef.current === ctrl) playbackRequestRef.current = null;
       };
       audio.onended = cleanup;
       audio.onerror = cleanup;
@@ -519,6 +549,18 @@ export default function ChatInterface({
     : [];
 
   // Close export menu on outside click / ESC
+  // Escape closes the End-call confirmation modal. Mirrors the
+  // FavoritesScreen delete modal (added in the same commit) so any
+  // hangup-confirm dialog in the app responds the same way to ESC.
+  useEffect(() => {
+    if (!hangupConfirmOpen) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setHangupConfirmOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [hangupConfirmOpen]);
+
   useEffect(() => {
     if (!exportOpen) return;
     const onDocClick = (e: MouseEvent) => {
