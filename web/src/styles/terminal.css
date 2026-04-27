@@ -3259,22 +3259,6 @@ body {
 .favorite-row-actions button:hover { border-color: #00d4aa; color: #00d4aa; }
 /* Press feedback per emil — buttons must feel responsive on tap. */
 .favorite-row-actions button:active { transform: scale(0.94); }
-/* Armed delete state — first ✕ tap turns the button red and pulses
-   subtly so the user can see they're one tap away from committing.
-   Second tap (or other actions in handleRemoveClick) reverts. */
-.favorite-row-actions .fav-remove-armed {
-  border-color: #ff7878;
-  color: #ff7878;
-  background: rgba(255, 100, 100, 0.12);
-  animation: fav-remove-armed-pulse 1.2s ease-in-out infinite;
-}
-@keyframes fav-remove-armed-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 100, 100, 0.0); }
-  50%      { box-shadow: 0 0 0 4px rgba(255, 100, 100, 0.18); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .favorite-row-actions .fav-remove-armed { animation: none; }
-}
 .favorite-row-actions .fav-remove:hover { border-color: #ff8080; color: #ff8080; background: rgba(255, 128, 128, 0.08); }
 .favorite-row-actions .fav-play.playing {
   background: #00d4aa;

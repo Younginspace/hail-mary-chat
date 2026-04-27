@@ -281,13 +281,28 @@ const translations = {
     en: 'Remove',
     ja: '削除',
   },
-  // Tooltip + aria-label when the ✕ is "armed" — first tap arms,
-  // second tap within 3s commits. Phrasing tells the user "you've
-  // already pressed once, press again to actually delete."
-  'chat.favoritesRemoveConfirm': {
-    zh: '再点一次确认删除',
-    en: 'Tap again to confirm',
-    ja: 'もう一度タップで削除',
+  // Modal confirm shown when the user taps ✕ on a favorite. Reuses
+  // the End-call (.hangup-confirm-*) styling for consistent
+  // destructive-action UX.
+  'chat.favoritesRemoveConfirmTitle': {
+    zh: '删除这条收藏？',
+    en: 'Remove this favorite?',
+    ja: 'このお気に入りを削除？',
+  },
+  'chat.favoritesRemoveConfirmDesc': {
+    zh: '删除后无法恢复，但你可以重新收藏同一句话。',
+    en: 'Once removed, this favorite is gone — but you can favorite the same line again later.',
+    ja: '削除すると元に戻せないけど、同じセリフをまたお気に入りに入れることはできるよ。',
+  },
+  'chat.favoritesRemoveConfirmYes': {
+    zh: '删除',
+    en: 'Remove',
+    ja: '削除',
+  },
+  'chat.favoritesRemoveConfirmNo': {
+    zh: '取消',
+    en: 'Cancel',
+    ja: 'キャンセル',
   },
 
   // ===== Affinity levels (Rocky persona names — kept English) =====

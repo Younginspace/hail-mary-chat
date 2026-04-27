@@ -35,14 +35,12 @@ export default function FavoritesScreen({ onBack }: Props) {
   const { lang } = useLang();
   const [items, setItems] = useState<FavoriteRow[] | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
-  // Two-step delete: clicking ✕ once "arms" the row (red border on the
-  // button); a second click within DELETE_ARM_TIMEOUT_MS commits. Tap
-  // anywhere else / time out → revert. Cheap accidental-tap guard
-  // without dragging in a modal.
-  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
+  // Modal-based delete confirmation, mirroring the End-call flow.
+  // Holds the row pending confirmation (or null when the modal is
+  // closed). Reuses .hangup-confirm-* styles so the visual language
+  // for "destructive confirmation" is consistent across the app.
+  const [pendingDelete, setPendingDelete] = useState<FavoriteRow | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const armResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const DELETE_ARM_TIMEOUT_MS = 3000;
 
   useEffect(() => {
     fetchFavorites().then((res) => setItems(res?.items ?? []));
@@ -52,23 +50,8 @@ export default function FavoritesScreen({ onBack }: Props) {
     return () => {
       audioRef.current?.pause();
       audioRef.current = null;
-      if (armResetTimer.current) clearTimeout(armResetTimer.current);
     };
   }, []);
-
-  // Click anywhere outside the armed row's delete button → revert.
-  useEffect(() => {
-    if (!armedDeleteId) return;
-    const onPointer = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null;
-      // Don't disarm when the click was on a fav-remove button — the
-      // row's own onClick handler decides commit vs disarm.
-      if (target?.closest('.fav-remove')) return;
-      setArmedDeleteId(null);
-    };
-    document.addEventListener('pointerdown', onPointer, true);
-    return () => document.removeEventListener('pointerdown', onPointer, true);
-  }, [armedDeleteId]);
 
   const play = useCallback(async (fav: FavoriteRow) => {
     if (playingId === fav.id) {
@@ -138,40 +121,28 @@ export default function FavoritesScreen({ onBack }: Props) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   }, []);
 
-  // Click flow on the ✕ button:
-  //   1st click → arm this row (red ✕, 3s timeout)
-  //   2nd click while armed → actual delete
-  //   click outside / 3s timeout → disarm silently
-  const handleRemoveClick = useCallback(
-    (fav: FavoriteRow) => {
-      if (armedDeleteId !== fav.id) {
-        // Arm this row.
-        if (armResetTimer.current) clearTimeout(armResetTimer.current);
-        setArmedDeleteId(fav.id);
-        armResetTimer.current = setTimeout(() => {
-          setArmedDeleteId(null);
-          armResetTimer.current = null;
-        }, DELETE_ARM_TIMEOUT_MS);
-        return;
-      }
-      // Armed → commit.
-      if (armResetTimer.current) {
-        clearTimeout(armResetTimer.current);
-        armResetTimer.current = null;
-      }
-      setArmedDeleteId(null);
-      void (async () => {
-        if (playingId === fav.id) {
-          audioRef.current?.pause();
-          audioRef.current = null;
-          setPlayingId(null);
-        }
-        const ok = await removeFavorite(fav.id);
-        if (ok) setItems((xs) => xs?.filter((x) => x.id !== fav.id) ?? null);
-      })();
-    },
-    [armedDeleteId, playingId],
-  );
+  // ✕ on a row opens the confirm modal. The actual delete happens in
+  // confirmDelete(), wired to the modal's Confirm button.
+  const requestDelete = useCallback((fav: FavoriteRow) => {
+    setPendingDelete(fav);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    setPendingDelete(null);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const fav = pendingDelete;
+    if (!fav) return;
+    setPendingDelete(null);
+    if (playingId === fav.id) {
+      audioRef.current?.pause();
+      audioRef.current = null;
+      setPlayingId(null);
+    }
+    const ok = await removeFavorite(fav.id);
+    if (ok) setItems((xs) => xs?.filter((x) => x.id !== fav.id) ?? null);
+  }, [pendingDelete, playingId]);
 
   return (
     <div className="immersive-root chat-shell view-chat">
@@ -262,18 +233,10 @@ export default function FavoritesScreen({ onBack }: Props) {
                     </button>
                     <button
                       type="button"
-                      className={`fav-remove${armedDeleteId === fav.id ? ' fav-remove-armed' : ''}`}
-                      onClick={() => handleRemoveClick(fav)}
-                      title={
-                        armedDeleteId === fav.id
-                          ? t('chat.favoritesRemoveConfirm', lang)
-                          : t('chat.favoritesRemove', lang)
-                      }
-                      aria-label={
-                        armedDeleteId === fav.id
-                          ? t('chat.favoritesRemoveConfirm', lang)
-                          : t('chat.favoritesRemove', lang)
-                      }
+                      className="fav-remove"
+                      onClick={() => requestDelete(fav)}
+                      title={t('chat.favoritesRemove', lang)}
+                      aria-label={t('chat.favoritesRemove', lang)}
                     >
                       ✕
                     </button>
@@ -284,6 +247,41 @@ export default function FavoritesScreen({ onBack }: Props) {
           </div>
         )}
       </div>
+
+      {pendingDelete && (
+        <div
+          className="hangup-confirm-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={cancelDelete}
+        >
+          <div className="hangup-confirm-box" onClick={(e) => e.stopPropagation()}>
+            <div className="hangup-confirm-title">
+              {t('chat.favoritesRemoveConfirmTitle', lang)}
+            </div>
+            <div className="hangup-confirm-desc">
+              {t('chat.favoritesRemoveConfirmDesc', lang)}
+            </div>
+            <div className="hangup-confirm-actions">
+              <button
+                type="button"
+                className="hangup-confirm-cancel"
+                onClick={cancelDelete}
+                autoFocus
+              >
+                {t('chat.favoritesRemoveConfirmNo', lang)}
+              </button>
+              <button
+                type="button"
+                className="hangup-confirm-ok"
+                onClick={confirmDelete}
+              >
+                {t('chat.favoritesRemoveConfirmYes', lang)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
