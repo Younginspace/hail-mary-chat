@@ -581,16 +581,26 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
 export async function runConsolidationJob(session_id: string): Promise<void> {
   const now = Date.now();
 
-  // Concurrency gate. Three call paths converge here for the same
-  // session (explicit /session/end, sweep, retryStuck). Without this,
-  // a transient extractor outage can burn through MAX_CONSOLIDATION_
-  // ATTEMPTS in seconds because each concurrent invocation increments
-  // attempts independently. Skip if:
+  // Concurrency gate (probabilistic, not atomic — see below).
+  // Three call paths converge here for the same session_id: explicit
+  // /session/end, sweep, and retryStuck. Without ANY gate, a transient
+  // extractor outage burns through MAX_CONSOLIDATION_ATTEMPTS in
+  // seconds because each concurrent invocation increments attempts
+  // independently. Skip if:
   //   - already 'done' — idempotent no-op
   //   - 'running' for less than CONCURRENT_JOB_LOCKOUT_MS — assume
   //     another invocation is in flight; let it finish + write the
   //     terminal status. Stuck-running rows older than the lockout
-  //     are picked up by retryStuckConsolidationJobs.
+  //     are picked up by retryStuckConsolidationJobs (which now uses
+  //     the same constant so the windows abut, no dead-zone).
+  //
+  // Honest note: the read↔upsert window is not atomic. Two truly-
+  // simultaneous first-time invocations (no row yet) can both pass
+  // this guard and both increment attempts. After PR #27's CAS on
+  // /session/end and on the sweeps, the practical window is narrow
+  // (only retryStuck vs sweep, vs first-call /session/end can hit
+  // it) but non-zero. The MAX 3 → 5 bump is the explicit safety net
+  // for that residual race.
   const existing = await db
     .select({
       status: consolidation_jobs.status,
@@ -675,7 +685,13 @@ export async function runConsolidationJob(session_id: string): Promise<void> {
 // and upserts rapport, and memory inserts go through dedup via the
 // existingMems forget/supersedes pass in the same call.
 export async function retryStuckConsolidationJobs(
-  olderThanMs = 10 * 60 * 1000,
+  // Default aligned with CONCURRENT_JOB_LOCKOUT_MS so the two windows
+  // abut: runConsolidationJob's guard treats a 'running' row as
+  // in-flight for CONCURRENT_JOB_LOCKOUT_MS, after which retryStuck
+  // immediately picks it up. Earlier asymmetry (5min lockout vs 10min
+  // retryStuck) left a 5-min hole where neither path acted on a Worker
+  // crash mid-job.
+  olderThanMs = CONCURRENT_JOB_LOCKOUT_MS,
   limit = 25
 ): Promise<{ retried: number }> {
   const cutoff = Date.now() - olderThanMs;
