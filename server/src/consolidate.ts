@@ -22,8 +22,13 @@ import {
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 // How many attempts we'll give a single session before flagging the
-// job as failed (dead letter). 3 matches plan §7.
-const MAX_CONSOLIDATION_ATTEMPTS = 3;
+// job as failed (dead letter). Bumped from 3 → 5 because the new
+// stale-session sweep + /session/end racing the same job can burn
+// through attempts faster than they should during a transient
+// upstream (MiniMax) outage. Concurrency guard at the top of
+// runConsolidationJob also helps but isn't a perfect fence; the
+// extra headroom is the safety net.
+const MAX_CONSOLIDATION_ATTEMPTS = 5;
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -41,16 +46,27 @@ const EXTRACTION_MAX_TOKENS = 600;
 // eligible for the new sweep. Old data stays where it is; the next
 // session a returning user starts (post-cutoff) gets the new behavior.
 //
-// Picked as 2026-04-28 00:00 UTC — comfortably past the actual deploy
-// time so any in-flight session at the moment of deploy is also
-// excluded. Sessions started >= 2026-04-28 are eligible for sweep.
-const STALE_SWEEP_CUTOFF_MS = 1778025600000; // 2026-04-28 00:00 UTC
+// 2026-04-28 00:00 UTC = 1777334400000.
+// (Earlier version used 1778025600000 which is actually 2026-05-06 —
+//  off by 8 days. Sweep was silently dead until that fix.) The
+//  module-load log below makes any future arithmetic regression loud.
+const STALE_SWEEP_CUTOFF_MS = 1777334400000; // 2026-04-28 00:00 UTC
+console.info(`[consolidate] stale sweep cutoff = ${new Date(STALE_SWEEP_CUTOFF_MS).toISOString()}`);
 
 // Sessions with no activity for this long are treated as ended by the
 // server-side sweep. Tuned to be generous (a user pondering a reply
 // for 10 minutes shouldn't get prematurely consolidated) but tight
 // enough that closed-tab orphans get picked up the same day.
 const STALE_IDLE_MS = 30 * 60 * 1000; // 30 minutes
+
+// If a consolidation_jobs row is in 'running' state and was touched
+// within this window, runConsolidationJob assumes another invocation
+// is in flight and skips. Without this guard, three call paths can
+// concurrently invoke runConsolidationJob for the same session
+// (explicit /session/end, sweep, retryStuck), each incrementing
+// attempts independently, so a transient extractor failure can burn
+// through MAX attempts in seconds.
+const CONCURRENT_JOB_LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 const EXTRACTION_SYSTEM_PROMPT = `You are the memory consolidator for a 3D alien character named Rocky (from the novel "Project Hail Mary") who has just finished an interstellar comm call with a human friend. Your job: read the raw conversation and extract structured memory Rocky will use in future calls to remember this friend.
 
@@ -564,6 +580,33 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
 // admin endpoint to retry.
 export async function runConsolidationJob(session_id: string): Promise<void> {
   const now = Date.now();
+
+  // Concurrency gate. Three call paths converge here for the same
+  // session (explicit /session/end, sweep, retryStuck). Without this,
+  // a transient extractor outage can burn through MAX_CONSOLIDATION_
+  // ATTEMPTS in seconds because each concurrent invocation increments
+  // attempts independently. Skip if:
+  //   - already 'done' — idempotent no-op
+  //   - 'running' for less than CONCURRENT_JOB_LOCKOUT_MS — assume
+  //     another invocation is in flight; let it finish + write the
+  //     terminal status. Stuck-running rows older than the lockout
+  //     are picked up by retryStuckConsolidationJobs.
+  const existing = await db
+    .select({
+      status: consolidation_jobs.status,
+      updated_at: consolidation_jobs.updated_at,
+    })
+    .from(consolidation_jobs)
+    .where(eq(consolidation_jobs.session_id, session_id))
+    .limit(1);
+  if (existing.length > 0) {
+    const row = existing[0];
+    if (row.status === "done") return;
+    if (row.status === "running" && now - row.updated_at < CONCURRENT_JOB_LOCKOUT_MS) {
+      console.info(`runConsolidationJob: skipping ${session_id} — concurrent invocation in flight (updated ${now - row.updated_at}ms ago)`);
+      return;
+    }
+  }
 
   // Upsert: if a prior attempt failed and this is a retry, bump attempts.
   // ON CONFLICT path captures both "first time" and "retry after prior

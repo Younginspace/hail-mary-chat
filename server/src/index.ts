@@ -939,13 +939,40 @@ app.post("/api/session/end", async (c) => {
     .catch(() => ({} as { session_id?: string }));
   if (!body.session_id) return c.json({ error: "missing session_id" }, 400);
 
+  // CAS on ended_at IS NULL — if the stale-session sweep already
+  // closed this session in the background, the UPDATE returns zero
+  // rows and we skip queueing a duplicate consolidation. Without
+  // this gate, both the sweep AND this explicit end can call
+  // runConsolidationJob concurrently for the same session, racing
+  // the attempts counter and burning through MAX during a transient
+  // upstream outage. Idempotent response so the client doesn't see
+  // a spurious failure when the sweep happened to win.
   const result = await db
     .update(sessions)
     .set({ ended_at: Date.now() })
-    .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user.user_id)))
+    .where(
+      and(
+        eq(sessions.id, body.session_id),
+        eq(sessions.user_id, user.user_id),
+        isNull(sessions.ended_at)
+      )
+    )
     .returning({ id: sessions.id });
 
-  if (result.length === 0) return c.json({ error: "session not found" }, 404);
+  if (result.length === 0) {
+    // Two cases hit this path: (a) session truly doesn't exist or
+    // belongs to a different user, (b) sweep already closed it.
+    // Distinguish with one extra read so we can still 404 the
+    // genuinely-missing case while making the already-closed case
+    // a clean no-op for the client.
+    const exists = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(eq(sessions.id, body.session_id), eq(sessions.user_id, user.user_id)))
+      .limit(1);
+    if (exists.length === 0) return c.json({ error: "session not found" }, 404);
+    return c.json({ ok: true, already_ended: true });
+  }
 
   // Wrapped in a consolidation_jobs-backed job — errors are persisted
   // as failed/pending rows rather than silently logged. No need to
