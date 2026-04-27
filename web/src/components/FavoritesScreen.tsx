@@ -41,6 +41,14 @@ export default function FavoritesScreen({ onBack }: Props) {
   // for "destructive confirmation" is consistent across the app.
   const [pendingDelete, setPendingDelete] = useState<FavoriteRow | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Abort controller for the most recent in-flight /api/tts fetch.
+  // Rapidly tapping different favorites used to create multiple
+  // overlapping pipelines: each `await fetch(...)` would resolve
+  // independently, each constructing its own Audio element, and the
+  // user heard several voices at once. Now every new play() aborts
+  // the previous fetch and the post-await guard discards stale
+  // results before they can bind audio.
+  const playRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchFavorites().then((res) => setItems(res?.items ?? []));
@@ -50,17 +58,44 @@ export default function FavoritesScreen({ onBack }: Props) {
     return () => {
       audioRef.current?.pause();
       audioRef.current = null;
+      playRequestRef.current?.abort();
+      playRequestRef.current = null;
     };
   }, []);
 
+  // Escape closes the delete-confirm modal. Same pattern as the End-
+  // call confirm in ChatInterface — backdrop click + ESC + Cancel
+  // button all dismiss; only Confirm commits.
+  useEffect(() => {
+    if (!pendingDelete) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setPendingDelete(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pendingDelete]);
+
   const play = useCallback(async (fav: FavoriteRow) => {
+    // Toggle off if the same favorite is currently playing.
     if (playingId === fav.id) {
+      playRequestRef.current?.abort();
+      playRequestRef.current = null;
       audioRef.current?.pause();
       audioRef.current = null;
       setPlayingId(null);
       return;
     }
+
+    // Different favorite (or a fresh tap on an idle row) — kill any
+    // in-flight fetch AND any currently-playing audio before starting
+    // a new pipeline. The abort + token-guard combo eliminates the
+    // overlapping-audio race users were hitting on rapid taps.
+    playRequestRef.current?.abort();
     audioRef.current?.pause();
+    audioRef.current = null;
+
+    const ctrl = new AbortController();
+    playRequestRef.current = ctrl;
 
     // Echo-sourced favorites are backed by a pre-rendered MP3 in
     // /audio/defaults/. Those files never pass through /api/tts so the
@@ -74,15 +109,33 @@ export default function FavoritesScreen({ onBack }: Props) {
       src = staticPath;
     } else {
       // speaker=grace routes to the cloned Gosling voice. Without this,
-      // Grace favorites silently render with Rocky's voice (the bug
-      // this commit fixes — see PR description).
+      // Grace favorites silently render with Rocky's voice.
       const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
       const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
-      const res = await fetch(url, { credentials: 'include' });
-      if (!res.ok) return;
-      const blob = await res.blob();
-      blobUrl = URL.createObjectURL(blob);
-      src = blobUrl;
+      try {
+        const res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
+        // Stale-result check: the user may have tapped another row while
+        // this fetch was in flight. If a newer request has taken the
+        // ref slot, drop everything.
+        if (playRequestRef.current !== ctrl) return;
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (playRequestRef.current !== ctrl) return;
+        blobUrl = URL.createObjectURL(blob);
+        src = blobUrl;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        return;
+      }
+    }
+
+    // Final guard before binding the Audio element. Two reasons we may
+    // be stale here: (1) the static-path branch ran sync but a newer
+    // play() already started and replaced the ref, (2) belt-and-suspenders
+    // for the fetch branch above.
+    if (playRequestRef.current !== ctrl) {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      return;
     }
 
     const audio = new Audio(src);
@@ -94,6 +147,7 @@ export default function FavoritesScreen({ onBack }: Props) {
         audioRef.current = null;
         setPlayingId(null);
       }
+      if (playRequestRef.current === ctrl) playRequestRef.current = null;
     };
     audio.onended = cleanup;
     audio.onerror = cleanup;
