@@ -3104,11 +3104,116 @@ body {
   padding: 12px 14px;
   background: rgba(5, 14, 18, 0.55);
   border: 1px solid rgba(0, 212, 170, 0.18);
+  border-left: 3px solid rgba(0, 212, 170, 0.5);
   border-radius: 6px;
+  /* Stagger entrance, decorative — short delays per emil principles. */
+  opacity: 0;
+  transform: translateY(8px);
+  animation: fav-row-in 280ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  animation-delay: var(--fav-stagger, 0ms);
+  /* Hover drift — small horizontal shift signals "interactive" without
+     borrowing the heavier scale/glow patterns reserved for buttons. */
+  transition:
+    transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+@keyframes fav-row-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .favorite-row:hover {
+    transform: translateX(2px);
+    background: rgba(5, 14, 18, 0.75);
+    border-color: rgba(0, 212, 170, 0.32);
+  }
+}
+/* Grace favorites get the warm amber palette — matches .message.grace
+   in chat so the visual identity carries across screens. */
+.favorite-row-grace {
+  border-color: rgba(216, 176, 128, 0.22);
+  border-left-color: var(--accent-warm);
+}
+@media (hover: hover) and (pointer: fine) {
+  .favorite-row-grace:hover {
+    border-color: rgba(216, 176, 128, 0.4);
+  }
+}
+/* Subtle pulse on the playing row — opacity-only so prefers-reduced-motion
+   users still get the visual signal without movement. */
+.favorite-row-playing {
+  animation:
+    fav-row-in 280ms cubic-bezier(0.23, 1, 0.32, 1) forwards,
+    fav-row-pulse 1800ms ease-in-out infinite 280ms;
+}
+@keyframes fav-row-pulse {
+  0%, 100% { background: rgba(5, 14, 18, 0.55); }
+  50%      { background: rgba(0, 212, 170, 0.10); }
+}
+.favorite-row-grace.favorite-row-playing {
+  animation:
+    fav-row-in 280ms cubic-bezier(0.23, 1, 0.32, 1) forwards,
+    fav-row-pulse-grace 1800ms ease-in-out infinite 280ms;
+}
+@keyframes fav-row-pulse-grace {
+  0%, 100% { background: rgba(5, 14, 18, 0.55); }
+  50%      { background: rgba(216, 176, 128, 0.10); }
 }
 .favorite-row-body {
   flex: 1;
   min-width: 0;
+}
+.favorite-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: rgba(214, 241, 233, 0.5);
+  letter-spacing: 0.4px;
+}
+.favorite-meta-sep {
+  opacity: 0.45;
+}
+.favorite-speaker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.favorite-speaker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.favorite-speaker-rocky {
+  color: var(--accent-cyan-dim);
+}
+.favorite-speaker-rocky .favorite-speaker-dot {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 4px rgba(0, 212, 170, 0.4);
+}
+.favorite-speaker-grace {
+  color: var(--accent-warm-dim);
+}
+.favorite-speaker-grace .favorite-speaker-dot {
+  background: var(--accent-warm);
+  box-shadow: 0 0 4px rgba(216, 176, 128, 0.4);
+}
+.favorite-when {
+  color: rgba(214, 241, 233, 0.5);
+}
+.favorite-mood {
+  color: rgba(214, 241, 233, 0.4);
+  font-style: italic;
 }
 .favorite-row-text {
   color: rgba(214, 241, 233, 0.86);
@@ -3116,12 +3221,17 @@ body {
   line-height: 1.55;
   word-break: break-word;
 }
-.favorite-row-meta {
-  margin-top: 6px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10.5px;
-  color: rgba(214, 241, 233, 0.42);
-  letter-spacing: 0.4px;
+@media (prefers-reduced-motion: reduce) {
+  .favorite-row,
+  .favorite-row-playing,
+  .favorite-row-grace.favorite-row-playing {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .favorite-row:hover {
+    transform: none;
+  }
 }
 .favorite-row-actions {
   display: flex;
@@ -3140,9 +3250,15 @@ body {
   color: rgba(214, 241, 233, 0.7);
   border-radius: 50%;
   cursor: pointer;
-  transition: var(--tx-smooth-150);
+  transition:
+    border-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .favorite-row-actions button:hover { border-color: #00d4aa; color: #00d4aa; }
+/* Press feedback per emil — buttons must feel responsive on tap. */
+.favorite-row-actions button:active { transform: scale(0.94); }
 .favorite-row-actions .fav-remove:hover { border-color: #ff8080; color: #ff8080; background: rgba(255, 128, 128, 0.08); }
 .favorite-row-actions .fav-play.playing {
   background: #00d4aa;

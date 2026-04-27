@@ -281,6 +281,29 @@ const translations = {
     en: 'Remove',
     ja: '削除',
   },
+  // Modal confirm shown when the user taps ✕ on a favorite. Reuses
+  // the End-call (.hangup-confirm-*) styling for consistent
+  // destructive-action UX.
+  'chat.favoritesRemoveConfirmTitle': {
+    zh: '删除这条收藏？',
+    en: 'Remove this favorite?',
+    ja: 'このお気に入りを削除？',
+  },
+  'chat.favoritesRemoveConfirmDesc': {
+    zh: '删除后这条收藏将永久消失，无法恢复。',
+    en: 'This favorite will be permanently removed.',
+    ja: 'このお気に入りは完全に削除され、元に戻せません。',
+  },
+  'chat.favoritesRemoveConfirmYes': {
+    zh: '删除',
+    en: 'Remove',
+    ja: '削除',
+  },
+  'chat.favoritesRemoveConfirmNo': {
+    zh: '取消',
+    en: 'Cancel',
+    ja: 'キャンセル',
+  },
 
   // ===== Affinity levels (Rocky persona names — kept English) =====
   'level.1.name': { zh: 'Earth Signal', en: 'Earth Signal', ja: 'Earth Signal' },

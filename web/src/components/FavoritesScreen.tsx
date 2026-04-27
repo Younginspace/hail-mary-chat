@@ -17,19 +17,29 @@ interface Props {
   onBack: () => void;
 }
 
+// Absolute YYYY-MM-DD HH:mm — language-independent, terminal-aesthetic,
+// unambiguous. Earlier version used relative time ("2 days ago") but
+// users found it too fuzzy for log-style content (favorites are
+// memorable moments — exact timestamps help recall).
 function formatWhen(ts: number): string {
   const d = new Date(ts);
+  const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   const hh = String(d.getHours()).padStart(2, '0');
   const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd} ${hh}:${mi}`;
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
 export default function FavoritesScreen({ onBack }: Props) {
   const { lang } = useLang();
   const [items, setItems] = useState<FavoriteRow[] | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  // Modal-based delete confirmation, mirroring the End-call flow.
+  // Holds the row pending confirmation (or null when the modal is
+  // closed). Reuses .hangup-confirm-* styles so the visual language
+  // for "destructive confirmation" is consistent across the app.
+  const [pendingDelete, setPendingDelete] = useState<FavoriteRow | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -63,7 +73,11 @@ export default function FavoritesScreen({ onBack }: Props) {
     if (staticPath) {
       src = staticPath;
     } else {
-      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+      // speaker=grace routes to the cloned Gosling voice. Without this,
+      // Grace favorites silently render with Rocky's voice (the bug
+      // this commit fixes — see PR description).
+      const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
+      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) return;
       const blob = await res.blob();
@@ -90,9 +104,10 @@ export default function FavoritesScreen({ onBack }: Props) {
     // Echo favorites: fetch the static pre-rendered MP3 so download works
     // even when the TTS proxy is rate-limited.
     const staticPath = findDefaultAudioByTtsText(fav.message_content, fav.lang as Lang);
+    const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
     const url = staticPath
       ? staticPath
-      : `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+      : `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
     const res = await fetch(url, staticPath ? undefined : { credentials: 'include' });
     if (!res.ok) return;
     const blob = await res.blob();
@@ -106,7 +121,20 @@ export default function FavoritesScreen({ onBack }: Props) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   }, []);
 
-  const remove = useCallback(async (fav: FavoriteRow) => {
+  // ✕ on a row opens the confirm modal. The actual delete happens in
+  // confirmDelete(), wired to the modal's Confirm button.
+  const requestDelete = useCallback((fav: FavoriteRow) => {
+    setPendingDelete(fav);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    setPendingDelete(null);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const fav = pendingDelete;
+    if (!fav) return;
+    setPendingDelete(null);
     if (playingId === fav.id) {
       audioRef.current?.pause();
       audioRef.current = null;
@@ -114,7 +142,7 @@ export default function FavoritesScreen({ onBack }: Props) {
     }
     const ok = await removeFavorite(fav.id);
     if (ok) setItems((xs) => xs?.filter((x) => x.id !== fav.id) ?? null);
-  }, [playingId]);
+  }, [pendingDelete, playingId]);
 
   return (
     <div className="immersive-root chat-shell view-chat">
@@ -143,16 +171,35 @@ export default function FavoritesScreen({ onBack }: Props) {
           <div className="favorites-empty">{t('chat.favoritesEmpty', lang)}</div>
         ) : (
           <div className="favorites-list">
-            {items.map((fav) => {
+            {items.map((fav, idx) => {
               const playing = playingId === fav.id;
+              const isGrace = fav.speaker === 'grace';
+              const speakerName = isGrace ? 'Grace' : 'Rocky';
               return (
-                <div key={fav.id} className="favorite-row">
+                <div
+                  key={fav.id}
+                  className={`favorite-row${isGrace ? ' favorite-row-grace' : ''}${playing ? ' favorite-row-playing' : ''}`}
+                  // Stagger entry: 50ms per row, capped at 8 so a long
+                  // list doesn't take seconds to fade in. Per emil — keep
+                  // stagger short and decorative.
+                  style={{ '--fav-stagger': `${Math.min(idx, 8) * 50}ms` } as React.CSSProperties}
+                >
                   <div className="favorite-row-body">
-                    <div className="favorite-row-text">{fav.message_content}</div>
                     <div className="favorite-row-meta">
-                      {formatWhen(fav.created_at)}
-                      {fav.mood ? ` · ${fav.mood}` : ''}
+                      <span className={`favorite-speaker favorite-speaker-${fav.speaker}`}>
+                        <span className="favorite-speaker-dot" aria-hidden="true" />
+                        {speakerName}
+                      </span>
+                      <span className="favorite-meta-sep">·</span>
+                      <span className="favorite-when">{formatWhen(fav.created_at)}</span>
+                      {fav.mood ? (
+                        <>
+                          <span className="favorite-meta-sep">·</span>
+                          <span className="favorite-mood">{fav.mood}</span>
+                        </>
+                      ) : null}
                     </div>
+                    <div className="favorite-row-text">{fav.message_content}</div>
                   </div>
                   <div className="favorite-row-actions">
                     <button
@@ -187,7 +234,7 @@ export default function FavoritesScreen({ onBack }: Props) {
                     <button
                       type="button"
                       className="fav-remove"
-                      onClick={() => remove(fav)}
+                      onClick={() => requestDelete(fav)}
                       title={t('chat.favoritesRemove', lang)}
                       aria-label={t('chat.favoritesRemove', lang)}
                     >
@@ -200,6 +247,41 @@ export default function FavoritesScreen({ onBack }: Props) {
           </div>
         )}
       </div>
+
+      {pendingDelete && (
+        <div
+          className="hangup-confirm-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={cancelDelete}
+        >
+          <div className="hangup-confirm-box" onClick={(e) => e.stopPropagation()}>
+            <div className="hangup-confirm-title">
+              {t('chat.favoritesRemoveConfirmTitle', lang)}
+            </div>
+            <div className="hangup-confirm-desc">
+              {t('chat.favoritesRemoveConfirmDesc', lang)}
+            </div>
+            <div className="hangup-confirm-actions">
+              <button
+                type="button"
+                className="hangup-confirm-cancel"
+                onClick={cancelDelete}
+                autoFocus
+              >
+                {t('chat.favoritesRemoveConfirmNo', lang)}
+              </button>
+              <button
+                type="button"
+                className="hangup-confirm-ok"
+                onClick={confirmDelete}
+              >
+                {t('chat.favoritesRemoveConfirmYes', lang)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

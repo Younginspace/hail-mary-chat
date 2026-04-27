@@ -92,6 +92,13 @@
       "when": 1778054400000,
       "tag": "0012_grace_address",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1778140800000,
+      "tag": "0013_favorites_speaker",
+      "breakpoints": true
     }
   ]
 }
