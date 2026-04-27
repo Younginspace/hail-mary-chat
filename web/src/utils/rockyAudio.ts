@@ -83,10 +83,20 @@ export function unlockAudio() {
 export function playSharedAudio(src: string): Promise<void> {
   return new Promise((resolve) => {
     const audio = getSharedAudio();
+    // Bump generation so any in-flight playSharedAudio bails — this
+    // call is the new owner. Without this, two concurrent
+    // playSharedAudio calls (e.g. the second one fired before the
+    // first's fetch resolved) would both pass their gen check, both
+    // bind onended/onerror on the SAME singleton _sharedAudio (the
+    // second clobbering the first), the first call's promise never
+    // resolves, and its blob URL leaks. Plus stopSharedAudio's
+    // _sharedAbort would only cancel whichever was stashed last.
+    if (_sharedAbort) {
+      _sharedAbort.abort();
+      _sharedAbort = null;
+    }
+    _sharedGen++;
     const myGen = _sharedGen;
-    // Each playSharedAudio call gets its own AbortController. Stashing
-    // it on _sharedAbort lets stopSharedAudio cancel whichever fetch
-    // is currently in flight (only one at a time — sequential).
     const ctrl = new AbortController();
     _sharedAbort = ctrl;
 
