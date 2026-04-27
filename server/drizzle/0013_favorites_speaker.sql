@@ -1,0 +1,1 @@
+ALTER TABLE `favorites` ADD `speaker` text DEFAULT 'rocky' NOT NULL;

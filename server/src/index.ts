@@ -1867,6 +1867,7 @@ app.post("/api/favorites", async (c) => {
     lang?: string;
     mood?: string;
     source_session?: string;
+    speaker?: string;
   };
   const body: FavBody = await c.req.json<FavBody>().catch(() => ({} as FavBody));
 
@@ -1875,7 +1876,15 @@ app.post("/api/favorites", async (c) => {
   if (content.length > 4000) return c.json({ error: "content_too_long" }, 400);
 
   const lang = body.lang === "zh" || body.lang === "ja" ? body.lang : "en";
-  const voiceId = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  // Speaker drives which cloned voice we hash against — content_hash
+  // must match the voice_id used at /api/tts replay time, otherwise the
+  // audio_cache lookup misses and the user re-renders Grace lines on
+  // Rocky's voice (the bug this commit fixes). Default 'rocky' so old
+  // single-speaker callers stay correct.
+  const speaker: "rocky" | "grace" = body.speaker === "grace" ? "grace" : "rocky";
+  const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
+  const voiceId = speaker === "grace" ? graceVoice : rockyVoice;
   const contentHash = await hashAudioContent(content, lang, voiceId);
 
   const id = crypto.randomUUID();
@@ -1892,8 +1901,8 @@ app.post("/api/favorites", async (c) => {
   let inserted = false;
   try {
     const ret = await db.run(
-      sql`INSERT INTO favorites (id, user_id, content_hash, message_content, mood, lang, source_session, created_at)
-          SELECT ${id}, ${user.user_id}, ${contentHash}, ${content}, ${body.mood ?? null}, ${lang}, ${body.source_session ?? null}, ${now}
+      sql`INSERT INTO favorites (id, user_id, content_hash, message_content, mood, lang, source_session, created_at, speaker)
+          SELECT ${id}, ${user.user_id}, ${contentHash}, ${content}, ${body.mood ?? null}, ${lang}, ${body.source_session ?? null}, ${now}, ${speaker}
           WHERE (SELECT count(*) FROM favorites WHERE user_id = ${user.user_id}) < ${FAVORITES_CAP}`
     );
     // D1's run() result shape varies; treat any positive change as success.

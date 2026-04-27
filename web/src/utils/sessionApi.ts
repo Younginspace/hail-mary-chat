@@ -103,6 +103,11 @@ export interface FavoriteRow {
   lang: string;
   source_session: string | null;
   created_at: number;
+  // 'rocky' | 'grace' — drives the speaker badge in the favorites list
+  // and the speaker= URL param on /api/tts replay (so cloned Grace lines
+  // render as Gosling, not as Rocky's voice). Server defaults to 'rocky'
+  // for legacy rows and pre-Grace clients.
+  speaker: 'rocky' | 'grace';
 }
 
 export async function fetchFavorites(): Promise<{ items: FavoriteRow[]; cap: number } | null> {
@@ -121,6 +126,11 @@ export async function addFavorite(payload: {
   lang: Lang;
   mood?: string | null;
   source_session?: string | null;
+  // Identifies which speaker the favorited block came from. Required
+  // for Grace cameo blocks so the server hashes against Grace's
+  // cloned voice_id (otherwise replay falls back to Rocky's voice).
+  // Defaults server-side to 'rocky' when omitted.
+  speaker?: 'rocky' | 'grace';
 }): Promise<{ ok: true; id: string; content_hash: string } | { ok: false; reason: 'full' | 'exists' | 'server' }> {
   try {
     const res = await fetch(`${API_BASE}/api/favorites`, {

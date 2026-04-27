@@ -324,6 +324,16 @@ export const favorites = sqliteTable(
     lang: text("lang").notNull(),
     source_session: text("source_session"),
     created_at: integer("created_at").notNull(),
+    // 'rocky' | 'grace'. Decides which voice_id is used to compute
+    // content_hash (so audio_cache lookup matches the speaker's
+    // cloned voice on /api/tts replay) AND which speaker badge the
+    // FavoritesScreen renders. Default 'rocky' covers all favorites
+    // saved before Grace cameos existed; Grace lines saved after the
+    // schema add land here as 'grace'. The one-shot
+    // /api/admin/migrate-grace-favorites endpoint backfills
+    // pre-existing Grace rows by content heuristic + recomputes
+    // their hash + cleans up audio_cache pollution.
+    speaker: text("speaker").notNull().default("rocky"),
   },
   (t) => [
     uniqueIndex("idx_fav_user_hash").on(t.user_id, t.content_hash),

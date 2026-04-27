@@ -381,6 +381,10 @@ export default function ChatInterface({
         // null.
         mood: block.mood ?? extractMood(msg.content),
         source_session: sessionId,
+        // Speaker decides which voice_id the server hashes against.
+        // Grace blocks must travel as 'grace' so replay routes to the
+        // cloned Gosling voice instead of Rocky's.
+        speaker: block.speaker,
       });
       if (res.ok) {
         const reload = await fetchFavorites();
