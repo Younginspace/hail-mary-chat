@@ -281,6 +281,14 @@ const translations = {
     en: 'Remove',
     ja: '削除',
   },
+  // Tooltip + aria-label when the ✕ is "armed" — first tap arms,
+  // second tap within 3s commits. Phrasing tells the user "you've
+  // already pressed once, press again to actually delete."
+  'chat.favoritesRemoveConfirm': {
+    zh: '再点一次确认删除',
+    en: 'Tap again to confirm',
+    ja: 'もう一度タップで削除',
+  },
 
   // ===== Affinity levels (Rocky persona names — kept English) =====
   'level.1.name': { zh: 'Earth Signal', en: 'Earth Signal', ja: 'Earth Signal' },

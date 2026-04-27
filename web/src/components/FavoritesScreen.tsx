@@ -17,54 +17,32 @@ interface Props {
   onBack: () => void;
 }
 
-// Relative time formatter. < 1m = "just now", < 1h = "5m ago",
-// < 24h = "3h ago", yesterday, < 7d = "3 days ago", else absolute date.
-// Localized lightly inline rather than via i18n keys — favorites screen
-// is the only consumer and the strings are short enough that adding
-// six new keys per locale is more friction than value.
-function formatWhen(ts: number, lang: Lang): string {
-  const now = Date.now();
-  const diffMs = now - ts;
-  const min = 60 * 1000;
-  const hour = 60 * min;
-  const day = 24 * hour;
-
-  if (diffMs < min) {
-    return lang === 'zh' ? '刚刚' : lang === 'ja' ? 'たった今' : 'just now';
-  }
-  if (diffMs < hour) {
-    const mins = Math.floor(diffMs / min);
-    return lang === 'zh' ? `${mins} 分钟前` : lang === 'ja' ? `${mins} 分前` : `${mins}m ago`;
-  }
-  if (diffMs < day) {
-    const hrs = Math.floor(diffMs / hour);
-    return lang === 'zh' ? `${hrs} 小时前` : lang === 'ja' ? `${hrs} 時間前` : `${hrs}h ago`;
-  }
-  if (diffMs < 2 * day) {
-    return lang === 'zh' ? '昨天' : lang === 'ja' ? '昨日' : 'yesterday';
-  }
-  if (diffMs < 7 * day) {
-    const days = Math.floor(diffMs / day);
-    return lang === 'zh' ? `${days} 天前` : lang === 'ja' ? `${days} 日前` : `${days} days ago`;
-  }
-  // > 7 days: absolute date. Locale-friendly without bringing in Intl
-  // for a six-line file.
+// Absolute YYYY-MM-DD HH:mm — language-independent, terminal-aesthetic,
+// unambiguous. Earlier version used relative time ("2 days ago") but
+// users found it too fuzzy for log-style content (favorites are
+// memorable moments — exact timestamps help recall).
+function formatWhen(ts: number): string {
   const d = new Date(ts);
-  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
-  if (lang === 'zh') return sameYear ? `${d.getMonth() + 1} 月 ${d.getDate()} 日` : `${d.getFullYear()}-${mm}-${dd}`;
-  if (lang === 'ja') return sameYear ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.getFullYear()}/${mm}/${dd}`;
-  // English: "Apr 22" or "Apr 22, 2025"
-  const monthShort = d.toLocaleString('en-US', { month: 'short' });
-  return sameYear ? `${monthShort} ${d.getDate()}` : `${monthShort} ${d.getDate()}, ${d.getFullYear()}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
 export default function FavoritesScreen({ onBack }: Props) {
   const { lang } = useLang();
   const [items, setItems] = useState<FavoriteRow[] | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  // Two-step delete: clicking ✕ once "arms" the row (red border on the
+  // button); a second click within DELETE_ARM_TIMEOUT_MS commits. Tap
+  // anywhere else / time out → revert. Cheap accidental-tap guard
+  // without dragging in a modal.
+  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const armResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DELETE_ARM_TIMEOUT_MS = 3000;
 
   useEffect(() => {
     fetchFavorites().then((res) => setItems(res?.items ?? []));
@@ -74,8 +52,23 @@ export default function FavoritesScreen({ onBack }: Props) {
     return () => {
       audioRef.current?.pause();
       audioRef.current = null;
+      if (armResetTimer.current) clearTimeout(armResetTimer.current);
     };
   }, []);
+
+  // Click anywhere outside the armed row's delete button → revert.
+  useEffect(() => {
+    if (!armedDeleteId) return;
+    const onPointer = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      // Don't disarm when the click was on a fav-remove button — the
+      // row's own onClick handler decides commit vs disarm.
+      if (target?.closest('.fav-remove')) return;
+      setArmedDeleteId(null);
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    return () => document.removeEventListener('pointerdown', onPointer, true);
+  }, [armedDeleteId]);
 
   const play = useCallback(async (fav: FavoriteRow) => {
     if (playingId === fav.id) {
@@ -145,15 +138,40 @@ export default function FavoritesScreen({ onBack }: Props) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   }, []);
 
-  const remove = useCallback(async (fav: FavoriteRow) => {
-    if (playingId === fav.id) {
-      audioRef.current?.pause();
-      audioRef.current = null;
-      setPlayingId(null);
-    }
-    const ok = await removeFavorite(fav.id);
-    if (ok) setItems((xs) => xs?.filter((x) => x.id !== fav.id) ?? null);
-  }, [playingId]);
+  // Click flow on the ✕ button:
+  //   1st click → arm this row (red ✕, 3s timeout)
+  //   2nd click while armed → actual delete
+  //   click outside / 3s timeout → disarm silently
+  const handleRemoveClick = useCallback(
+    (fav: FavoriteRow) => {
+      if (armedDeleteId !== fav.id) {
+        // Arm this row.
+        if (armResetTimer.current) clearTimeout(armResetTimer.current);
+        setArmedDeleteId(fav.id);
+        armResetTimer.current = setTimeout(() => {
+          setArmedDeleteId(null);
+          armResetTimer.current = null;
+        }, DELETE_ARM_TIMEOUT_MS);
+        return;
+      }
+      // Armed → commit.
+      if (armResetTimer.current) {
+        clearTimeout(armResetTimer.current);
+        armResetTimer.current = null;
+      }
+      setArmedDeleteId(null);
+      void (async () => {
+        if (playingId === fav.id) {
+          audioRef.current?.pause();
+          audioRef.current = null;
+          setPlayingId(null);
+        }
+        const ok = await removeFavorite(fav.id);
+        if (ok) setItems((xs) => xs?.filter((x) => x.id !== fav.id) ?? null);
+      })();
+    },
+    [armedDeleteId, playingId],
+  );
 
   return (
     <div className="immersive-root chat-shell view-chat">
@@ -202,7 +220,7 @@ export default function FavoritesScreen({ onBack }: Props) {
                         {speakerName}
                       </span>
                       <span className="favorite-meta-sep">·</span>
-                      <span className="favorite-when">{formatWhen(fav.created_at, lang)}</span>
+                      <span className="favorite-when">{formatWhen(fav.created_at)}</span>
                       {fav.mood ? (
                         <>
                           <span className="favorite-meta-sep">·</span>
@@ -244,10 +262,18 @@ export default function FavoritesScreen({ onBack }: Props) {
                     </button>
                     <button
                       type="button"
-                      className="fav-remove"
-                      onClick={() => remove(fav)}
-                      title={t('chat.favoritesRemove', lang)}
-                      aria-label={t('chat.favoritesRemove', lang)}
+                      className={`fav-remove${armedDeleteId === fav.id ? ' fav-remove-armed' : ''}`}
+                      onClick={() => handleRemoveClick(fav)}
+                      title={
+                        armedDeleteId === fav.id
+                          ? t('chat.favoritesRemoveConfirm', lang)
+                          : t('chat.favoritesRemove', lang)
+                      }
+                      aria-label={
+                        armedDeleteId === fav.id
+                          ? t('chat.favoritesRemoveConfirm', lang)
+                          : t('chat.favoritesRemove', lang)
+                      }
                     >
                       ✕
                     </button>
