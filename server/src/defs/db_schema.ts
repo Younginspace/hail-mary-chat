@@ -87,12 +87,24 @@ export const sessions = sqliteTable(
     mode: text("mode").notNull(), // 'text' | 'voice'
     started_at: integer("started_at").notNull(), // unix ms
     ended_at: integer("ended_at"),
+    // Bumped on every /api/session/message. Lets the server-side stale-
+    // session sweeper find conversations that the client never explicitly
+    // ended (closed tab, network kill, keepalive dropped) so consolidation
+    // still runs. NULL on legacy rows — sweep treats NULL as
+    // `coalesce(last_active_at, started_at)` so old rows fall back to
+    // started_at for the idle check.
+    last_active_at: integer("last_active_at"),
     turn_count: integer("turn_count").notNull().default(0),
     // P2 fills these in during consolidation.
     summary: text("summary"),
     summary_tokens: integer("summary_tokens"),
   },
-  (t) => [index("idx_sessions_user_started").on(t.user_id, t.started_at)]
+  (t) => [
+    index("idx_sessions_user_started").on(t.user_id, t.started_at),
+    // Sweep query is `WHERE ended_at IS NULL AND last_active_at < ?`,
+    // run frequently from the /session hot paths. Index keeps it cheap.
+    index("idx_sessions_open_active").on(t.ended_at, t.last_active_at),
+  ]
 );
 
 export const messages = sqliteTable(
