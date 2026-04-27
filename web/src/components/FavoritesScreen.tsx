@@ -17,13 +17,47 @@ interface Props {
   onBack: () => void;
 }
 
-function formatWhen(ts: number): string {
+// Relative time formatter. < 1m = "just now", < 1h = "5m ago",
+// < 24h = "3h ago", yesterday, < 7d = "3 days ago", else absolute date.
+// Localized lightly inline rather than via i18n keys — favorites screen
+// is the only consumer and the strings are short enough that adding
+// six new keys per locale is more friction than value.
+function formatWhen(ts: number, lang: Lang): string {
+  const now = Date.now();
+  const diffMs = now - ts;
+  const min = 60 * 1000;
+  const hour = 60 * min;
+  const day = 24 * hour;
+
+  if (diffMs < min) {
+    return lang === 'zh' ? '刚刚' : lang === 'ja' ? 'たった今' : 'just now';
+  }
+  if (diffMs < hour) {
+    const mins = Math.floor(diffMs / min);
+    return lang === 'zh' ? `${mins} 分钟前` : lang === 'ja' ? `${mins} 分前` : `${mins}m ago`;
+  }
+  if (diffMs < day) {
+    const hrs = Math.floor(diffMs / hour);
+    return lang === 'zh' ? `${hrs} 小时前` : lang === 'ja' ? `${hrs} 時間前` : `${hrs}h ago`;
+  }
+  if (diffMs < 2 * day) {
+    return lang === 'zh' ? '昨天' : lang === 'ja' ? '昨日' : 'yesterday';
+  }
+  if (diffMs < 7 * day) {
+    const days = Math.floor(diffMs / day);
+    return lang === 'zh' ? `${days} 天前` : lang === 'ja' ? `${days} 日前` : `${days} days ago`;
+  }
+  // > 7 days: absolute date. Locale-friendly without bringing in Intl
+  // for a six-line file.
   const d = new Date(ts);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd} ${hh}:${mi}`;
+  if (lang === 'zh') return sameYear ? `${d.getMonth() + 1} 月 ${d.getDate()} 日` : `${d.getFullYear()}-${mm}-${dd}`;
+  if (lang === 'ja') return sameYear ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.getFullYear()}/${mm}/${dd}`;
+  // English: "Apr 22" or "Apr 22, 2025"
+  const monthShort = d.toLocaleString('en-US', { month: 'short' });
+  return sameYear ? `${monthShort} ${d.getDate()}` : `${monthShort} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
 export default function FavoritesScreen({ onBack }: Props) {
@@ -63,7 +97,11 @@ export default function FavoritesScreen({ onBack }: Props) {
     if (staticPath) {
       src = staticPath;
     } else {
-      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+      // speaker=grace routes to the cloned Gosling voice. Without this,
+      // Grace favorites silently render with Rocky's voice (the bug
+      // this commit fixes — see PR description).
+      const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
+      const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) return;
       const blob = await res.blob();
@@ -90,9 +128,10 @@ export default function FavoritesScreen({ onBack }: Props) {
     // Echo favorites: fetch the static pre-rendered MP3 so download works
     // even when the TTS proxy is rate-limited.
     const staticPath = findDefaultAudioByTtsText(fav.message_content, fav.lang as Lang);
+    const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
     const url = staticPath
       ? staticPath
-      : `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true`;
+      : `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
     const res = await fetch(url, staticPath ? undefined : { credentials: 'include' });
     if (!res.ok) return;
     const blob = await res.blob();
@@ -143,16 +182,35 @@ export default function FavoritesScreen({ onBack }: Props) {
           <div className="favorites-empty">{t('chat.favoritesEmpty', lang)}</div>
         ) : (
           <div className="favorites-list">
-            {items.map((fav) => {
+            {items.map((fav, idx) => {
               const playing = playingId === fav.id;
+              const isGrace = fav.speaker === 'grace';
+              const speakerName = isGrace ? 'Grace' : 'Rocky';
               return (
-                <div key={fav.id} className="favorite-row">
+                <div
+                  key={fav.id}
+                  className={`favorite-row${isGrace ? ' favorite-row-grace' : ''}${playing ? ' favorite-row-playing' : ''}`}
+                  // Stagger entry: 50ms per row, capped at 8 so a long
+                  // list doesn't take seconds to fade in. Per emil — keep
+                  // stagger short and decorative.
+                  style={{ '--fav-stagger': `${Math.min(idx, 8) * 50}ms` } as React.CSSProperties}
+                >
                   <div className="favorite-row-body">
-                    <div className="favorite-row-text">{fav.message_content}</div>
                     <div className="favorite-row-meta">
-                      {formatWhen(fav.created_at)}
-                      {fav.mood ? ` · ${fav.mood}` : ''}
+                      <span className={`favorite-speaker favorite-speaker-${fav.speaker}`}>
+                        <span className="favorite-speaker-dot" aria-hidden="true" />
+                        {speakerName}
+                      </span>
+                      <span className="favorite-meta-sep">·</span>
+                      <span className="favorite-when">{formatWhen(fav.created_at, lang)}</span>
+                      {fav.mood ? (
+                        <>
+                          <span className="favorite-meta-sep">·</span>
+                          <span className="favorite-mood">{fav.mood}</span>
+                        </>
+                      ) : null}
                     </div>
+                    <div className="favorite-row-text">{fav.message_content}</div>
                   </div>
                   <div className="favorite-row-actions">
                     <button
