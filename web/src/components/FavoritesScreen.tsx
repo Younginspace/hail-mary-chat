@@ -9,6 +9,7 @@ import {
   type FavoriteRow,
 } from '../utils/sessionApi';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
+import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlayback';
 import type { Lang } from '../i18n';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -40,15 +41,11 @@ export default function FavoritesScreen({ onBack }: Props) {
   // closed). Reuses .hangup-confirm-* styles so the visual language
   // for "destructive confirmation" is consistent across the app.
   const [pendingDelete, setPendingDelete] = useState<FavoriteRow | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  // Abort controller for the most recent in-flight /api/tts fetch.
-  // Rapidly tapping different favorites used to create multiple
-  // overlapping pipelines: each `await fetch(...)` would resolve
-  // independently, each constructing its own Audio element, and the
-  // user heard several voices at once. Now every new play() aborts
-  // the previous fetch and the post-await guard discards stale
-  // results before they can bind audio.
-  const playRequestRef = useRef<AbortController | null>(null);
+  // Token of the currently-playing slot from audioPlayback.ts. Used to
+  // distinguish "this row's audio finished" from "a newer claim took
+  // over"; both arrive via the same onEnded callback so React state
+  // resets cleanly either way.
+  const playingTokenRef = useRef<number | null>(null);
 
   useEffect(() => {
     fetchFavorites().then((res) => setItems(res?.items ?? []));
@@ -56,10 +53,11 @@ export default function FavoritesScreen({ onBack }: Props) {
 
   useEffect(() => {
     return () => {
-      audioRef.current?.pause();
-      audioRef.current = null;
-      playRequestRef.current?.abort();
-      playRequestRef.current = null;
+      // Component unmount — drop the slot if we own it. releaseSlot
+      // is a no-op when another component already took ownership.
+      if (playingTokenRef.current !== null && isOwner(playingTokenRef.current)) {
+        releaseSlot();
+      }
     };
   }, []);
 
@@ -78,24 +76,19 @@ export default function FavoritesScreen({ onBack }: Props) {
   const play = useCallback(async (fav: FavoriteRow) => {
     // Toggle off if the same favorite is currently playing.
     if (playingId === fav.id) {
-      playRequestRef.current?.abort();
-      playRequestRef.current = null;
-      audioRef.current?.pause();
-      audioRef.current = null;
+      releaseSlot();
+      playingTokenRef.current = null;
       setPlayingId(null);
       return;
     }
 
-    // Different favorite (or a fresh tap on an idle row) — kill any
-    // in-flight fetch AND any currently-playing audio before starting
-    // a new pipeline. The abort + token-guard combo eliminates the
-    // overlapping-audio race users were hitting on rapid taps.
-    playRequestRef.current?.abort();
-    audioRef.current?.pause();
-    audioRef.current = null;
-
-    const ctrl = new AbortController();
-    playRequestRef.current = ctrl;
+    // Claim the global slot — this stops any other audio in the app
+    // (favorites, chat TTS, useRockyTTS chirps) and aborts the previous
+    // fetch in one atomic step. The cross-component sweep is what fixes
+    // the "Rocky echo can't play while other audio is playing" report.
+    const { token, signal } = claimSlot();
+    playingTokenRef.current = token;
+    setPlayingId(fav.id);
 
     // Echo-sourced favorites are backed by a pre-rendered MP3 in
     // /audio/defaults/. Those files never pass through /api/tts so the
@@ -113,45 +106,52 @@ export default function FavoritesScreen({ onBack }: Props) {
       const speakerParam = fav.speaker === 'grace' ? '&speaker=grace' : '';
       const url = `${API_BASE}/api/tts?text=${encodeURIComponent(fav.message_content)}&lang=${encodeURIComponent(fav.lang)}&favorite=true${speakerParam}`;
       try {
-        const res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
-        // Stale-result check: the user may have tapped another row while
-        // this fetch was in flight. If a newer request has taken the
-        // ref slot, drop everything.
-        if (playRequestRef.current !== ctrl) return;
-        if (!res.ok) return;
+        const res = await fetch(url, { credentials: 'include', signal });
+        // Stale-result guard after every await — if a newer claim has
+        // taken the slot, drop everything (including any blob we'd build).
+        if (!isOwner(token)) return;
+        if (!res.ok) {
+          // Non-2xx and we still own the slot — drop the playing
+          // indicator since no audio will be bound.
+          if (playingTokenRef.current === token) {
+            playingTokenRef.current = null;
+            setPlayingId(null);
+          }
+          return;
+        }
         const blob = await res.blob();
-        if (playRequestRef.current !== ctrl) return;
+        if (!isOwner(token)) return;
         blobUrl = URL.createObjectURL(blob);
         src = blobUrl;
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
+        // AbortError is the expected path when a newer claim ran. For
+        // any other error, also reset the playing indicator.
+        if ((err as Error).name !== 'AbortError' && playingTokenRef.current === token) {
+          playingTokenRef.current = null;
+          setPlayingId(null);
+        }
         return;
       }
     }
 
-    // Final guard before binding the Audio element. Two reasons we may
-    // be stale here: (1) the static-path branch ran sync but a newer
-    // play() already started and replaced the ref, (2) belt-and-suspenders
-    // for the fetch branch above.
-    if (playRequestRef.current !== ctrl) {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      return;
+    // attachAudio internally re-checks the token, so a race between
+    // the static-path sync block and a competing claim is safe — the
+    // blob URL gets revoked by attachAudio on a stale token.
+    const ok = attachAudio(token, src, {
+      blobUrl,
+      onEnded: () => {
+        // Fires for both natural end AND newer-claim takeover. UI
+        // resets either way.
+        if (playingTokenRef.current === token) {
+          playingTokenRef.current = null;
+          setPlayingId(null);
+        }
+      },
+    });
+    if (!ok && playingTokenRef.current === token) {
+      playingTokenRef.current = null;
+      setPlayingId(null);
     }
-
-    const audio = new Audio(src);
-    audioRef.current = audio;
-    setPlayingId(fav.id);
-    const cleanup = () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      if (audioRef.current === audio) {
-        audioRef.current = null;
-        setPlayingId(null);
-      }
-      if (playRequestRef.current === ctrl) playRequestRef.current = null;
-    };
-    audio.onended = cleanup;
-    audio.onerror = cleanup;
-    audio.play().catch(cleanup);
   }, [playingId]);
 
   const download = useCallback(async (fav: FavoriteRow) => {
@@ -190,8 +190,8 @@ export default function FavoritesScreen({ onBack }: Props) {
     if (!fav) return;
     setPendingDelete(null);
     if (playingId === fav.id) {
-      audioRef.current?.pause();
-      audioRef.current = null;
+      releaseSlot();
+      playingTokenRef.current = null;
       setPlayingId(null);
     }
     const ok = await removeFavorite(fav.id);
