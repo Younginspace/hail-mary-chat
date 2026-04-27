@@ -32,6 +32,26 @@ const MIN_TURNS = 1;
 const MAX_INPUT_MESSAGES = 100;
 const EXTRACTION_MAX_TOKENS = 600;
 
+// ── Forward-only sweep gate ────────────────────────────────────────
+// The stale-session sweep was added on 2026-04-27. Existing orphan
+// sessions started before this cutoff deliberately stay un-
+// consolidated: backfilling them would unexpectedly bump some users
+// from L1→L2/L3 (rapport accumulates per-session), which is bad UX
+// and could erode trust. Only sessions started AFTER this cutoff are
+// eligible for the new sweep. Old data stays where it is; the next
+// session a returning user starts (post-cutoff) gets the new behavior.
+//
+// Picked as 2026-04-28 00:00 UTC — comfortably past the actual deploy
+// time so any in-flight session at the moment of deploy is also
+// excluded. Sessions started >= 2026-04-28 are eligible for sweep.
+const STALE_SWEEP_CUTOFF_MS = 1778025600000; // 2026-04-28 00:00 UTC
+
+// Sessions with no activity for this long are treated as ended by the
+// server-side sweep. Tuned to be generous (a user pondering a reply
+// for 10 minutes shouldn't get prematurely consolidated) but tight
+// enough that closed-tab orphans get picked up the same day.
+const STALE_IDLE_MS = 30 * 60 * 1000; // 30 minutes
+
 const EXTRACTION_SYSTEM_PROMPT = `You are the memory consolidator for a 3D alien character named Rocky (from the novel "Project Hail Mary") who has just finished an interstellar comm call with a human friend. Your job: read the raw conversation and extract structured memory Rocky will use in future calls to remember this friend.
 
 You will receive:
@@ -278,8 +298,14 @@ export async function consolidateSession(session_id: string): Promise<void> {
   // 3. Extract.
   const result = await callExtractor(transcript, existingMems);
   if (!result) {
-    console.warn("consolidate: extractor returned nothing for", session_id);
-    return;
+    // Throw — not a silent return — so runConsolidationJob marks this
+    // job as 'pending' (or 'failed' on terminal exhaustion) and the
+    // sweeper retries it later. Pre-fix this swallowed extractor
+    // failures: 277 jobs were marked 'done' but only 58 sessions
+    // actually had a summary, meaning ~80% of "successful" jobs
+    // silently produced nothing. The thrown path triggers the same
+    // attempt-counter logic that real exceptions already use.
+    throw new Error(`extractor returned no usable result (transient)`);
   }
 
   const now = Date.now();
@@ -631,4 +657,134 @@ export async function retryStuckConsolidationJobs(
     }
   }
   return { retried };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Stale-session sweep — server-side detection of "ended" sessions
+// ═══════════════════════════════════════════════════════════════════
+//
+// Why this exists:
+//   /api/session/end is a fire-and-forget keepalive call from the
+//   client. In production we measured 312/619 sessions with
+//   ended_at IS NULL — 50% of conversations never explicitly ended,
+//   so consolidation never triggered, so the user's rapport never
+//   updated, so the affinity_level stayed stuck at the L1 default.
+//
+// Definition of "ended" (server-side, no client cooperation):
+//   1. Explicit /api/session/end (best path, milliseconds latency)
+//   2. The same user starts a NEW session — the previous one is
+//      implicitly done (sweepUserStaleSessions is called from
+//      /session/start)
+//   3. No /api/session/message activity for STALE_IDLE_MS
+//      (sweepStaleSessions, called opportunistically from hot paths)
+//
+// Forward-only: the cutoff filter STALE_SWEEP_CUTOFF_MS keeps this
+// from backfilling old orphans. That's intentional — see the comment
+// on the constant. The intent is to not change any existing user's
+// affinity_level retroactively.
+//
+// What "sweep" does to a stale session:
+//   - SET ended_at = now (only if still NULL — race-safe)
+//   - Queue runConsolidationJob in the background
+// Both writes happen via the existing job machinery so attempt
+// counters, retry logic, and idempotency all behave the same as for
+// explicitly-ended sessions.
+
+/**
+ * Sweep stale open sessions belonging to a single user, started after
+ * the rollout cutoff. Called from /api/session/start so that whenever
+ * a user opens a new conversation, the server cleans up whatever the
+ * previous one left dangling. Cheap (one indexed SELECT, capped at
+ * `limit` rows).
+ */
+export async function sweepUserStaleSessions(
+  user_id: string,
+  opts: { idleMs?: number; limit?: number } = {}
+): Promise<{ swept: number }> {
+  const idleMs = opts.idleMs ?? STALE_IDLE_MS;
+  const limit = opts.limit ?? 5; // a single user rarely has many open sessions
+  const now = Date.now();
+  const idleCutoff = now - idleMs;
+
+  const stale = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.user_id, user_id),
+        isNull(sessions.ended_at),
+        sql`${sessions.started_at} > ${STALE_SWEEP_CUTOFF_MS}`,
+        // Use last_active_at when we have it, fall back to started_at
+        // (legacy rows pre-migration 0014 will have NULL last_active_at).
+        sql`coalesce(${sessions.last_active_at}, ${sessions.started_at}) < ${idleCutoff}`,
+      )
+    )
+    .limit(limit);
+
+  if (stale.length === 0) return { swept: 0 };
+
+  let swept = 0;
+  for (const row of stale) {
+    // Race-safe close: only set ended_at if still NULL. If a concurrent
+    // /api/session/end already closed it, we skip — the explicit path
+    // already queued consolidation.
+    const closed = await db
+      .update(sessions)
+      .set({ ended_at: now })
+      .where(and(eq(sessions.id, row.id), isNull(sessions.ended_at)))
+      .returning({ id: sessions.id });
+    if (closed.length === 0) continue;
+    try {
+      await runConsolidationJob(row.id);
+      swept++;
+    } catch (err) {
+      console.error(`sweepUserStaleSessions: job for ${row.id} threw (caught):`, err);
+    }
+  }
+  return { swept };
+}
+
+/**
+ * Global stale-session sweep — opportunistically called from /session/end
+ * to mop up any lingering open sessions across all users. Capped tightly
+ * so adding a slow path on every /session/end doesn't compound.
+ */
+export async function sweepStaleSessions(
+  opts: { idleMs?: number; limit?: number } = {}
+): Promise<{ swept: number }> {
+  const idleMs = opts.idleMs ?? STALE_IDLE_MS;
+  const limit = opts.limit ?? 25;
+  const now = Date.now();
+  const idleCutoff = now - idleMs;
+
+  const stale = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(
+      and(
+        isNull(sessions.ended_at),
+        sql`${sessions.started_at} > ${STALE_SWEEP_CUTOFF_MS}`,
+        sql`coalesce(${sessions.last_active_at}, ${sessions.started_at}) < ${idleCutoff}`,
+      )
+    )
+    .limit(limit);
+
+  if (stale.length === 0) return { swept: 0 };
+
+  let swept = 0;
+  for (const row of stale) {
+    const closed = await db
+      .update(sessions)
+      .set({ ended_at: now })
+      .where(and(eq(sessions.id, row.id), isNull(sessions.ended_at)))
+      .returning({ id: sessions.id });
+    if (closed.length === 0) continue;
+    try {
+      await runConsolidationJob(row.id);
+      swept++;
+    } catch (err) {
+      console.error(`sweepStaleSessions: job for ${row.id} threw (caught):`, err);
+    }
+  }
+  return { swept };
 }
