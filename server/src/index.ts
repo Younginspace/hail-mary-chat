@@ -3171,4 +3171,150 @@ app.post("/api/admin/voice-preview", async (c) => {
   });
 });
 
+// ── POST /api/admin/migrate-grace-favorites ─────────────────────────
+// One-shot data migration. Pre-Grace, /api/favorites hashed every
+// favorite against MINIMAX_TTS_VOICE_ID (Rocky), so Grace cameo blocks
+// got stored with Rocky-keyed content_hashes and replay rendered them
+// in Rocky's voice. Schema migration 0013 added the `speaker` column
+// (default 'rocky'); this endpoint reclassifies the Grace ones via
+// content heuristic, recomputes their content_hash with the Grace
+// voice_id, and deletes any audio_cache rows + R2 objects keyed by
+// the old (Rocky-voice) hash so the next replay renders fresh on
+// Gosling's voice.
+//
+// Idempotent: running it twice on the same DB is a no-op (rows already
+// flipped to 'grace' don't match the heuristic on the second pass —
+// the heuristic only looks at message_content, which doesn't change,
+// AND the WHERE clause filters speaker = 'rocky' so only legacy rows
+// are touched).
+//
+// Heuristic patterns (exact phrases observed in prod rows):
+//   - 'Earth kid' (Grace's signature address)
+//   - 'Holy crap' / 'alright alright' (Grace catchphrases)
+//   - 'meburger' (his food on Erid)
+//   - 'good girl' / 'good boy' (Grace's gender-aware endearment;
+//     Rocky never uses these — they're shipped explicitly as Grace's
+//     post-gender-known close)
+//   - "Rocky's" (possessive — Grace talks about Rocky in third person;
+//     Rocky's persona refers to himself in first person without the
+//     possessive: "Rocky thinks", "Rocky understands", never "Rocky's")
+//   - 'Rocky said' / 'Rocky tells' (third-person reference, Grace-only)
+// Negative filters:
+//   - 'statement.' / 'question?' (Rocky's verbal tics — never Grace)
+//   - 'Amaze amaze' (Rocky's signal of excitement — never Grace)
+//
+// Conservative direction: false positives (Rocky favorite getting marked
+// Grace = wrong voice on replay) are way worse than false negatives
+// (Grace favorite stays as 'rocky' = current bug, no regression).
+// Endpoint is idempotent — running again only touches still-mislabeled
+// rows.
+//
+// Response: { migrated_favorites: N, deleted_cache_rows: M, errors: [...] }.
+app.post("/api/admin/migrate-grace-favorites", async (c) => {
+  if (!isVoiceAdmin()) return c.json({ error: "forbidden" }, 403);
+
+  const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
+  if (graceVoice === rockyVoice) {
+    return c.json(
+      {
+        error: "no_grace_voice",
+        detail: "MINIMAX_TTS_VOICE_ID_GRACE is unset or equals Rocky's voice — refusing to migrate",
+      },
+      400,
+    );
+  }
+
+  // Fetch candidate rows (currently classified as rocky, content matches
+  // Grace heuristic). Pull all columns we'll need to recompute the hash.
+  const candidates = await db
+    .select({
+      id: favorites.id,
+      message_content: favorites.message_content,
+      lang: favorites.lang,
+      old_hash: favorites.content_hash,
+    })
+    .from(favorites)
+    .where(
+      and(
+        eq(favorites.speaker, "rocky"),
+        sql`(
+          ${favorites.message_content} LIKE '%Earth kid%'
+          OR ${favorites.message_content} LIKE '%Earth, kid%'
+          OR ${favorites.message_content} LIKE '%Holy crap%'
+          OR ${favorites.message_content} LIKE '%alright alright%'
+          OR ${favorites.message_content} LIKE '%meburger%'
+          OR ${favorites.message_content} LIKE '%good girl%'
+          OR ${favorites.message_content} LIKE '%good boy%'
+          OR ${favorites.message_content} LIKE '%Rocky''s%'
+          OR ${favorites.message_content} LIKE '%Rocky said%'
+          OR ${favorites.message_content} LIKE '%Rocky tells%'
+        )`,
+        sql`${favorites.message_content} NOT LIKE '%statement.%'`,
+        sql`${favorites.message_content} NOT LIKE '%question?%'`,
+        sql`${favorites.message_content} NOT LIKE '%Amaze amaze%'`,
+      ),
+    );
+
+  let migrated = 0;
+  let deletedCache = 0;
+  const errors: Array<{ id: string; message: string }> = [];
+
+  for (const row of candidates) {
+    try {
+      const newHash = await hashAudioContent(row.message_content, row.lang, graceVoice);
+
+      // Flip speaker + content_hash. UNIQUE(user_id, content_hash) might
+      // collide if the same user already favorited the same Grace text
+      // post-fix; in that case we drop the legacy duplicate so the
+      // post-fix one wins (it has correct hash already).
+      try {
+        await db
+          .update(favorites)
+          .set({ speaker: "grace", content_hash: newHash })
+          .where(eq(favorites.id, row.id));
+      } catch (err) {
+        // Likely UNIQUE collision — delete the legacy row.
+        if (String(err).includes("UNIQUE")) {
+          await db.delete(favorites).where(eq(favorites.id, row.id));
+        } else {
+          throw err;
+        }
+      }
+
+      // Polluted cache cleanup. Each old hash points at one audio_cache
+      // row; delete the row AND the R2 object so storage doesn't keep
+      // a Rocky-rendered Grace mp3 around forever.
+      const cacheRows = await db
+        .select({ r2_key: audio_cache.r2_key })
+        .from(audio_cache)
+        .where(eq(audio_cache.content_hash, row.old_hash))
+        .limit(1);
+      if (cacheRows.length > 0) {
+        try {
+          await storage.from(buckets.rockyAudio).delete(cacheRows[0].r2_key);
+        } catch (err) {
+          // R2 might already be missing (manual cleanup, deploy churn).
+          // Not fatal — we still want to drop the index row.
+          console.warn(`r2 delete failed for ${cacheRows[0].r2_key}:`, err);
+        }
+        await db.delete(audio_cache).where(eq(audio_cache.content_hash, row.old_hash));
+        deletedCache++;
+      }
+
+      migrated++;
+    } catch (err) {
+      errors.push({ id: row.id, message: String(err) });
+    }
+  }
+
+  return c.json({
+    ok: true,
+    candidates_found: candidates.length,
+    migrated_favorites: migrated,
+    deleted_cache_rows: deletedCache,
+    errors,
+  });
+});
+
 export default app;
