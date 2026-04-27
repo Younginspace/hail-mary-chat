@@ -898,15 +898,27 @@ app.post("/api/session/start", async (c) => {
     turn_count: 0,
   });
 
-  // Opportunistic stale-session sweep for THIS user only. If the user
-  // closed their last conversation by killing the tab (no /session/end
-  // ever fired), this is the perfect cue to consolidate it: they've
-  // returned, opened a new session, and we know their previous one
-  // can't possibly still be active. Forward-only — see CUTOFF in
-  // consolidate.ts.
+  // Opportunistic stale-session sweep for THIS user — picks up the
+  // returning user's own previous orphan session immediately, no
+  // 30-min wait. Forward-only via the cutoff in consolidate.ts.
   ctx.runInBackground(
     sweepUserStaleSessions(user.user_id).then((r) => {
       if (r.swept > 0) console.info(`session/start: swept ${r.swept} stale sessions for user ${user.user_id}`);
+    })
+  );
+
+  // Global stale-session sweep — picks up OTHER users' orphan sessions
+  // too. Why this is on /session/start in addition to /session/end:
+  // /session/end fires from a keepalive fetch which production data
+  // shows drops ~50% of the time (browser kill, network drop). Without
+  // this redundancy, a session is only swept when SOME user calls
+  // /session/end successfully — which in the worst case (everyone
+  // kills their browser) never happens. /session/start fires whenever
+  // anyone returns to the app, which is much more reliable. Cap of 25
+  // keeps the latency cost bounded.
+  ctx.runInBackground(
+    sweepStaleSessions().then((r) => {
+      if (r.swept > 0) console.info(`session/start: globally swept ${r.swept} idle session(s)`);
     })
   );
 
