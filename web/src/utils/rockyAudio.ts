@@ -41,6 +41,16 @@ const MOOD_TO_AUDIO: Record<RockyMood, string[]> = {
 // 所以我们用一个全局共享的元素，在用户点击时解锁，之后换 src 复用。
 let _sharedAudio: HTMLAudioElement | null = null;
 
+// Generation counter — bumped by stopSharedAudio(). playSharedAudio()
+// captures it at the start of its async pipeline and aborts before
+// setting audio.src if the generation has moved on. Without this, a
+// pending fetch inside playSharedAudio could resolve AFTER the caller
+// stopped playback (e.g. user navigated away from chat) and restart
+// the shared element on a stale src — exactly the "Rocky echo can't
+// play, especially when other audio is playing" symptom users hit.
+let _sharedGen = 0;
+let _sharedAbort: AbortController | null = null;
+
 /** 获取共享 Audio 元素 */
 export function getSharedAudio(): HTMLAudioElement {
   if (!_sharedAudio) {
@@ -63,11 +73,31 @@ export function unlockAudio() {
  * 用共享 Audio 元素播放指定 src，返回播放完毕的 Promise。
  * 先 fetch 为 blob 再设置 src，避免 iOS Safari 对远程 URL 加载失败时
  * 渲染原生 "Load failed" 覆盖层。
+ *
+ * Cancellation: captures _sharedGen at start. If stopSharedAudio()
+ * runs (which bumps _sharedGen and aborts the fetch), the post-fetch
+ * code path bails before touching audio.src — without this, a pending
+ * fetch could resolve and restart playback after the caller already
+ * stopped audio.
  */
 export function playSharedAudio(src: string): Promise<void> {
   return new Promise((resolve) => {
     const audio = getSharedAudio();
+    const myGen = _sharedGen;
+    // Each playSharedAudio call gets its own AbortController. Stashing
+    // it on _sharedAbort lets stopSharedAudio cancel whichever fetch
+    // is currently in flight (only one at a time — sequential).
+    const ctrl = new AbortController();
+    _sharedAbort = ctrl;
+
     const play = (url: string, revoke?: boolean) => {
+      // Re-check generation before setting src — stopSharedAudio may
+      // have run between the fetch resolving and this microtask.
+      if (myGen !== _sharedGen) {
+        if (revoke) URL.revokeObjectURL(url);
+        resolve();
+        return;
+      }
       audio.onended = () => {
         audio.onended = null; audio.onerror = null;
         if (revoke) URL.revokeObjectURL(url);
@@ -82,12 +112,17 @@ export function playSharedAudio(src: string): Promise<void> {
       audio.play().catch(() => { if (revoke) URL.revokeObjectURL(url); resolve(); });
     };
 
-    fetch(src)
+    fetch(src, { signal: ctrl.signal })
       .then((r) => {
         if (!r.ok) throw new Error(r.statusText);
         return r.blob();
       })
       .then((blob) => {
+        if (myGen !== _sharedGen) {
+          // Stopped during fetch — drop the blob, do not start.
+          resolve();
+          return;
+        }
         const blobUrl = URL.createObjectURL(blob);
         play(blobUrl, true);
       })
@@ -95,8 +130,18 @@ export function playSharedAudio(src: string): Promise<void> {
   });
 }
 
-/** 停止共享 Audio 播放 */
+/**
+ * 停止共享 Audio 播放. Bumps the generation so any in-flight
+ * playSharedAudio aborts before re-binding src on the shared element.
+ * Aborts the in-flight fetch as well, so the network request doesn't
+ * keep going after the user navigated away.
+ */
 export function stopSharedAudio() {
+  _sharedGen++;
+  if (_sharedAbort) {
+    _sharedAbort.abort();
+    _sharedAbort = null;
+  }
   if (_sharedAudio) {
     _sharedAudio.pause();
     _sharedAudio.currentTime = 0;

@@ -39,7 +39,12 @@ import {
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { retryStuckConsolidationJobs, runConsolidationJob } from "./consolidate";
+import {
+  retryStuckConsolidationJobs,
+  runConsolidationJob,
+  sweepStaleSessions,
+  sweepUserStaleSessions,
+} from "./consolidate";
 import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
 import type { GiftCredits, Lang as RockyLang } from "./prompts/rocky";
 
@@ -889,8 +894,33 @@ app.post("/api/session/start", async (c) => {
     lang,
     mode,
     started_at: now,
+    last_active_at: now,
     turn_count: 0,
   });
+
+  // Opportunistic stale-session sweep for THIS user — picks up the
+  // returning user's own previous orphan session immediately, no
+  // 30-min wait. Forward-only via the cutoff in consolidate.ts.
+  ctx.runInBackground(
+    sweepUserStaleSessions(user.user_id).then((r) => {
+      if (r.swept > 0) console.info(`session/start: swept ${r.swept} stale sessions for user ${user.user_id}`);
+    })
+  );
+
+  // Global stale-session sweep — picks up OTHER users' orphan sessions
+  // too. Why this is on /session/start in addition to /session/end:
+  // /session/end fires from a keepalive fetch which production data
+  // shows drops ~50% of the time (browser kill, network drop). Without
+  // this redundancy, a session is only swept when SOME user calls
+  // /session/end successfully — which in the worst case (everyone
+  // kills their browser) never happens. /session/start fires whenever
+  // anyone returns to the app, which is much more reliable. Cap of 25
+  // keeps the latency cost bounded.
+  ctx.runInBackground(
+    sweepStaleSessions().then((r) => {
+      if (r.swept > 0) console.info(`session/start: globally swept ${r.swept} idle session(s)`);
+    })
+  );
 
   return c.json({
     session_id,
@@ -927,6 +957,16 @@ app.post("/api/session/end", async (c) => {
   ctx.runInBackground(
     retryStuckConsolidationJobs().then((r) => {
       if (r.retried > 0) console.info(`retryStuck: resumed ${r.retried} job(s)`);
+    })
+  );
+
+  // Global stale-session sweep — closes any open sessions that haven't
+  // had activity in 30 min and queues consolidation. Forward-only via
+  // the cutoff in consolidate.ts so existing pre-rollout orphans stay
+  // untouched (intentional: avoids surprise level-ups).
+  ctx.runInBackground(
+    sweepStaleSessions().then((r) => {
+      if (r.swept > 0) console.info(`sweepStale: closed ${r.swept} idle session(s)`);
     })
   );
 
@@ -986,12 +1026,21 @@ app.post("/api/session/message", async (c) => {
     })
     .onConflictDoNothing();
 
+  // Bump last_active_at on EVERY message (user or assistant). The stale-
+  // session sweeper uses this to decide which open sessions to close.
+  // We update it for both roles so that an assistant streaming a long
+  // reply doesn't accidentally fall into the idle window before the
+  // user replies. turn_count only increments on user messages (existing
+  // behavior). Same race protection as before: the WHERE ended_at IS NULL
+  // clause makes both UPDATEs no-op if /session/end already closed.
+  const msgNow = Date.now();
   if (body.role === "user") {
-    // Only bump turn_count if the session is still open; if /api/session/end
-    // raced us after the check above, ended_at is now set and this UPDATE
-    // harmlessly no-ops.
     await db.run(
-      sql`UPDATE sessions SET turn_count = turn_count + 1 WHERE id = ${body.session_id} AND ended_at IS NULL`
+      sql`UPDATE sessions SET turn_count = turn_count + 1, last_active_at = ${msgNow} WHERE id = ${body.session_id} AND ended_at IS NULL`
+    );
+  } else {
+    await db.run(
+      sql`UPDATE sessions SET last_active_at = ${msgNow} WHERE id = ${body.session_id} AND ended_at IS NULL`
     );
   }
 

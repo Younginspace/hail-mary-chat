@@ -22,6 +22,7 @@ import {
   parseSpeakerBlocks,
 } from '../utils/messageCleanup';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
+import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlayback';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -90,13 +91,10 @@ export default function ChatInterface({
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
-  const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
-  // AbortController for the most recent in-flight /api/tts fetch behind
-  // a Play tap. Without this, rapidly tapping Play on different blocks
-  // would race two concurrent pipelines past `await fetch(...)`, both
-  // constructing Audio elements that played simultaneously. Each new
-  // play aborts the previous fetch + rejects stale post-await commits.
-  const playbackRequestRef = useRef<AbortController | null>(null);
+  // Token of the currently-playing slot from the global audioPlayback
+  // coordinator. Used to distinguish "this block's audio finished"
+  // from "a newer claim took over" — both arrive via onEnded.
+  const playbackTokenRef = useRef<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const chatPaneRef = useRef<HTMLDivElement>(null);
@@ -248,14 +246,13 @@ export default function ChatInterface({
     });
   }, []);
 
-  // Stop any per-message playback on unmount, plus abort any in-flight
-  // TTS fetch so it doesn't race a re-mount.
+  // Stop any per-message playback on unmount. releaseSlot is a no-op
+  // if a sibling component already took ownership of the slot.
   useEffect(() => {
     return () => {
-      playbackAudioRef.current?.pause();
-      playbackAudioRef.current = null;
-      playbackRequestRef.current?.abort();
-      playbackRequestRef.current = null;
+      if (playbackTokenRef.current !== null && isOwner(playbackTokenRef.current)) {
+        releaseSlot();
+      }
     };
   }, []);
 
@@ -289,23 +286,11 @@ export default function ChatInterface({
       const key = `${msg.id}#${blockIdx}`;
       // Toggle-off if this exact block's audio is currently playing.
       if (playingKey === key) {
-        playbackRequestRef.current?.abort();
-        playbackRequestRef.current = null;
-        playbackAudioRef.current?.pause();
-        playbackAudioRef.current = null;
+        releaseSlot();
+        playbackTokenRef.current = null;
         setPlayingKey(null);
         return;
       }
-      // Different block — kill any in-flight fetch + current playback,
-      // plus auto-TTS, so only the new pipeline survives. Without the
-      // abort, rapid taps on different blocks would overlap audio.
-      playbackRequestRef.current?.abort();
-      stopTTS();
-      playbackAudioRef.current?.pause();
-      playbackAudioRef.current = null;
-
-      const ctrl = new AbortController();
-      playbackRequestRef.current = ctrl;
 
       const block = getBlock(msg, blockIdx);
       if (!block) return;
@@ -315,6 +300,16 @@ export default function ChatInterface({
       // charging); catching it here skips the round-trip.
       if (!isTtsTextMeaningful(text)) return;
 
+      // Claim the global slot — atomically stops auto-TTS (mood chirps,
+      // streaming Rocky line), any other play button's audio (chat or
+      // favorites), and aborts the previous /api/tts fetch. Note that
+      // claimSlot also calls stopSharedAudio internally, so the manual
+      // stopTTS() call is redundant here — but we keep it because
+      // useRockyTTS owns its own ttsAudioRef + cancelledRef state that
+      // claimSlot doesn't know about.
+      stopTTS();
+      const { token, signal } = claimSlot();
+      playbackTokenRef.current = token;
       setFavError(null);
 
       // Short-circuit: greeting / farewell / Echo preset replies are
@@ -327,57 +322,71 @@ export default function ChatInterface({
       let src: string;
       if (staticPath) {
         src = staticPath;
+        setPlayingKey(key);
       } else {
         const msgIdParam = msg.id ? `&message_id=${encodeURIComponent(msg.id)}` : '';
         const speakerParam = speaker === 'grace' ? '&speaker=grace' : '';
         const url = `${API_BASE}/api/tts?text=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang)}${msgIdParam}${speakerParam}`;
+        // Optimistic UI: show "playing" immediately so the user gets
+        // feedback even before the fetch lands. Reset on error/staleness.
+        setPlayingKey(key);
         let res: Response;
         try {
-          res = await fetch(url, { credentials: 'include', signal: ctrl.signal });
+          res = await fetch(url, { credentials: 'include', signal });
         } catch (err) {
-          if ((err as Error).name === 'AbortError') return;
+          if ((err as Error).name !== 'AbortError' && playbackTokenRef.current === token) {
+            playbackTokenRef.current = null;
+            setPlayingKey((cur) => (cur === key ? null : cur));
+          }
           return;
         }
-        // Stale-result guard: a newer tap may have replaced the ref
-        // mid-flight. Drop everything before touching audio state.
-        if (playbackRequestRef.current !== ctrl) return;
+        // Stale-result guard after every await — newer claim drops all
+        // post-fetch state mutation.
+        if (!isOwner(token)) return;
         if (res.status === 402) {
           setVoiceCredits(0);
           setVoiceEnabled(false);
+          if (playbackTokenRef.current === token) {
+            playbackTokenRef.current = null;
+            setPlayingKey((cur) => (cur === key ? null : cur));
+          }
           return;
         }
         if (res.status === 429) {
           setGlobalQuotaHit(true);
+          if (playbackTokenRef.current === token) {
+            playbackTokenRef.current = null;
+            setPlayingKey((cur) => (cur === key ? null : cur));
+          }
           return;
         }
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (playbackTokenRef.current === token) {
+            playbackTokenRef.current = null;
+            setPlayingKey((cur) => (cur === key ? null : cur));
+          }
+          return;
+        }
 
         const blob = await res.blob();
-        if (playbackRequestRef.current !== ctrl) return;
+        if (!isOwner(token)) return;
         blobUrl = URL.createObjectURL(blob);
         src = blobUrl;
       }
 
-      // Final guard before binding the Audio element.
-      if (playbackRequestRef.current !== ctrl) {
-        if (blobUrl) URL.revokeObjectURL(blobUrl);
-        return;
+      const ok = attachAudio(token, src, {
+        blobUrl,
+        onEnded: () => {
+          if (playbackTokenRef.current === token) {
+            playbackTokenRef.current = null;
+            setPlayingKey((cur) => (cur === key ? null : cur));
+          }
+        },
+      });
+      if (!ok && playbackTokenRef.current === token) {
+        playbackTokenRef.current = null;
+        setPlayingKey((cur) => (cur === key ? null : cur));
       }
-
-      const audio = new Audio(src);
-      playbackAudioRef.current = audio;
-      setPlayingKey(key);
-      const cleanup = () => {
-        if (blobUrl) URL.revokeObjectURL(blobUrl);
-        if (playbackAudioRef.current === audio) {
-          playbackAudioRef.current = null;
-          setPlayingKey((cur) => (cur === key ? null : cur));
-        }
-        if (playbackRequestRef.current === ctrl) playbackRequestRef.current = null;
-      };
-      audio.onended = cleanup;
-      audio.onerror = cleanup;
-      audio.play().catch(cleanup);
 
       // Credits may have changed (cache miss on a non-favorite). Only
       // worth a refresh if we actually hit /api/tts.

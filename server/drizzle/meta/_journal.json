@@ -99,6 +99,13 @@
       "when": 1778140800000,
       "tag": "0013_favorites_speaker",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1778227200000,
+      "tag": "0014_wide_hawkeye",
+      "breakpoints": true
     }
   ]
 }
