@@ -83,14 +83,21 @@ export function unlockAudio() {
 export function playSharedAudio(src: string): Promise<void> {
   return new Promise((resolve) => {
     const audio = getSharedAudio();
-    // Bump generation so any in-flight playSharedAudio bails — this
-    // call is the new owner. Without this, two concurrent
-    // playSharedAudio calls (e.g. the second one fired before the
-    // first's fetch resolved) would both pass their gen check, both
-    // bind onended/onerror on the SAME singleton _sharedAudio (the
-    // second clobbering the first), the first call's promise never
-    // resolves, and its blob URL leaks. Plus stopSharedAudio's
-    // _sharedAbort would only cancel whichever was stashed last.
+    // Take ownership of the singleton. Three things, in order:
+    //   1. Pause + clear handlers on the currently-playing audio.
+    //      Without this, if our new fetch fails (network drop) we
+    //      never reach the `play()` path that overwrites audio.src,
+    //      so the previous call's audio keeps playing audibly while
+    //      the user thinks the new playback "didn't happen". This is
+    //      the Echo-can't-play-when-other-audio-is-playing symptom.
+    //   2. Abort any in-flight fetch from a previous playSharedAudio
+    //      so its post-fetch microtask bails (via the gen check
+    //      below) instead of clobbering our about-to-be-bound src.
+    //   3. Bump _sharedGen so older callers' promises (still resolving
+    //      via the bailed gen-check path) don't race us at audio.src.
+    audio.pause();
+    audio.onended = null;
+    audio.onerror = null;
     if (_sharedAbort) {
       _sharedAbort.abort();
       _sharedAbort = null;
