@@ -115,16 +115,12 @@ export default function AffinityDetailsModal({ currentLevel, progressToNext, onC
         </div>
 
         <div className="affinity-modal-stage">
-          <button
-            type="button"
-            className="affinity-modal-arrow affinity-modal-arrow-prev"
-            onClick={() => setSelectedLevel((l) => Math.max(1, l - 1))}
-            disabled={selectedLevel <= 1}
-            aria-label={t('affinity.prev', lang)}
-          >
-            ‹
-          </button>
-
+          {/* Navigation: mobile = horizontal swipe (handled at the
+              card container's onTouchStart/End); desktop = the dot
+              row at the bottom. The prev/next arrow buttons that
+              used to live here were removed — they read as
+              decorative chrome that didn't pull weight against the
+              dots, and on mobile they competed with the swipe gesture. */}
           <div className="affinity-modal-cards">
             {LEVELS.map((lv) => {
               const isCurrent = lv === safeCurrent;
@@ -185,16 +181,6 @@ export default function AffinityDetailsModal({ currentLevel, progressToNext, onC
               );
             })}
           </div>
-
-          <button
-            type="button"
-            className="affinity-modal-arrow affinity-modal-arrow-next"
-            onClick={() => setSelectedLevel((l) => Math.min(4, l + 1))}
-            disabled={selectedLevel >= 4}
-            aria-label={t('affinity.next', lang)}
-          >
-            ›
-          </button>
         </div>
 
         <div className="affinity-modal-dots" role="tablist">

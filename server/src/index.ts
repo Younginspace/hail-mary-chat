@@ -675,7 +675,18 @@ app.post("/api/adopt-device", async (c) => {
     // Safety-net merge — cleans historical dups from before this fix.
     // Once the DB is clean this is effectively a no-op (<=1 row).
     await mergeUsersByAuthId(authUser.id);
-    return c.json({ ok: true, user_id: row.id, callsign: resolvedCallsign, adopted: true });
+    // Returning-user path. Same client shape as /api/me so the React
+    // me state has affinity_level / progress_to_next / voice_credits
+    // from the very first setMe(adopted) call. This is the path most
+    // existing users hit on every reload.
+    const clientShape = await readUserClientShape(row.id);
+    return c.json({
+      ok: true,
+      user_id: row.id,
+      callsign: resolvedCallsign,
+      adopted: true,
+      ...clientShape,
+    });
   }
 
   // ── Legacy device_id fallback: pre-auth anon session adopting into
@@ -736,7 +747,17 @@ app.post("/api/adopt-device", async (c) => {
       .orderBy(asc(users.created_at))
       .limit(1);
     const primaryId = primaryRow.length > 0 ? primaryRow[0].id : id;
-    return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
+    // First-time registration path. Same client shape as /api/me so
+    // useAuthSession's `me` state is fully populated from the first
+    // setMe call (no flicker before mount-time refreshMe lands).
+    const clientShape = await readUserClientShape(primaryId);
+    return c.json({
+      ok: true,
+      user_id: primaryId,
+      callsign: resolvedCallsign,
+      adopted: true,
+      ...clientShape,
+    });
   }
 
   const row = existing[0];
@@ -772,7 +793,19 @@ app.post("/api/adopt-device", async (c) => {
       .orderBy(asc(users.created_at))
       .limit(1);
     const primaryId = primaryRow.length > 0 ? primaryRow[0].id : id;
-    return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
+    // Return the same client shape /api/me returns so the React me
+    // state has affinity_level / progress_to_next / voice_credits from
+    // the moment adopt-device resolves — the AffinityIndicator no
+    // longer flashes a stale "LV1 Earth Signal" before the mount-time
+    // refreshMe() lands.
+    const clientShape = await readUserClientShape(primaryId);
+    return c.json({
+      ok: true,
+      user_id: primaryId,
+      callsign: resolvedCallsign,
+      adopted: true,
+      ...clientShape,
+    });
   }
 
   await db
@@ -793,7 +826,14 @@ app.post("/api/adopt-device", async (c) => {
     .orderBy(asc(users.created_at))
     .limit(1);
   const primaryId = primaryRow.length > 0 ? primaryRow[0].id : row.id;
-  return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
+  const clientShape = await readUserClientShape(primaryId);
+  return c.json({
+    ok: true,
+    user_id: primaryId,
+    callsign: resolvedCallsign,
+    adopted: true,
+    ...clientShape,
+  });
 });
 
 // Progress toward the next affinity level, expressed as 0-100 integer.
@@ -837,38 +877,54 @@ function progressToNextLevel(
   return Math.round(clamp01(Math.min(t, w)) * 100);
 }
 
+// Read the data the client needs to populate its `me` state — affinity
+// level, progress toward the next level, voice credits balance. Used
+// by both /api/me AND /api/adopt-device so they return the same shape.
+//
+// Why /api/adopt-device needs the same shape: the React app's
+// useAuthSession hook calls adoptDevice() right after sign-in /
+// session-change, then setMe(adopted-result). If adopt-device returns
+// only {user_id, callsign, adopted}, the me state is missing
+// affinity_level / progress_to_next until ChatInterface's mount-time
+// refreshMe() fires — which can race the AffinityIndicator render
+// and flash "LV1" briefly even for L2+ users. Returning the same
+// fields here makes the me state correct from the first setter.
+async function readUserClientShape(userId: string): Promise<{
+  affinity_level: number;
+  progress_to_next: number | null;
+  voice_credits: number;
+}> {
+  const row = await db
+    .select({
+      affinity_level: users.affinity_level,
+      voice_credits: users.voice_credits,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const affinity_level = row[0]?.affinity_level ?? 1;
+  const voice_credits = row[0]?.voice_credits ?? 0;
+
+  const rapRow = await db
+    .select({ trust: rapport.trust, warmth: rapport.warmth })
+    .from(rapport)
+    .where(eq(rapport.user_id, userId))
+    .limit(1);
+  const trust = rapRow[0]?.trust ?? 0.3;
+  const warmth = rapRow[0]?.warmth ?? 0.3;
+  const progress_to_next = progressToNextLevel(affinity_level, trust, warmth);
+
+  return { affinity_level, progress_to_next, voice_credits };
+}
+
 app.get("/api/me", async (c) => {
   if (!auth.isAuthenticated()) {
     return c.json({ error: "not authenticated" }, 401);
   }
   const user = await getAuthedUser();
-  let affinity_level = 1;
-  let progress_to_next: number | null = 0;
-  let voice_credits = 0;
+  let clientShape = { affinity_level: 1, progress_to_next: 0 as number | null, voice_credits: 0 };
   if (user) {
-    const row = await db
-      .select({
-        affinity_level: users.affinity_level,
-        voice_credits: users.voice_credits,
-      })
-      .from(users)
-      .where(eq(users.id, user.user_id))
-      .limit(1);
-    affinity_level = row[0]?.affinity_level ?? 1;
-    voice_credits = row[0]?.voice_credits ?? 0;
-
-    // Pull rapport — defaults to (0.3, 0.3) for users who haven't had
-    // a session consolidated yet. matches the schema default so a
-    // missing row and a fresh row read identically.
-    const rapRow = await db
-      .select({ trust: rapport.trust, warmth: rapport.warmth })
-      .from(rapport)
-      .where(eq(rapport.user_id, user.user_id))
-      .limit(1);
-    const trust = rapRow[0]?.trust ?? 0.3;
-    const warmth = rapRow[0]?.warmth ?? 0.3;
-    progress_to_next = progressToNextLevel(affinity_level, trust, warmth);
-
+    clientShape = await readUserClientShape(user.user_id);
     // Bot defense: lazily zero credits on idle-for-7-days accounts with
     // zero sessions. Runs in background so /api/me stays snappy.
     ctx.runInBackground(zeroCreditsIfStale(user.user_id));
@@ -878,11 +934,11 @@ app.get("/api/me", async (c) => {
     email: auth.user.email,
     callsign: user?.callsign ?? null,
     adopted: user != null,
-    affinity_level,
+    affinity_level: clientShape.affinity_level,
     // Progress toward next level (0-100, null at max). Raw trust/warmth
     // scores intentionally NOT returned — see progressToNextLevel comment.
-    progress_to_next,
-    voice_credits,
+    progress_to_next: clientShape.progress_to_next,
+    voice_credits: clientShape.voice_credits,
   });
 });
 

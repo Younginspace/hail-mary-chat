@@ -76,12 +76,21 @@ export default function ChatInterface({
   onLevelUpDismiss,
 }: ChatInterfaceProps) {
   const { lang } = useLang();
+  // useAuthSession lifted above useChat so we can feed affinity_level
+  // into the hook — L2+ users get an uncapped per-session turn count.
+  const { isAuthenticated, me, refreshMe } = useAuthSession();
+  const affinityLevel = me?.affinity_level ?? 1;
+  const isCapHidden = affinityLevel >= 2;
   const maxTurns = mode === 'text' ? 50 : 10;
-  const { messages, sendMessage, isLoading, turnsLeft, isEnded, isQuotaExceeded } = useChat(lang, mode, sessionId);
+  const { messages, sendMessage, isLoading, turnsLeft, isEnded, isQuotaExceeded } = useChat(
+    lang,
+    mode,
+    sessionId,
+    affinityLevel,
+  );
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
   const { speak, stop: stopTTS, isSpeaking: ttsSpeaking, ttsQuotaExceeded, ttsInsufficientCredits } = useRockyTTS(!voiceEnabled);
-  const { isAuthenticated, me, refreshMe } = useAuthSession();
   const [input, setInput] = useState('');
   const [mobileView, setMobileView] = useState<MobileView>('chat');
   const [exportOpen, setExportOpen] = useState(false);
@@ -784,12 +793,24 @@ export default function ChatInterface({
                 }
                 onClick={() => setAffinityModalOpen(true)}
               />
-              <span className="mode-bar-divider">·</span>
+              {!isCapHidden && <span className="mode-bar-divider">·</span>}
             </>
           )}
-          <span className="mode-bar-remaining">
-            {turnsLeft} / {maxTurns} {t('chat.remaining', lang).toLowerCase()}
-          </span>
+          {!isCapHidden && (
+            // Tightened from "{n} / {m} REMAINING" to "Chat {n}/{m}"
+            // — the longer form was getting clipped at narrow widths
+            // (mobile) when the affinity strip on the left filled
+            // most of the row. "Chat" prefix kept English so it
+            // reads as a brand-style terminal token (matches the
+            // "AFFINITY ·" label format on the same row).
+            //
+            // Hidden entirely for L2+ users, who have no per-session
+            // turn cap (see useChat). The mode-bar then shows just
+            // the affinity strip — cleaner for engaged users.
+            <span className="mode-bar-remaining">
+              Chat {turnsLeft}/{maxTurns}
+            </span>
+          )}
         </div>
 
         <div ref={chatAreaRef} className="chat-area">
