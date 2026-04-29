@@ -15,6 +15,7 @@
 //     clicking still flips OFF (don't trap the user mid-session).
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 
@@ -102,7 +103,15 @@ export default function VoiceModeButton({
         )}
       </button>
 
-      {showNoCreditsModal && (
+      {/* Modal rendered via portal so its `position: fixed` is scoped
+          to the viewport, not to any ancestor that creates a
+          containing block. The chat status-bar above has
+          `backdrop-filter: blur(8px)` which per CSS spec turns it
+          into a containing block for ALL fixed-positioned descendants
+          — without the portal, the modal collapsed to the status-bar's
+          854×43px footprint instead of covering the screen. Same
+          reason every modern modal library uses portals. */}
+      {showNoCreditsModal && createPortal(
         <div
           className="voice-credits-modal-backdrop"
           role="dialog"
@@ -143,7 +152,8 @@ export default function VoiceModeButton({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
