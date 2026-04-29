@@ -152,12 +152,10 @@ const translations = {
   // ===== Chat Interface =====
   // ('chat.latency' was retired — the spot above the chat now hosts
   //  the AffinityIndicator, which is more useful than a static
-  //  flavor string.)
-  'chat.remaining': {
-    zh: 'REMAINING',
-    en: 'REMAINING',
-    ja: 'REMAINING',
-  },
+  //  flavor string. 'chat.remaining' was retired when the per-session
+  //  turn counter switched from "{n} / {m} REMAINING" to
+  //  "Chat {n}/{m}" — the new format is short enough to not need a
+  //  localized label.)
   'chat.inputPlaceholder': {
     zh: '发送星际消息...',
     en: 'Send interstellar message...',
@@ -401,16 +399,8 @@ const translations = {
     en: 'LOCKED',
     ja: '未解放',
   },
-  'affinity.next': {
-    zh: '下一级',
-    en: 'Next',
-    ja: '次へ',
-  },
-  'affinity.prev': {
-    zh: '上一级',
-    en: 'Previous',
-    ja: '前へ',
-  },
+  // ('affinity.next' / 'affinity.prev' were removed when the modal
+  //  carousel dropped its arrow buttons in favor of dots+swipe only.)
   'affinity.close': {
     zh: '关闭',
     en: 'Close',
@@ -448,28 +438,33 @@ const translations = {
     ja: 'fist my bumpできる仲。Graceと話すみたいに、君とも自然に話せる',
   },
 
-  // Per-level perks. Strings rather than computed lists so localizers
-  // can rewrite freely if a level's perk mix ever changes. Keep these
-  // in sync with the bonus tables in server/src/consolidate.ts.
+  // Per-level perks. Voice credits ONLY — the image/music/video/Grace
+  // bonus columns exist in the schema and consolidate.ts grant tables,
+  // but those features aren't shipped to users yet. Showing them in
+  // the affinity modal as "unlocks" creates expectations we can't meet
+  // today. The grant logic on the server is unchanged (data is stored
+  // for whenever the gift features go live); only the UI string drops
+  // them. Strings rather than computed because the underlying values
+  // rarely change and localizers should be free to rewrite the phrasing.
   'level.1.perks': {
     zh: '注册赠送 10 条语音',
-    en: '10 starter voice renders',
-    ja: '初期音声10回',
+    en: '10 starter voice credits',
+    ja: '初期音声クレジット 10',
   },
   'level.2.perks': {
-    zh: '+10 语音 · 3 张图 · Grace 多串场 3 次',
-    en: '+10 voice · 3 images · 3 Grace cameos',
-    ja: '+10音声 · 画像3枚 · Grace3回',
+    zh: '+10 语音 credits',
+    en: '+10 voice credits',
+    ja: '+10 音声クレジット',
   },
   'level.3.perks': {
-    zh: '+30 语音 · 5 段音乐 · Grace 多串场 5 次',
-    en: '+30 voice · 5 music tracks · 5 Grace cameos',
-    ja: '+30音声 · 楽曲5曲 · Grace5回',
+    zh: '+30 语音 credits',
+    en: '+30 voice credits',
+    ja: '+30 音声クレジット',
   },
   'level.4.perks': {
-    zh: '+50 语音 · 1 段视频（一生一次）· Grace 多串场 10 次',
-    en: '+50 voice · 1 video (once in a lifetime) · 10 Grace cameos',
-    ja: '+50音声 · 動画1本（一生に一度）· Grace10回',
+    zh: '+50 语音 credits',
+    en: '+50 voice credits',
+    ja: '+50 音声クレジット',
   },
 
   // ===== Voice mode toggle + no-credits modal =====

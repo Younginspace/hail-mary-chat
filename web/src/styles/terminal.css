@@ -4307,29 +4307,10 @@ body {
 }
 .affinity-modal-close:active { transform: scale(0.94); }
 .affinity-modal-stage {
-  display: grid;
-  grid-template-columns: 32px 1fr 32px;
-  align-items: stretch;
-  gap: 6px;
-}
-.affinity-modal-arrow {
-  background: transparent;
-  border: 1px solid rgba(216, 176, 128, 0.25);
-  border-radius: 4px;
-  color: var(--accent-warm-dim);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-  transition: var(--tx-smooth-150);
-}
-.affinity-modal-arrow:hover:not(:disabled) {
-  color: var(--accent-warm);
-  border-color: var(--accent-warm);
-}
-.affinity-modal-arrow:active:not(:disabled) { transform: scale(0.94); }
-.affinity-modal-arrow:disabled {
-  opacity: 0.25;
-  cursor: not-allowed;
+  /* Single-column now that the prev/next arrows are gone — the card
+     uses the full content width, dot row below handles navigation
+     intent on desktop, swipe gesture handles it on mobile. */
+  display: block;
 }
 .affinity-modal-cards {
   position: relative;

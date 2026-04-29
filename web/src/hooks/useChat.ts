@@ -52,8 +52,27 @@ export function extractGift(content: string): {
   return { cleaned, gift: { type, subtype, description } };
 }
 
-export function useChat(lang: Lang, mode: ChatMode = 'voice', sessionId?: string) {
-  const MAX_TURNS = mode === 'text' ? 50 : 10;
+export function useChat(
+  lang: Lang,
+  mode: ChatMode = 'voice',
+  sessionId?: string,
+  // affinity_level from /api/me. L2+ removes the per-session turn cap
+  // entirely — they're considered engaged enough that we trust them
+  // to keep the chat going as long as they want. Sessions still end
+  // via the user's explicit hangup or the 30-min idle sweep
+  // (consolidate.ts), so consolidation never runs on a runaway
+  // transcript. Defaults to 1 so a missing/loading /api/me keeps the
+  // safe (capped) behavior — never accidentally remove the cap from a
+  // user who shouldn't have it removed.
+  affinityLevel: number = 1,
+) {
+  // Per-session turn cap. Infinity means uncapped (L2+ only); we still
+  // take Math.max(0, MAX_TURNS - userTurns) for `turnsLeft`, which
+  // resolves to Infinity for uncapped sessions — UI hides the counter
+  // for L2+ so the value is never rendered as "Infinity".
+  const MAX_TURNS = affinityLevel >= 2
+    ? Number.POSITIVE_INFINITY
+    : (mode === 'text' ? 50 : 10);
   const [messages, setMessages] = useState<DisplayMessage[]>([
     {
       id: 'greeting',
