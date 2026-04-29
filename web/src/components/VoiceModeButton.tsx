@@ -9,7 +9,8 @@
 //   - When voice_credits === 0 AND voiceEnabled is currently OFF:
 //     clicking opens the no-credits modal instead of silently
 //     disabling. Once paid top-ups land, the modal's "buy" button
-//     wires up to real flow; for now it's a "coming soon" placeholder.
+//     wires up to real flow; for now the button is shown disabled
+//     with a "(coming soon)" suffix in its label.
 //   - When voice_credits === 0 AND voiceEnabled is currently ON:
 //     clicking still flips OFF (don't trap the user mid-session).
 
@@ -32,7 +33,6 @@ export default function VoiceModeButton({
 }: Props) {
   const { lang } = useLang();
   const [showNoCreditsModal, setShowNoCreditsModal] = useState(false);
-  const [showComingSoon, setShowComingSoon] = useState(false);
 
   const isExhausted = voiceCredits != null && voiceCredits <= 0;
 
@@ -42,10 +42,7 @@ export default function VoiceModeButton({
   useEffect(() => {
     if (!showNoCreditsModal) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowNoCreditsModal(false);
-        setShowComingSoon(false);
-      }
+      if (e.key === 'Escape') setShowNoCreditsModal(false);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -59,15 +56,6 @@ export default function VoiceModeButton({
       return;
     }
     onToggle();
-  };
-
-  const handleBuyClick = () => {
-    // Placeholder for the future top-up flow. For now, surface a
-    // "coming soon" hint inline so the button doesn't feel broken.
-    // TODO: wire up to real purchase flow when payment integration
-    // lands. Keep the button position + label so the migration is a
-    // pure onClick swap.
-    setShowComingSoon(true);
   };
 
   return (
@@ -132,26 +120,24 @@ export default function VoiceModeButton({
             <div className="voice-credits-modal-desc">
               {t('chat.voiceCreditsModalDesc', lang)}
             </div>
-            {showComingSoon && (
-              <div className="voice-credits-modal-soon" role="status">
-                {t('chat.voiceCreditsModalComingSoon', lang)}
-              </div>
-            )}
             <div className="voice-credits-modal-actions">
+              {/* Top-up button is intentionally inert until payment
+                  integration ships. The "(coming soon)" suffix in the
+                  label is the only signal — no inline message, no
+                  toast, no aria-live noise. When the real flow lands,
+                  drop `disabled` and add an onClick. */}
               <button
                 type="button"
                 className="voice-credits-modal-buy"
-                onClick={handleBuyClick}
+                disabled
+                aria-disabled="true"
               >
                 {t('chat.voiceCreditsModalBuy', lang)}
               </button>
               <button
                 type="button"
                 className="voice-credits-modal-later"
-                onClick={() => {
-                  setShowNoCreditsModal(false);
-                  setShowComingSoon(false);
-                }}
+                onClick={() => setShowNoCreditsModal(false)}
               >
                 {t('chat.voiceCreditsModalLater', lang)}
               </button>

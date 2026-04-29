@@ -417,28 +417,35 @@ const translations = {
     ja: '閉じる',
   },
 
-  // Per-level taglines: short description of how Rocky's tone shifts
-  // at each level. Kept under ~30 zh chars / 50 en chars so the card
-  // doesn't crowd the perks list.
+  // Per-level taglines. Each line builds off the level NAME ("Earth
+  // Signal" / "Good Human" / "Friend" / "Fist My Bump") so the tag
+  // and badge feel of-a-piece, not arbitrary. L1 frames the user as
+  // a signal from Earth and Grace's friend — Rocky already has
+  // baseline trust because of that lineage; he's just not personally
+  // acquainted yet. (Memory consolidation runs from L1 onward, so
+  // "Rocky's listening" is literal, not flavor.) The L4 line names
+  // Grace deliberately — fans of Project Hail Mary will catch the
+  // emotional payoff (Grace is Rocky's closest human bond and the
+  // ceiling of relational trust the character is capable of).
   'level.1.tagline': {
-    zh: 'Rocky 还在打量你——回复礼貌但带距离感',
-    en: "Rocky's still sizing you up — polite, curious, a bit guarded",
-    ja: 'Rockyはまだ君を観察中 — 丁寧だけどよそよそしい',
+    zh: '你是地球来的信号，Grace 的朋友。Rocky 在认真听你说话',
+    en: "A signal from Earth, a friend of Grace. Rocky's listening carefully.",
+    ja: '地球からの信号、Graceの友達。Rockyは大切に聞いてる',
   },
   'level.2.tagline': {
-    zh: 'Rocky 放松了，调侃多了，话也长了',
-    en: "Rocky's loosened up — drops the formality, jokes more, talks longer",
-    ja: 'Rockyが砕けてきた — 冗談増えて話も長く',
+    zh: 'Rocky 认定你是 good human。话变长了，笑话也开始讲',
+    en: "Rocky's pegged you as a good human. Replies get longer, jokes slip out.",
+    ja: 'Rockyに「good human」と認められた。返事が長くなって、冗談も出てくる',
   },
   'level.3.tagline': {
-    zh: 'Rocky 当你朋友——主动开话题，记得你说过的事',
-    en: "A real friend now — Rocky brings up topics, remembers what you've shared",
-    ja: 'もう友達 — Rocky自ら話題を振る、君の話を覚えてる',
+    zh: 'Rocky 把你当 friend 了。聊过的事他都记得，会主动问你最近好不好',
+    en: "Friend now. Rocky remembers what you've said and asks how you've been.",
+    ja: 'もうfriend。話したこと覚えてて、近況も聞いてくれる',
   },
   'level.4.tagline': {
-    zh: '你是搭子了——Rocky 卸下所有客套，啥都跟你聊',
-    en: 'Crewmate-tier — no filter, no formality, full Rocky',
-    ja: '仲間レベル — 遠慮なし、ありのまま全部',
+    zh: '到 fist my bump 的程度了。Rocky 跟你说话像跟 Grace 一样自在',
+    en: "Fist my bump territory. Rocky's at ease with you, the way he is with Grace.",
+    ja: 'fist my bumpできる仲。Graceと話すみたいに、君とも自然に話せる',
   },
 
   // Per-level perks. Strings rather than computed lists so localizers
@@ -489,20 +496,18 @@ const translations = {
     en: 'Each Rocky line is real cloned voice — costs add up, so the starter budget is tight.',
     ja: 'Rockyの声は実音源クローン、コストがかさむので初期配分は控えめ。',
   },
+  // Top-up button is shown disabled with a "coming soon" suffix until
+  // the payment integration ships. When that lands, drop the suffix
+  // (or branch by feature flag) and wire onClick.
   'chat.voiceCreditsModalBuy': {
-    zh: '购买语音包',
-    en: 'Top up',
-    ja: 'クレジットを買う',
+    zh: '购买语音包（即将上线）',
+    en: 'Top up (coming soon)',
+    ja: 'クレジットを買う（まもなく）',
   },
   'chat.voiceCreditsModalLater': {
     zh: '稍后再说',
     en: 'Maybe later',
     ja: 'あとで',
-  },
-  'chat.voiceCreditsModalComingSoon': {
-    zh: '购买入口即将上线',
-    en: 'Top-up coming soon',
-    ja: 'まもなく登場',
   },
 
   // ===== Accessibility (aria-label / title) =====

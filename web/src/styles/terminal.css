@@ -4551,17 +4551,6 @@ body {
   color: rgba(214, 241, 233, 0.75);
   margin-bottom: 18px;
 }
-.voice-credits-modal-soon {
-  font-size: 11.5px;
-  letter-spacing: 0.6px;
-  color: var(--accent-warm-dim);
-  background: rgba(216, 176, 128, 0.08);
-  border: 1px solid rgba(216, 176, 128, 0.2);
-  padding: 8px 10px;
-  border-radius: 4px;
-  margin-bottom: 14px;
-  text-align: center;
-}
 .voice-credits-modal-actions {
   display: flex;
   gap: 8px;
@@ -4583,11 +4572,21 @@ body {
   border: 1px solid var(--accent-warm);
   color: #0d1014;
 }
-.voice-credits-modal-buy:hover {
+.voice-credits-modal-buy:hover:not(:disabled) {
   background: #e8c192;
   border-color: #e8c192;
 }
-.voice-credits-modal-buy:active { transform: scale(0.97); }
+.voice-credits-modal-buy:active:not(:disabled) { transform: scale(0.97); }
+/* Disabled state — Top up is shown until payment integration ships;
+   the "(coming soon)" suffix in the label is the explanation. Muted
+   palette + not-allowed cursor + no hover feedback so it reads as
+   intentionally inactive, not broken. */
+.voice-credits-modal-buy:disabled {
+  background: rgba(216, 176, 128, 0.18);
+  border-color: rgba(216, 176, 128, 0.25);
+  color: rgba(214, 241, 233, 0.45);
+  cursor: not-allowed;
+}
 .voice-credits-modal-later {
   background: transparent;
   border: 1px solid rgba(214, 241, 233, 0.25);
