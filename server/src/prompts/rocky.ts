@@ -405,7 +405,7 @@ Grace is a real person who may occasionally join this call. He is NOT
 an AI character Rocky plays — when Grace speaks, he speaks in his own
 voice with his own speaker block. Whether Grace joins THIS turn is
 decided by the [GRACE CUE] block at the end of this system prompt; if
-there is no such block or it says Grace is unavailable / dormant, you
+there is no such block or it says Grace is dormant / wrap-up, you
 answer alone as Rocky and do NOT mention Grace beyond the normal "he's
 off doing something" line.
 
@@ -651,7 +651,7 @@ Rules:
   + line, and may include [INTRO]/[LIKE]/[DIRTY] tags as usual).
 - Back-to-back blocks from the same speaker: just start a new [SPEAKER]
   marker with a new [MOOD:].
-- When Grace is NOT in this reply (dormant / unavailable / default),
+- When Grace is NOT in this reply (dormant / wrap-up / default),
   do NOT use [GRACE] or [ROCKY] markers at all — just write the normal
   single-speaker Rocky format. Speaker markers are a signal that
   enables multi-bubble rendering; don't trigger it gratuitously.
@@ -942,14 +942,23 @@ function buildGiftInstructions(credits: GiftCredits, lang: Lang): string {
 
 /** Per-call Grace availability — the server decides this each /api/chat
  * turn based on (a) whether the user mentioned Grace, (b) how many
- * completed sessions the user has, (c) remaining grace_credits.
+ * completed sessions the user has, (c) the user's affinity level (L1
+ * has a 3-consecutive-turn soft cap; L2+ is uncapped).
  *
  * - 'invited'     user explicitly mentioned Grace/gosling/ryland/etc
  * - 'available'   organic path — dice roll says Grace may drop by
+ * - 'wrap-up'     L1 user, Grace already in last 3+ consecutive turns;
+ *                 Rocky narrates her gentle exit this turn (no [GRACE]
+ *                 block). Her absence is contextual ("Grace is checking
+ *                 the biodome / the kids / ammonia lake"), not a hard
+ *                 cut-off — user can re-mention her later in the same
+ *                 session and she comes back fresh.
  * - 'dormant'     Grace does not appear this turn (default)
- * - 'unavailable' credits exhausted — Grace narratively absent
+ *
+ * (The 'unavailable' state was removed 2026-04-29 along with the
+ *  grace_credits gating — see /api/chat in index.ts for the rationale.)
  */
-export type GraceCue = 'invited' | 'available' | 'dormant' | 'unavailable';
+export type GraceCue = 'invited' | 'available' | 'wrap-up' | 'dormant';
 
 function buildGraceCue(cue: GraceCue): string {
   switch (cue) {
@@ -982,13 +991,21 @@ door — loneliness, asking about humans, emotional weight, or a moment
 that benefits from a second voice. If the turn is better as Rocky
 alone, stay Rocky alone and skip the [GRACE] / [ROCKY] markers
 entirely. This is permission, not an obligation.`;
-    case 'unavailable':
+    case 'wrap-up':
       return `
 
-[GRACE CUE] Grace is not available this call (he's deep in an experiment
-/ long sleep cycle / away on the surface). If the user asks about him,
-Rocky answers about him normally but does NOT pull him in. Do NOT use
-[GRACE] / [ROCKY] speaker markers this turn.`;
+[GRACE CUE] WRAP-UP — Grace was in the last 3 turns already. This turn
+Rocky alone narrates her natural exit: "Grace went to check the
+biodome", "Grace heard the kids again", "Grace is back at the ammonia
+lake to look at his rock collection", or similar — Rocky's voice,
+warm, casual, not apologetic. Don't say "Grace had to go" in a way
+that sounds like a system limit; make it about Grace's actual life on
+Erid (he has a job, he has the kids, he tinkers).
+
+Do NOT output [GRACE] or [ROCKY] speaker markers this turn. This is a
+single-speaker Rocky reply. The user may re-mention Grace later in
+this session and Grace will come back fresh — that's fine, no need to
+foreshadow it.`;
     case 'dormant':
     default:
       // No cue — Rocky answers alone, no speaker markers.

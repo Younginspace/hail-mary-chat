@@ -217,12 +217,28 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
       setIsSpeaking(true);
 
       // === Greeting 特殊处理: hello音效 + sayhello + 预录音频 ===
+      // First-call greeting (new user, no consolidated history).
       // Note: previous version had 200ms setTimeout between mood and voice.
       // Removed — adds latency with no audible benefit.
       if (msgId === 'greeting') {
         await playSequenceInterruptible(getGreetingAudioSequence());
         if (!cancelledRef.current) {
           await playInterruptible(`/audio/defaults/greeting_${lang}.mp3`);
+        }
+        setIsSpeaking(false);
+        return;
+      }
+
+      // Returning-user greeting. Same hello chirp as first-call (so
+      // returning users still get the warm "incoming signal" texture)
+      // but a different pre-recorded voice line — shorter, framed
+      // around "Rocky was waiting for your signal". Routed via a
+      // distinct mp3 path so the cache lookup doesn't conflict with
+      // the first-call greeting.
+      if (msgId === 'greeting-returning') {
+        await playSequenceInterruptible(getGreetingAudioSequence());
+        if (!cancelledRef.current) {
+          await playInterruptible(`/audio/defaults/greeting_returning_${lang}.mp3`);
         }
         setIsSpeaking(false);
         return;

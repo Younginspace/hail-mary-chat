@@ -1311,22 +1311,32 @@ app.post("/api/chat", async (c) => {
 
   // ── Grace cameo decision ──────────────────────────────────────────
   // Four states, in priority order:
-  //   unavailable → credits exhausted → Grace narratively absent
-  //   invited     → user named Grace/gosling/etc → force-consider him
-  //   available   → ≥3 sessions AND dice roll passed → Rocky MAY invite
+  //   wrap-up     → L1 user, Grace already in last 3+ consecutive turns
+  //                 → Rocky narrates her exit (no [GRACE] block this turn)
+  //   invited     → user named Grace/gosling/etc → force-consider her
+  //   available   → ≥1 session AND dice roll passed → Rocky MAY invite
   //   dormant     → default, Rocky alone, no speaker markers
-  // Consumption happens post-stream if the response actually contained
-  // a [GRACE] speaker block (see chatGraceConsume below).
+  //
+  // (The old 'unavailable' state for grace_credits=0 was removed
+  //  2026-04-29. Grace cameo no longer gates on credits — chat cost is
+  //  the same with or without her, and voice cost is already gated by
+  //  voice_credits. The grace_credits column stays in the schema for
+  //  backwards compat but is not read by the cue logic anymore.)
   let graceCue: import("./prompts/rocky").GraceCue = "dormant";
-  let graceCreditsAvail = 0;
   let graceAddress: "boy" | "girl" | "neither" | null = null;
   try {
     const graceRow = await db
-      .select({ credits: users.grace_credits, address: users.grace_address })
+      .select({
+        // affinity_level controls whether the L1 wrap-up gate fires.
+        // L2+ users are uncapped — Grace stays as long as the user
+        // keeps engaging her this session.
+        level: users.affinity_level,
+        address: users.grace_address,
+      })
       .from(users)
       .where(eq(users.id, user.user_id))
       .limit(1);
-    graceCreditsAvail = graceRow[0]?.credits ?? 0;
+    const userLevel = graceRow[0]?.level ?? 1;
     const rawAddr = graceRow[0]?.address ?? null;
     graceAddress = rawAddr === "boy" || rawAddr === "girl" || rawAddr === "neither" ? rawAddr : null;
 
@@ -1366,36 +1376,65 @@ app.post("/api/chat", async (c) => {
       }
     }
 
-    if (graceCreditsAvail <= 0) {
-      graceCue = "unavailable";
-    } else {
-      // Does the user explicitly mention Grace this turn?
-      const lastUser = [...body.messages].reverse().find((m) => m.role === "user");
-      const mentionsGrace =
-        !!lastUser &&
-        /grace|gosling|ryland|格蕾丝|格雷斯|高司令/i.test(lastUser.content);
+    // Does the user explicitly mention Grace this turn?
+    const lastUser = [...body.messages].reverse().find((m) => m.role === "user");
+    const mentionsGrace =
+      !!lastUser &&
+      /grace|gosling|ryland|格蕾丝|格雷斯|高司令/i.test(lastUser.content);
 
-      if (mentionsGrace) {
-        graceCue = "invited";
+    if (mentionsGrace) {
+      graceCue = "invited";
+    } else {
+      // Organic path: gated by session count + dice roll. Bumped on
+      // 2026-04-29 from "≥3 sessions, 5%+5%/extra-session, cap 50%"
+      // to a friendlier curve so Grace shows up as a positive surprise
+      // earlier in a user's lifetime. The prior numbers meant most
+      // users (95%+) never met her organically.
+      //   ≥1 ended session required (was ≥3)
+      //   Probability: 5% + 5% per extra session past the first,
+      //                cap 40% (was 50%, but session-count threshold
+      //                was higher so curves end up similar at the top)
+      const [{ n: sessionsCount }] = await db
+        .select({ n: sql<number>`count(*)`.as("n") })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.user_id, user.user_id),
+            isNotNull(sessions.ended_at),
+            sql`${sessions.turn_count} > 0`,
+          ),
+        );
+      if (sessionsCount < 1) {
+        graceCue = "dormant";
       } else {
-        // Organic path: gated by session count (≥3) + dice roll.
-        const [{ n: sessionsCount }] = await db
-          .select({ n: sql<number>`count(*)`.as("n") })
-          .from(sessions)
-          .where(
-            and(
-              eq(sessions.user_id, user.user_id),
-              isNotNull(sessions.ended_at),
-              sql`${sessions.turn_count} > 0`,
-            ),
-          );
-        if (sessionsCount < 3) {
-          graceCue = "dormant";
+        const prob = Math.min(0.4, 0.05 + (sessionsCount - 1) * 0.05);
+        graceCue = Math.random() < prob ? "available" : "dormant";
+      }
+    }
+
+    // L1 soft cap: count consecutive most-recent assistant turns that
+    // contained a [GRACE] block. After 3 such turns, the next turn
+    // overrides to 'wrap-up' — Rocky narrates Grace's exit so she
+    // doesn't dominate the whole session for new users. The user can
+    // still re-mention Grace LATER in the same session (after a few
+    // non-Grace turns); the streak resets and she comes back fresh.
+    //
+    // L2+ users skip this gate entirely — once the user is "Good
+    // Human" or beyond, they've earned uncapped Grace time. (See the
+    // affinity perks copy: "L2 · 跟 Grace 想聊多久聊多久".)
+    const wouldBringGrace = graceCue === "invited" || graceCue === "available";
+    if (userLevel < 2 && wouldBringGrace) {
+      let consecutiveGrace = 0;
+      for (let i = body.messages.length - 1; i >= 0; i--) {
+        const m = body.messages[i];
+        if (m.role !== "assistant") continue;
+        if (/\[GRACE\]/.test(m.content)) {
+          consecutiveGrace++;
         } else {
-          const prob = Math.min(0.5, 0.05 + (sessionsCount - 2) * 0.05);
-          graceCue = Math.random() < prob ? "available" : "dormant";
+          break;
         }
       }
+      if (consecutiveGrace >= 3) graceCue = "wrap-up";
     }
   } catch (err) {
     console.warn("grace cue lookup failed — defaulting to dormant:", err);
@@ -1488,19 +1527,11 @@ app.post("/api/chat", async (c) => {
   // kicks generation, and removes the client's trust-the-text
   // regex from the critical path. (P5 Review §5.) ──
   //
-  // The onComplete callback also inspects the full (post-transform)
-  // response for a [GRACE] speaker block to decide whether to charge
-  // a grace_credit. We only consume when the cue actually allowed
-  // Grace to appear and the LLM took the opening — dormant / unavailable
-  // turns never deduct.
-  const cueAllowedGrace = graceCue === "invited" || graceCue === "available";
-  const onComplete = cueAllowedGrace
-    ? (fullText: string) => {
-        if (/\[GRACE\]/i.test(fullText)) {
-          ctx.runInBackground(consumeGraceCredit(user.user_id));
-        }
-      }
-    : undefined;
+  // Used to also fire consumeGraceCredit() here on Grace appearances,
+  // but credit gating was dropped 2026-04-29 (chat cost is the same
+  // either way; voice cost gated separately). Left undefined now —
+  // the streamChat consumer handles `undefined` as "no callback".
+  const onComplete = undefined;
   return new Response(
     upstream.body.pipeThrough(buildGiftStrippingTransform(onComplete)),
     {
@@ -1517,16 +1548,12 @@ app.post("/api/chat", async (c) => {
 // Atomic decrement — only subtracts when grace_credits > 0 so
 // concurrent /api/chat calls that both land a [GRACE] block can't
 // push the balance negative.
-async function consumeGraceCredit(userId: string): Promise<void> {
-  try {
-    await db
-      .update(users)
-      .set({ grace_credits: sql`${users.grace_credits} - 1` })
-      .where(and(eq(users.id, userId), sql`${users.grace_credits} > 0`));
-  } catch (err) {
-    console.warn("grace credit consume failed:", err);
-  }
-}
+// (consumeGraceCredit was removed 2026-04-29 along with the credit
+//  gating in /api/chat — see the GraceCue comment in prompts/rocky.ts
+//  and the cue decision block in /api/chat for the rationale. The
+//  grace_credits column on `users` is retained in the schema but no
+//  longer decrements; queries that read it now treat it as a
+//  historical stat rather than a live counter.)
 
 // Runs on every /api/chat SSE stream. State is per-request — each
 // call to this factory returns a fresh TransformStream.

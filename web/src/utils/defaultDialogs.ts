@@ -3,7 +3,7 @@
 
 import type { Lang } from '../i18n';
 import type { RockyMood } from './rockyAudio';
-import { getRockyGreeting, getRockyFarewell } from '../prompts/rocky';
+import { getRockyGreeting, getRockyGreetingReturning, getRockyFarewell } from '../prompts/rocky';
 import { extractPlayableText } from './messageCleanup';
 
 export interface DefaultDialog {
@@ -201,6 +201,12 @@ function getPrerecordedFor(lang: Lang): Array<{ text: string; audio: string }> {
   }
   const greetingClean = extractPlayableText(getRockyGreeting(lang), lang);
   if (greetingClean) list.push({ text: greetingClean, audio: `/audio/defaults/greeting_${lang}.mp3` });
+  // Returning-user greeting routes to a different pre-rendered mp3
+  // so the per-bubble ▶ button on a returning greeting hits the
+  // static asset (free) instead of falling back to /api/tts (burns
+  // a credit on cache miss).
+  const greetingReturningClean = extractPlayableText(getRockyGreetingReturning(lang), lang);
+  if (greetingReturningClean) list.push({ text: greetingReturningClean, audio: `/audio/defaults/greeting_returning_${lang}.mp3` });
   const farewellClean = extractPlayableText(getRockyFarewell(lang), lang);
   if (farewellClean) list.push({ text: farewellClean, audio: `/audio/defaults/farewell_${lang}.mp3` });
   _prerecordedCache[lang] = list;
