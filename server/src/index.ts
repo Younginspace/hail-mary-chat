@@ -95,16 +95,24 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // characters, not calls (same column, new semantics — any historical
 // rows are low enough that the switch is invisible).
 //
-// Two tiers, enforced independently in /api/tts:
-//   * Per-user cap: 1000 chars/day per authed user.id. Prevents any
-//     single user burning the whole operator-facing pool.
-//   * Global cap: 8000 chars/day across all users. Leaves ~3000 chars
-//     of MiniMax's daily 11k ceiling as operator reserve (absorbed by
-//     manual MiniMax dashboard testing, since admin-token bypass was
-//     removed per the no-secrets-through-agent rule).
-// The previous constant name was misleading — "_USER_" lived on what
-// was actually a __global__ scope row. Renamed for clarity.
-const TTS_DAILY_PER_USER_CHAR_CAP = 1000;
+// Single global cap: 8000 chars/day across all users. Leaves ~3000
+// chars of MiniMax's daily 11k ceiling as operator reserve (absorbed
+// by manual MiniMax dashboard testing — admin-token bypass was
+// removed per the no-secrets-through-agent rule).
+//
+// The per-user 1000-char/day cap that used to live alongside this was
+// removed on 2026-04-29 because:
+//   1. Non-favorite renders are already hard-capped by users.voice_credits
+//      (default 10 lifetime, +bonuses on level-up). A user can't
+//      possibly exceed ~10–60 paid renders TOTAL across their account
+//      lifetime, regardless of any daily fence.
+//   2. Favorite (free-play) renders had been exempt from the per-user
+//      cap since PR #29 (the cap was burning users on replays of
+//      content they explicitly saved — exactly the "0点立马用就提示
+//      资源不足" report).
+// Net: the daily char cap was no longer constraining anything that
+// voice_credits didn't already constrain harder. Killing it removes
+// confusion, simpler code, same global $$ ceiling.
 const TTS_DAILY_GLOBAL_CHAR_CAP = 8000;
 
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
@@ -2209,71 +2217,18 @@ app.get("/api/tts", async (c) => {
   const charCost = text.length;
   const today = utc8DateString(now);
 
-  // ── 3. Daily TTS caps — two tiers, CAS on CHARACTER count ──
-  // Tier 1: per-user (1000 chars/day). Prevents a single heavy user
-  // from burning the whole operator pool in an afternoon. Scope =
-  // user.user_id. SKIPPED for freePlay (favorites + already-cached
-  // owned content) — see "free-play exception" below.
-  // Tier 2: global across all users (8000 chars/day). Keeps ~3000
-  // chars of MiniMax's 11k ceiling available for operator/admin
-  // testing via X-Admin-Token. Always applies, even on freePlay,
-  // so a single user with many cache-miss favorites can't blow out
-  // the global pool.
+  // ── 3. Daily global TTS cap — CAS on CHARACTER count ──
+  // Single global ceiling at TTS_DAILY_GLOBAL_CHAR_CAP chars/day across
+  // all users. Keeps ~3000 chars of MiniMax's 11k ceiling as operator
+  // reserve. CAS so two concurrent /api/tts calls can't both sneak
+  // past. charCost is server-bounded by what MiniMax actually renders
+  // (post text-cleanup); the client's request length doesn't enter.
   //
-  // Both are CAS so two concurrent /api/tts calls can't both sneak past
-  // the ceiling. charCost is bounded server-side by what MiniMax actually
-  // renders, not what the client sent — after the cleanup pipeline drops
-  // mood tags / translation labels, the remaining text.length is the
-  // billable unit.
-  //
-  // Caveat: D1 has no cross-row transactions. If per-user passes but
-  // global fails, the per-user counter stays inflated by charCost for
-  // this user today. Bounded (~60 chars per hit) and only occurs when
-  // we're already refunding the user's credit, so acceptable.
-  //
-  // Free-play exception (added after the user quota bug report):
-  //   freePlay = isFavorite || the user has favorited this exact text.
-  //   Cache hits on freePlay return at step 1 without ever touching the
-  //   counters (always free). But cache MISS on freePlay was previously
-  //   charging per-user 1000-char/day cap, which meant a user with 5-10
-  //   cache-miss favorites would hit "资源不足" after replaying their
-  //   own favorites a single time after midnight. That's user-hostile —
-  //   replay of content they explicitly saved should not count against
-  //   their daily allowance. Skip the per-user CAS for freePlay; keep
-  //   the global CAS so a user with 100 unique favorites still can't
-  //   spam-render and burn the global pool.
+  // The previous per-user 1000-char/day tier was removed (see the
+  // comment on TTS_DAILY_GLOBAL_CHAR_CAP for why). voice_credits
+  // already caps non-favorite renders harder than the daily char fence
+  // ever did, and freePlay renders had already been exempt since PR #29.
   {
-    if (!freePlay) {
-      const userUsage = await db
-        .insert(daily_api_usage)
-        .values({ date: today, api: "tts", scope: user.user_id, count: charCost, updated_at: now })
-        .onConflictDoUpdate({
-          target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
-          set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
-          setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_PER_USER_CHAR_CAP}`,
-        })
-        .returning({ count: daily_api_usage.count });
-
-      if (userUsage.length === 0) {
-        // Per-user cap hit. Refund the credit so the user isn't punished
-        // for hitting their own ceiling. Only reached when !freePlay so
-        // the credit deduction step earlier did fire.
-        await db
-          .update(users)
-          .set({ voice_credits: sql`${users.voice_credits} + 1` })
-          .where(eq(users.id, user.user_id));
-        await db.insert(voice_credit_ledger).values({
-          id: crypto.randomUUID(),
-          user_id: user.user_id,
-          delta: 1,
-          reason: "refund_user_cap",
-          session_id: url.searchParams.get("session_id"),
-          created_at: now,
-        });
-        return c.json({ error: "user_quota_exceeded" }, 429);
-      }
-    }
-
     const usage = await db
       .insert(daily_api_usage)
       .values({ date: today, api: "tts", scope: "__global__", count: charCost, updated_at: now })
