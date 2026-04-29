@@ -4610,7 +4610,10 @@ button.voice-exhausted-bar:hover {
   filter: brightness(1.15);
 }
 button.voice-exhausted-bar:active {
-  transform: scale(0.99);
+  /* 0.97 keeps press feedback consistent with every other interactive
+     element in the app — fav-play, voice-mode-btn, modal buttons all
+     use the same scale. Prior 0.99 was a typo, not intentional. */
+  transform: scale(0.97);
 }
 
 /* Mobile fit — affinity strip already uses flexbox; just ensure the

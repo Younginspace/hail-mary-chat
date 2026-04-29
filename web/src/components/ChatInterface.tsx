@@ -125,23 +125,25 @@ export default function ChatInterface({
     }
   }, [messages, sessionId]);
 
-  // Refresh /api/me on every ChatInterface mount AND on level-up.
+  // Refresh /api/me on every ChatInterface mount.
   //
-  // Why both:
-  //   - level-up: server hands us the level transition, but trust /
-  //     warmth + new progress_to_next live behind /api/me, so we
-  //     refetch to populate the AffinityIndicator strip.
-  //   - on mount: the user may have just finished a session that got
-  //     consolidated server-side (rapport bumped, progress changed).
-  //     /api/session/start hands back the new affinity_level but not
-  //     progress_to_next, so a fresh fetchMe is the only path to
-  //     accurate progress %.
+  // The mount-time refetch covers both situations the AffinityIndicator
+  // strip needs fresh data for:
+  //   1. The user just finished a session that got consolidated
+  //      server-side (rapport bumped, progress_to_next changed).
+  //      /api/session/start hands back the new affinity_level but
+  //      not progress_to_next, so we need /api/me.
+  //   2. /api/session/start returned a level-up flag (initialLevelUp).
+  //      The level transition fact is already in hand, but trust /
+  //      warmth + the post-level progress baseline still live behind
+  //      /api/me, so we need to refetch them anyway.
+  // Both call paths used to fire their own useEffect; on a fresh
+  // login-with-levelup that double-triggered /api/me. Consolidated
+  // into a single mount-time fetch — initialLevelUp now relies on
+  // this effect to also pull the post-level data.
   useEffect(() => {
     refreshMe();
   }, [refreshMe]);
-  useEffect(() => {
-    if (initialLevelUp) refreshMe();
-  }, [initialLevelUp, refreshMe]);
 
   // Close session on unmount
   useEffect(() => {
@@ -761,15 +763,30 @@ export default function ChatInterface({
 
         <div className="mode-bar">
           {/* AffinityIndicator replaces the old "LATENCY 4.2ly" flavor
-              text — same slot, but actually tells the user where they
-              stand and how far to the next level. Tappable; opens the
-              full per-level breakdown modal. */}
-          <AffinityIndicator
-            level={me?.affinity_level ?? 1}
-            progressToNext={me?.progress_to_next ?? 0}
-            onClick={() => setAffinityModalOpen(true)}
-          />
-          <span className="mode-bar-divider">·</span>
+              text. Gated on `me` being loaded so an L2+ returning
+              user doesn't see a brief "Earth Signal · 0%" flicker
+              flash to their actual level on first /api/me resolve.
+              While loading, the mode-bar shows just the remaining-
+              turns counter. */}
+          {me != null && (
+            <>
+              <AffinityIndicator
+                level={me.affinity_level ?? 1}
+                /* Forward `null` UNCHANGED for max-level users — the
+                   indicator renders "MAX" only when it sees null,
+                   not when it sees 0. Earlier `?? 0` shorthand
+                   collapsed both null and undefined to 0, which
+                   meant L4 users saw "0% → LV5" instead of MAX. */
+                progressToNext={
+                  me.progress_to_next === undefined
+                    ? 0
+                    : me.progress_to_next
+                }
+                onClick={() => setAffinityModalOpen(true)}
+              />
+              <span className="mode-bar-divider">·</span>
+            </>
+          )}
           <span className="mode-bar-remaining">
             {turnsLeft} / {maxTurns} {t('chat.remaining', lang).toLowerCase()}
           </span>
@@ -875,7 +892,12 @@ export default function ChatInterface({
       {affinityModalOpen && (
         <AffinityDetailsModal
           currentLevel={me?.affinity_level ?? 1}
-          progressToNext={me?.progress_to_next ?? 0}
+          /* Same null-preservation as in the indicator: L4 users
+             must reach the "MAX" branch in the modal, which only
+             fires when progressToNext === null. */
+          progressToNext={
+            me?.progress_to_next === undefined ? 0 : me.progress_to_next
+          }
           onClose={() => setAffinityModalOpen(false)}
         />
       )}
