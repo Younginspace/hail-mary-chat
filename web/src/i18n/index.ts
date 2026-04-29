@@ -476,15 +476,21 @@ const translations = {
   },
 
   // ===== Voice mode toggle + no-credits modal =====
+  // The chip's speaker icon already telegraphs on / off state (plain
+  // speaker vs speaker-with-X). Earlier "VOICE: ON / VOICE: OFF" was
+  // redundant AND, when the credits counter went 3-digit (e.g. 102
+  // after a top-up), pushed the status bar onto two rows on iPhone-
+  // sized widths. Single-word label keeps the chip tight enough to
+  // share one row with the lang switcher + hangup + callsign.
   'chat.voiceModeOn': {
-    zh: 'VOICE: ON',
-    en: 'VOICE: ON',
-    ja: 'VOICE: ON',
+    zh: 'VOICE',
+    en: 'VOICE',
+    ja: 'VOICE',
   },
   'chat.voiceModeOff': {
-    zh: 'VOICE: OFF',
-    en: 'VOICE: OFF',
-    ja: 'VOICE: OFF',
+    zh: 'VOICE',
+    en: 'VOICE',
+    ja: 'VOICE',
   },
   // Modal shown when a user with voice_credits=0 tries to enable voice
   // mode. Soft sell — purchasing isn't wired up yet, so the primary
