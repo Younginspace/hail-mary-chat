@@ -4612,3 +4612,46 @@ button.voice-exhausted-bar:active {
   }
   .affinity-strip-bar { width: 38px; }
 }
+
+/* ========== Chat history divider ========== */
+/* Appears between pre-loaded history (last ~50 messages from previous
+   consolidated sessions) and the current session's fresh greeting.
+   Visual: two thin horizontal lines flanking a small uppercase label.
+   The bar uses --accent-warm-dim so it reads as part of the affinity
+   palette (where the level/progress strip lives) rather than the
+   active conversation's teal. */
+.chat-history-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 8px 10px;
+  font-size: 10.5px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--accent-warm-dim);
+  user-select: none;
+}
+.chat-history-divider-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(216, 176, 128, 0.28) 30%,
+    rgba(216, 176, 128, 0.28) 70%,
+    transparent
+  );
+}
+.chat-history-divider-label {
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+@media (max-width: 480px) {
+  .chat-history-divider {
+    margin: 14px 4px 8px;
+    font-size: 9.5px;
+    letter-spacing: 1.2px;
+    gap: 8px;
+  }
+}

@@ -9,7 +9,7 @@ import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
-import { startSession, fetchFavorites, type LevelUpPayload } from '../utils/sessionApi';
+import { startSession, fetchFavorites, type LevelUpPayload, type RecentHistoryMessage } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
 
 // P5 F1c: Landing layout priority order
@@ -33,7 +33,15 @@ const CONNECTION_STEPS = [
 ];
 
 interface StartScreenProps {
-  onConnected: (mode: ChatMode, sessionId: string, levelUp: LevelUpPayload | null) => void;
+  // recentHistory is the pre-loaded message tail from /api/session/start.
+  // Forwarded to ChatInterface so a returning user sees their last
+  // conversation above the new greeting. Empty for first-time users.
+  onConnected: (
+    mode: ChatMode,
+    sessionId: string,
+    levelUp: LevelUpPayload | null,
+    recentHistory: RecentHistoryMessage[],
+  ) => void;
   onEcho: () => void;
   onFavorites: () => void;
 }
@@ -45,6 +53,11 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [pendingLevelUp, setPendingLevelUp] = useState<LevelUpPayload | null>(null);
+  // Pre-loaded conversation tail from /api/session/start. Held here
+  // through the connecting → connected animation so we can hand it to
+  // onConnected at the same moment as session_id and level_up. No
+  // intermediate render reads it.
+  const [pendingHistory, setPendingHistory] = useState<RecentHistoryMessage[]>([]);
   const [favCount, setFavCount] = useState<number | null>(null);
 
   // Only logged-in users see the favorites pill, and only after we know the count.
@@ -111,6 +124,7 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
     }
     setPendingSessionId(result.session_id);
     setPendingLevelUp(result.level_up);
+    setPendingHistory(result.recent_history);
     setPhase('connecting');
   }, [lang]);
 
@@ -132,14 +146,14 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
           opacity: 0,
           duration: 0.4,
           ease: 'power2.in',
-          onComplete: () => onConnected('text', pendingSessionId, pendingLevelUp),
+          onComplete: () => onConnected('text', pendingSessionId, pendingLevelUp, pendingHistory),
         });
       } else {
-        onConnected('text', pendingSessionId, pendingLevelUp);
+        onConnected('text', pendingSessionId, pendingLevelUp, pendingHistory);
       }
     }, 600);
     return () => clearTimeout(timer);
-  }, [phase, pendingSessionId, pendingLevelUp, onConnected]);
+  }, [phase, pendingSessionId, pendingLevelUp, pendingHistory, onConnected]);
 
   const handleDialIn = useCallback(() => {
     if (isAuthenticated) {
