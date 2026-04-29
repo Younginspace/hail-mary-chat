@@ -2094,7 +2094,19 @@ app.get("/api/tts", async (c) => {
   if (text.replace(/[\s\p{P}]/gu, "").length < 2) {
     return c.json({ error: "text_too_short" }, 400);
   }
-  const isFavorite = url.searchParams.get("favorite") === "true";
+  // ?favorite=true is a client HINT that this is a favorite-replay
+  // call. We used to treat it as authoritative (skip credit deduction
+  // immediately) and only fall back to the DB check otherwise. That
+  // was a soft fence pre–free-play-quota-exception: even with the hint
+  // trusted, the per-user 1000-char/day cap meant abuse was bounded.
+  // Once the per-user cap is skipped on freePlay (the Bug 2 fix below),
+  // trusting an unverified hint would let any client render up to
+  // 8000 chars/day per user for free by passing ?favorite=true with
+  // arbitrary text. Caught in code review of PR #29.
+  //
+  // We still log the hint for telemetry, but the only thing that
+  // grants freePlay now is the DB row check below.
+  const favoriteHint = url.searchParams.get("favorite") === "true";
   const messageId = url.searchParams.get("message_id")?.trim() || null;
   // Speaker routing for Grace cameos — default Rocky for back-compat.
   // Grace lines use a different cloned MiniMax voice; fall through to
@@ -2128,19 +2140,25 @@ app.get("/api/tts", async (c) => {
   const contentHash = await hashAudioContent(text, lang, voiceId);
 
   // ── 0. Favorite-aware free play ──
-  // If this content is already in the user's favorites, replay is free.
-  // Either the explicit ?favorite=true flag or a matching favorites row
-  // is enough to skip the credit deduction.
-  let freePlay = isFavorite;
-  if (!freePlay) {
-    const favRow = await db
-      .select({ id: favorites.id })
-      .from(favorites)
-      .where(
-        and(eq(favorites.user_id, user.user_id), eq(favorites.content_hash, contentHash))
-      )
-      .limit(1);
-    if (favRow.length > 0) freePlay = true;
+  // freePlay = the caller has THIS exact (text, lang, voice_id) row
+  // in their favorites table. We always do the DB check, even when
+  // the client passes ?favorite=true — the hint alone is untrusted
+  // (see comment on favoriteHint above). The lookup is cheap: indexed
+  // on (user_id, content_hash), one row max.
+  const favRow = await db
+    .select({ id: favorites.id })
+    .from(favorites)
+    .where(
+      and(eq(favorites.user_id, user.user_id), eq(favorites.content_hash, contentHash))
+    )
+    .limit(1);
+  const freePlay = favRow.length > 0;
+  if (favoriteHint && !freePlay) {
+    // Hint claimed favorite but no row found. Common case: the favorite
+    // was just deleted, or hash drift from a recent migration (speaker
+    // change). Not abusive on its own, but worth logging at debug level
+    // to help diagnose recurring "user thought it was free" tickets.
+    console.info(`tts: favorite hint=true but no matching row for user ${user.user_id}, hash ${contentHash.slice(0, 8)}…`);
   }
 
   // ── 1. Try cache ──
