@@ -460,9 +460,9 @@ const translations = {
     ja: '初期音声クレジット 10',
   },
   'level.2.perks': {
-    zh: '+10 语音 credits',
-    en: '+10 voice credits',
-    ja: '+10 音声クレジット',
+    zh: '+10 语音 credits · 跟 Grace 想聊多久聊多久',
+    en: '+10 voice credits · Talk with Grace as long as you want',
+    ja: '+10音声クレジット · Graceと心ゆくまで話せる',
   },
   'level.3.perks': {
     zh: '+30 语音 credits',

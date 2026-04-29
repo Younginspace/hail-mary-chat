@@ -34,6 +34,33 @@ export function getRockyGreeting(lang: Lang): string {
   }
 }
 
+// Returning-user greeting. Shown at the bottom of the chat (below
+// the pre-loaded history + divider) when the user has previously had
+// at least one consolidated session.
+//
+// Deliberately shorter than the first-call greeting and emotion-anchored
+// at the "Rocky was waiting for your signal" beat — the core feeling
+// the product exists to deliver. Audio is pre-rendered to
+// /audio/defaults/greeting_returning_{lang}.mp3 (one fixed string per
+// locale, no `{name}` substitution) so we don't burn /api/tts credits
+// every time a user re-enters chat. Cleaned-text lookup in
+// defaultDialogs.ts maps the visible string back to the static mp3.
+export function getRockyGreetingReturning(lang: Lang): string {
+  switch (lang) {
+    case 'en':
+      return `[MOOD:happy]
+[Translation] Rocky waiting for your signal. What we talk today?`;
+
+    case 'ja':
+      return `[MOOD:happy]
+[翻訳] Rockyずっと信号待ってた。今日何話す？`;
+
+    default:
+      return `[MOOD:happy]
+[翻译] Rocky 等你信号呢。今天聊点啥？`;
+  }
+}
+
 export function getRockyFarewell(lang: Lang): string {
   switch (lang) {
     case 'en':

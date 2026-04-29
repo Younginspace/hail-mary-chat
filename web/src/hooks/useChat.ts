@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { streamChat } from '../utils/api';
 import type { ChatMessage } from '../utils/api';
-import { getRockyGreeting, getRockyFarewell, ROCKY_API_CONFIG } from '../prompts/rocky';
+import { getRockyGreeting, getRockyGreetingReturning, getRockyFarewell, ROCKY_API_CONFIG } from '../prompts/rocky';
 import { findDefaultDialog } from '../utils/defaultDialogs';
 import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
@@ -106,12 +106,20 @@ export function useChat(
   // user-sent messages on later re-renders if initialHistory ref
   // changes.
   const [messages, setMessages] = useState<DisplayMessage[]>(() => {
+    // Returning users get a different, shorter greeting + a different
+    // greeting id so useRockyTTS routes to the pre-rendered
+    // greeting_returning_{lang}.mp3 instead of the first-call mp3.
+    // Either greeting is matched against findDefaultAudioByTtsText so
+    // /api/tts is never called for these texts (zero credit cost).
+    const isReturningUser = initialHistory.length > 0;
     const greeting: DisplayMessage = {
-      id: 'greeting',
+      id: isReturningUser ? 'greeting-returning' : 'greeting',
       role: 'assistant',
-      content: getRockyGreeting(lang),
+      content: isReturningUser
+        ? getRockyGreetingReturning(lang)
+        : getRockyGreeting(lang),
     };
-    if (initialHistory.length === 0) return [greeting];
+    if (!isReturningUser) return [greeting];
     const historyAsDisplay: DisplayMessage[] = initialHistory.map((m) => ({
       id: m.id,
       role: m.role,
@@ -153,14 +161,19 @@ export function useChat(
   // mount-time effect fire (because lang/userTurns changing triggers
   // it). That was the bug that left history-having users seeing only
   // the greeting.
+  //
+  // Handles both greeting variants (first-call 'greeting' and
+  // returning-user 'greeting-returning') with their respective
+  // text generators. Whichever id is present gets its content
+  // patched; other messages untouched.
   useEffect(() => {
     if (userTurns > 0) return;
     setMessages((prev) =>
-      prev.map((m) =>
-        m.id === 'greeting'
-          ? { ...m, content: getRockyGreeting(lang) }
-          : m
-      )
+      prev.map((m) => {
+        if (m.id === 'greeting') return { ...m, content: getRockyGreeting(lang) };
+        if (m.id === 'greeting-returning') return { ...m, content: getRockyGreetingReturning(lang) };
+        return m;
+      })
     );
   }, [lang, userTurns]);
 
@@ -243,6 +256,8 @@ export function useChat(
         if (msg.originSessionId) continue;
         if (msg.id === 'greeting') {
           apiMessages.push({ role: 'assistant', content: getRockyGreeting(lang) });
+        } else if (msg.id === 'greeting-returning') {
+          apiMessages.push({ role: 'assistant', content: getRockyGreetingReturning(lang) });
         } else {
           apiMessages.push({ role: msg.role, content: msg.content });
         }
