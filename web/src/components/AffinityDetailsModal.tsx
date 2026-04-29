@@ -59,6 +59,15 @@ export default function AffinityDetailsModal({ currentLevel, progressToNext, onC
   }, []);
 
   const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    // Multi-touch guard: pinch-zoom or two-finger gestures shouldn't
+    // be interpreted as a swipe. Bail on anything other than a single
+    // finger touch — touchEnd then sees touchStartXRef === null and
+    // skips. Without this, lifting one finger of a pinch zoom can
+    // produce a phantom dx > threshold and cycle the carousel.
+    if (e.touches.length > 1) {
+      touchStartXRef.current = null;
+      return;
+    }
     touchStartXRef.current = e.touches[0]?.clientX ?? null;
   };
   const onTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {

@@ -13,18 +13,16 @@
 //   - When voice_credits === 0 AND voiceEnabled is currently ON:
 //     clicking still flips OFF (don't trap the user mid-session).
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 
 interface Props {
   voiceEnabled: boolean;
   voiceCredits: number | null;
+  /** Toggle handler. Parent is responsible for stopping in-flight TTS
+   *  when flipping off — VoiceModeButton just signals intent. */
   onToggle: () => void;
-  /** Optional callback the parent can use to also stop in-flight TTS
-   *  when toggling off. The parent already does this via stopTTS so
-   *  we don't replicate it here — kept as a prop in case future
-   *  callers want to wire something else. */
 }
 
 export default function VoiceModeButton({
@@ -37,6 +35,21 @@ export default function VoiceModeButton({
   const [showComingSoon, setShowComingSoon] = useState(false);
 
   const isExhausted = voiceCredits != null && voiceCredits <= 0;
+
+  // Esc closes the no-credits modal — every other modal in the app
+  // (hangup-confirm, favorites-remove, affinity-details, login,
+  // level-up ceremony) has it; missing here would feel inconsistent.
+  useEffect(() => {
+    if (!showNoCreditsModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowNoCreditsModal(false);
+        setShowComingSoon(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [showNoCreditsModal]);
 
   const handleClick = () => {
     // Block the off→on flip when the user has zero credits — surface

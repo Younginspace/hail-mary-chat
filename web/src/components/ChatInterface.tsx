@@ -828,10 +828,15 @@ export default function ChatInterface({
                 0 credits can't TTS regardless of pool state, so showing
                 the level-up CTA is the more actionable message). */}
             {creditsExhausted && (
+              // No role="status" on the interactive variant — <button>
+              // already exposes correct semantics, and role="status"
+              // (a live region) can suppress button semantics in some
+              // screen readers. The non-interactive daily variant
+              // below still uses role="status" since it's a passive
+              // div announcement.
               <button
                 type="button"
                 className="voice-exhausted-bar voice-exhausted-bar-credits"
-                role="status"
                 onClick={() => setAffinityModalOpen(true)}
               >
                 {t('chat.voiceCreditsExhausted', lang)}
