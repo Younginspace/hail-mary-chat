@@ -23,6 +23,9 @@ import {
 } from '../utils/messageCleanup';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
 import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlayback';
+import AffinityIndicator from './AffinityIndicator';
+import AffinityDetailsModal from './AffinityDetailsModal';
+import VoiceModeButton from './VoiceModeButton';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -91,6 +94,11 @@ export default function ChatInterface({
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
+  // Affinity details modal — opened by tapping the AffinityIndicator
+  // strip OR by tapping the "voice budget used up" banner (the latter
+  // gives users hitting the lifetime limit an immediate path to learn
+  // about the level-up route to more credits).
+  const [affinityModalOpen, setAffinityModalOpen] = useState(false);
   // Token of the currently-playing slot from the global audioPlayback
   // coordinator. Used to distinguish "this block's audio finished"
   // from "a newer claim took over" — both arrive via onEnded.
@@ -117,9 +125,20 @@ export default function ChatInterface({
     }
   }, [messages, sessionId]);
 
-  // Refresh /api/me whenever session/start handed us a level-up — the
-  // status-bar affinity badge reads me.affinity_level, and without a
-  // refetch it stays pinned at the value from login.
+  // Refresh /api/me on every ChatInterface mount AND on level-up.
+  //
+  // Why both:
+  //   - level-up: server hands us the level transition, but trust /
+  //     warmth + new progress_to_next live behind /api/me, so we
+  //     refetch to populate the AffinityIndicator strip.
+  //   - on mount: the user may have just finished a session that got
+  //     consolidated server-side (rapport bumped, progress changed).
+  //     /api/session/start hands back the new affinity_level but not
+  //     progress_to_next, so a fresh fetchMe is the only path to
+  //     accurate progress %.
+  useEffect(() => {
+    refreshMe();
+  }, [refreshMe]);
   useEffect(() => {
     if (initialLevelUp) refreshMe();
   }, [initialLevelUp, refreshMe]);
@@ -211,13 +230,31 @@ export default function ChatInterface({
     }
   }, [ttsInsufficientCredits]);
 
-  // Server daily quota resets at UTC+8 midnight — surface a live countdown
-  // in the input-area banner so users know when voice playback unlocks again.
-  const voiceExhausted =
-    (voiceCredits != null && voiceCredits <= 0) || ttsQuotaExceeded || globalQuotaHit;
+  // Two distinct exhaustion modes, two distinct messages.
+  //
+  //   creditsExhausted  — users.voice_credits hit 0. Lifetime balance,
+  //                       only refilled by leveling up (or, post-launch,
+  //                       a top-up purchase). The banner for this case
+  //                       routes the user into the affinity-details
+  //                       modal so they see the upgrade path right at
+  //                       the moment they hit the wall.
+  //   dailyQuotaHit     — the global 8000-char/day MiniMax pool is
+  //                       saturated for everyone. This DOES refresh at
+  //                       UTC+8 midnight, so the banner shows the live
+  //                       countdown.
+  //
+  // ttsQuotaExceeded is a vestigial state from the per-user 1000-char
+  // daily cap that PR #30 deleted; we keep the variable around as
+  // defensive cover for stale clients but it can no longer transition
+  // to true from a fresh render.
+  const creditsExhausted = voiceCredits != null && voiceCredits <= 0;
+  const dailyQuotaHit = ttsQuotaExceeded || globalQuotaHit;
 
   useEffect(() => {
-    if (!voiceExhausted) {
+    // Only the daily-quota banner cares about the countdown — the
+    // credits-exhausted banner doesn't refresh on a clock so we don't
+    // need to spin a timer for it.
+    if (!dailyQuotaHit) {
       setResetInLabel('');
       return;
     }
@@ -237,7 +274,7 @@ export default function ChatInterface({
     compute();
     const id = setInterval(compute, 30_000);
     return () => clearInterval(id);
-  }, [voiceExhausted, lang]);
+  }, [dailyQuotaHit, lang]);
 
   // F3: load favorites once. The set only mutates via add/remove handlers.
   useEffect(() => {
@@ -661,33 +698,18 @@ export default function ChatInterface({
             <span>ERID-LINK v2.1</span>
           </div>
           <div className="status-actions">
-          <button
-            className={`tts-toggle ${voiceEnabled ? 'tts-on' : 'tts-off'}`}
-            onClick={() => {
-              if (!voiceEnabled && (voiceCredits ?? 0) <= 0) return;
+          {/* Voice mode chip — text-labeled replacement for the old
+              icon-only tts-toggle. Pre-PR the button silently
+              disabled itself when credits hit 0; now it shows the
+              "voice budget used up" modal with a top-up CTA. */}
+          <VoiceModeButton
+            voiceEnabled={voiceEnabled}
+            voiceCredits={voiceCredits}
+            onToggle={() => {
               setVoiceEnabled((v) => !v);
               if (voiceEnabled) stopTTS();
             }}
-            disabled={!voiceEnabled && (voiceCredits ?? 0) <= 0}
-            title={voiceEnabled ? t('chat.voiceDisable', lang) : t('chat.voiceEnable', lang)}
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {voiceEnabled ? (
-                <>
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                  <path d="M18.5 5.5a9 9 0 0 1 0 13" />
-                </>
-              ) : (
-                <>
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <line x1="22" y1="9" x2="16" y2="15" />
-                  <line x1="16" y1="9" x2="22" y2="15" />
-                </>
-              )}
-            </svg>
-            {voiceCredits != null && <span className="tts-credits">{voiceCredits}</span>}
-          </button>
+          />
           {messages.some((m) => m.role === 'user') && (
             <div className="export-wrap">
               <button
@@ -738,7 +760,15 @@ export default function ChatInterface({
         </div>
 
         <div className="mode-bar">
-          <span className="mode-bar-label">{t('chat.latency', lang)}</span>
+          {/* AffinityIndicator replaces the old "LATENCY 4.2ly" flavor
+              text — same slot, but actually tells the user where they
+              stand and how far to the next level. Tappable; opens the
+              full per-level breakdown modal. */}
+          <AffinityIndicator
+            level={me?.affinity_level ?? 1}
+            progressToNext={me?.progress_to_next ?? 0}
+            onClick={() => setAffinityModalOpen(true)}
+          />
           <span className="mode-bar-divider">·</span>
           <span className="mode-bar-remaining">
             {turnsLeft} / {maxTurns} {t('chat.remaining', lang).toLowerCase()}
@@ -793,8 +823,22 @@ export default function ChatInterface({
           <EndedPanel quotaExceeded={isQuotaExceeded} onBack={onBack} />
         ) : (
           <>
-            {voiceExhausted && resetInLabel && (
-              <div className="voice-exhausted-bar" role="status">
+            {/* Two banners, two reasons. Lifetime credit exhaustion
+                takes precedence over a daily-quota hit (the user with
+                0 credits can't TTS regardless of pool state, so showing
+                the level-up CTA is the more actionable message). */}
+            {creditsExhausted && (
+              <button
+                type="button"
+                className="voice-exhausted-bar voice-exhausted-bar-credits"
+                role="status"
+                onClick={() => setAffinityModalOpen(true)}
+              >
+                {t('chat.voiceCreditsExhausted', lang)}
+              </button>
+            )}
+            {!creditsExhausted && dailyQuotaHit && resetInLabel && (
+              <div className="voice-exhausted-bar voice-exhausted-bar-daily" role="status">
                 {t('chat.voiceExhausted', lang, { time: resetInLabel })}
               </div>
             )}
@@ -822,6 +866,14 @@ export default function ChatInterface({
           </>
         )}
       </div>
+
+      {affinityModalOpen && (
+        <AffinityDetailsModal
+          currentLevel={me?.affinity_level ?? 1}
+          progressToNext={me?.progress_to_next ?? 0}
+          onClose={() => setAffinityModalOpen(false)}
+        />
+      )}
 
       {hangupConfirmOpen && (
         <div

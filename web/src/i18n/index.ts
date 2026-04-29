@@ -150,11 +150,9 @@ const translations = {
   },
 
   // ===== Chat Interface =====
-  'chat.latency': {
-    zh: 'LATENCY 4.2ly',
-    en: 'LATENCY 4.2ly',
-    ja: 'LATENCY 4.2ly',
-  },
+  // ('chat.latency' was retired — the spot above the chat now hosts
+  //  the AffinityIndicator, which is more useful than a static
+  //  flavor string.)
   'chat.remaining': {
     zh: 'REMAINING',
     en: 'REMAINING',
@@ -190,10 +188,24 @@ const translations = {
     en: 'Too many calls today, resources exhausted. Please come back another day!',
     ja: '本日は通話が多すぎてリソース不足です。また別の日に来てね！',
   },
+  // Daily-quota exhaustion banner (global TTS pool hit ~8000 char/day
+  // ceiling). Shown with a live countdown to the next UTC+8 reset.
+  // Distinct from the lifetime-credits-exhausted banner below — that
+  // one does NOT refresh on a clock, only on level-up.
   'chat.voiceExhausted': {
-    zh: '缺少语音资源，还有 {time} 刷新',
-    en: 'Out of voice resources — refreshes in {time}',
-    ja: '音声リソース不足 — {time}後にリセット',
+    zh: '今日全站语音额度紧张，还有 {time} 刷新',
+    en: 'Today\u2019s global voice pool is tight — refreshes in {time}',
+    ja: '本日のグローバル音声リソース逼迫 — {time}後にリセット',
+  },
+  // Lifetime-credits-exhausted banner. Triggered when users.voice_credits
+  // hits 0 for this account specifically — a permanent state until a
+  // level-up grants more, or a future top-up flow ships. The banner
+  // links into the affinity-details modal so users see the upgrade
+  // path right where the limit hits them.
+  'chat.voiceCreditsExhausted': {
+    zh: '免费语音额度已用完，跟 Rocky 多聊几次解锁更多',
+    en: 'Voice budget used up — chat more with Rocky to unlock more',
+    ja: 'クレジット使い切り — Rockyともっと話して解放',
   },
   'chat.durationHoursMinutes': {
     zh: '{h} 小时 {m} 分钟',
@@ -353,6 +365,144 @@ const translations = {
     zh: 'Grace 还能串场 {n} 次',
     en: 'Grace can drop by {n} more time(s)',
     ja: 'Graceがあと{n}回顔を出せる',
+  },
+
+  // ===== Affinity inline indicator (mode-bar) + details modal =====
+  // Inline indicator: appears in the chat mode-bar where LATENCY 4.2ly
+  // used to live. Clickable, opens the details modal.
+  'affinity.indicator': {
+    zh: 'AFFINITY · LV{n} {name}',
+    en: 'AFFINITY · LV{n} {name}',
+    ja: 'AFFINITY · LV{n} {name}',
+  },
+  'affinity.progress': {
+    zh: '{p}% → LV{n}',
+    en: '{p}% → LV{n}',
+    ja: '{p}% → LV{n}',
+  },
+  'affinity.max': {
+    zh: 'MAX',
+    en: 'MAX',
+    ja: 'MAX',
+  },
+  // Details modal — the carousel that shows all 4 levels.
+  'affinity.detailsTitle': {
+    zh: '好感度阶段',
+    en: 'Affinity tiers',
+    ja: '親密度レベル',
+  },
+  'affinity.currentBadge': {
+    zh: '当前',
+    en: 'CURRENT',
+    ja: '現在',
+  },
+  'affinity.lockedBadge': {
+    zh: '未解锁',
+    en: 'LOCKED',
+    ja: '未解放',
+  },
+  'affinity.next': {
+    zh: '下一级',
+    en: 'Next',
+    ja: '次へ',
+  },
+  'affinity.prev': {
+    zh: '上一级',
+    en: 'Previous',
+    ja: '前へ',
+  },
+  'affinity.close': {
+    zh: '关闭',
+    en: 'Close',
+    ja: '閉じる',
+  },
+
+  // Per-level taglines: short description of how Rocky's tone shifts
+  // at each level. Kept under ~30 zh chars / 50 en chars so the card
+  // doesn't crowd the perks list.
+  'level.1.tagline': {
+    zh: 'Rocky 还在打量你——回复礼貌但带距离感',
+    en: "Rocky's still sizing you up — polite, curious, a bit guarded",
+    ja: 'Rockyはまだ君を観察中 — 丁寧だけどよそよそしい',
+  },
+  'level.2.tagline': {
+    zh: 'Rocky 放松了，调侃多了，话也长了',
+    en: "Rocky's loosened up — drops the formality, jokes more, talks longer",
+    ja: 'Rockyが砕けてきた — 冗談増えて話も長く',
+  },
+  'level.3.tagline': {
+    zh: 'Rocky 当你朋友——主动开话题，记得你说过的事',
+    en: "A real friend now — Rocky brings up topics, remembers what you've shared",
+    ja: 'もう友達 — Rocky自ら話題を振る、君の話を覚えてる',
+  },
+  'level.4.tagline': {
+    zh: '你是搭子了——Rocky 卸下所有客套，啥都跟你聊',
+    en: 'Crewmate-tier — no filter, no formality, full Rocky',
+    ja: '仲間レベル — 遠慮なし、ありのまま全部',
+  },
+
+  // Per-level perks. Strings rather than computed lists so localizers
+  // can rewrite freely if a level's perk mix ever changes. Keep these
+  // in sync with the bonus tables in server/src/consolidate.ts.
+  'level.1.perks': {
+    zh: '注册赠送 10 条语音',
+    en: '10 starter voice renders',
+    ja: '初期音声10回',
+  },
+  'level.2.perks': {
+    zh: '+10 语音 · 3 张图 · Grace 多串场 3 次',
+    en: '+10 voice · 3 images · 3 Grace cameos',
+    ja: '+10音声 · 画像3枚 · Grace3回',
+  },
+  'level.3.perks': {
+    zh: '+30 语音 · 5 段音乐 · Grace 多串场 5 次',
+    en: '+30 voice · 5 music tracks · 5 Grace cameos',
+    ja: '+30音声 · 楽曲5曲 · Grace5回',
+  },
+  'level.4.perks': {
+    zh: '+50 语音 · 1 段视频（一生一次）· Grace 多串场 10 次',
+    en: '+50 voice · 1 video (once in a lifetime) · 10 Grace cameos',
+    ja: '+50音声 · 動画1本（一生に一度）· Grace10回',
+  },
+
+  // ===== Voice mode toggle + no-credits modal =====
+  'chat.voiceModeOn': {
+    zh: 'VOICE: ON',
+    en: 'VOICE: ON',
+    ja: 'VOICE: ON',
+  },
+  'chat.voiceModeOff': {
+    zh: 'VOICE: OFF',
+    en: 'VOICE: OFF',
+    ja: 'VOICE: OFF',
+  },
+  // Modal shown when a user with voice_credits=0 tries to enable voice
+  // mode. Soft sell — purchasing isn't wired up yet, so the primary
+  // button is a placeholder that surfaces a "coming soon" hint inline.
+  'chat.voiceCreditsModalTitle': {
+    zh: '免费语音额度已用完',
+    en: 'Voice budget used up',
+    ja: '音声クレジット使い切り',
+  },
+  'chat.voiceCreditsModalDesc': {
+    zh: '每条 Rocky 语音都是真人配音，成本不便宜，早期额度比较紧。',
+    en: 'Each Rocky line is real cloned voice — costs add up, so the starter budget is tight.',
+    ja: 'Rockyの声は実音源クローン、コストがかさむので初期配分は控えめ。',
+  },
+  'chat.voiceCreditsModalBuy': {
+    zh: '购买语音包',
+    en: 'Top up',
+    ja: 'クレジットを買う',
+  },
+  'chat.voiceCreditsModalLater': {
+    zh: '稍后再说',
+    en: 'Maybe later',
+    ja: 'あとで',
+  },
+  'chat.voiceCreditsModalComingSoon': {
+    zh: '购买入口即将上线',
+    en: 'Top-up coming soon',
+    ja: 'まもなく登場',
   },
 
   // ===== Accessibility (aria-label / title) =====

@@ -795,19 +795,79 @@ app.post("/api/adopt-device", async (c) => {
   return c.json({ ok: true, user_id: primaryId, callsign: resolvedCallsign, adopted: true });
 });
 
+// Progress toward the next affinity level, expressed as 0-100 integer.
+// Returns null when the user is already at the max level (4).
+//
+// We do NOT expose the underlying trust / warmth scores to the client.
+// They're internal calibration knobs the consolidator updates; surfacing
+// them invites users to game-optimize specific axes ("Rocky says my
+// trust is 0.31 — let me try sounding more honest"), which fights the
+// product intent of organic conversation. The single 0–100 progress
+// number is enough for "you're 38% of the way to LV2" UI without
+// turning the experience into a stat-grinding game.
+//
+// Baselines: each level uses its entry threshold as the 0% point so a
+// user who barely cleared L2's OR-gate doesn't see a misleading "73%
+// to L3" if their AND-binding axis still needs significant work.
+function progressToNextLevel(
+  level: number,
+  trust: number,
+  warmth: number,
+): number | null {
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+  if (level >= 4) return null;
+  if (level === 1) {
+    // L2 threshold: trust ≥ 0.45 OR warmth ≥ 0.5. Either path is enough,
+    // so progress = the further-along axis.
+    const t = (trust - 0.3) / (0.45 - 0.3);
+    const w = (warmth - 0.3) / (0.5 - 0.3);
+    return Math.round(clamp01(Math.max(t, w)) * 100);
+  }
+  if (level === 2) {
+    // L3 threshold: trust ≥ 0.55 AND warmth ≥ 0.55. Both required,
+    // so progress = the binding axis (the slower one).
+    const t = (trust - 0.45) / (0.55 - 0.45);
+    const w = (warmth - 0.5) / (0.55 - 0.5);
+    return Math.round(clamp01(Math.min(t, w)) * 100);
+  }
+  // level === 3 → L4 threshold: trust ≥ 0.85 AND warmth ≥ 0.8.
+  const t = (trust - 0.55) / (0.85 - 0.55);
+  const w = (warmth - 0.55) / (0.8 - 0.55);
+  return Math.round(clamp01(Math.min(t, w)) * 100);
+}
+
 app.get("/api/me", async (c) => {
   if (!auth.isAuthenticated()) {
     return c.json({ error: "not authenticated" }, 401);
   }
   const user = await getAuthedUser();
   let affinity_level = 1;
+  let progress_to_next: number | null = 0;
+  let voice_credits = 0;
   if (user) {
     const row = await db
-      .select({ affinity_level: users.affinity_level })
+      .select({
+        affinity_level: users.affinity_level,
+        voice_credits: users.voice_credits,
+      })
       .from(users)
       .where(eq(users.id, user.user_id))
       .limit(1);
     affinity_level = row[0]?.affinity_level ?? 1;
+    voice_credits = row[0]?.voice_credits ?? 0;
+
+    // Pull rapport — defaults to (0.3, 0.3) for users who haven't had
+    // a session consolidated yet. matches the schema default so a
+    // missing row and a fresh row read identically.
+    const rapRow = await db
+      .select({ trust: rapport.trust, warmth: rapport.warmth })
+      .from(rapport)
+      .where(eq(rapport.user_id, user.user_id))
+      .limit(1);
+    const trust = rapRow[0]?.trust ?? 0.3;
+    const warmth = rapRow[0]?.warmth ?? 0.3;
+    progress_to_next = progressToNextLevel(affinity_level, trust, warmth);
+
     // Bot defense: lazily zero credits on idle-for-7-days accounts with
     // zero sessions. Runs in background so /api/me stays snappy.
     ctx.runInBackground(zeroCreditsIfStale(user.user_id));
@@ -818,6 +878,10 @@ app.get("/api/me", async (c) => {
     callsign: user?.callsign ?? null,
     adopted: user != null,
     affinity_level,
+    // Progress toward next level (0-100, null at max). Raw trust/warmth
+    // scores intentionally NOT returned — see progressToNextLevel comment.
+    progress_to_next,
+    voice_credits,
   });
 });
 

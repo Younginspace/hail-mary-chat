@@ -1,0 +1,151 @@
+// Voice mode toggle: text-labeled chip + credits counter, replacing
+// the icon-only speaker button that used to sit in the chat status
+// bar. The old icon was too quiet about both its function and its
+// disabled-because-no-credits state — users were silently locked out
+// without realizing why.
+//
+// Behavior:
+//   - When voice_credits > 0: clicking flips voiceEnabled.
+//   - When voice_credits === 0 AND voiceEnabled is currently OFF:
+//     clicking opens the no-credits modal instead of silently
+//     disabling. Once paid top-ups land, the modal's "buy" button
+//     wires up to real flow; for now it's a "coming soon" placeholder.
+//   - When voice_credits === 0 AND voiceEnabled is currently ON:
+//     clicking still flips OFF (don't trap the user mid-session).
+
+import { useState } from 'react';
+import { useLang } from '../i18n/LangContext';
+import { t } from '../i18n';
+
+interface Props {
+  voiceEnabled: boolean;
+  voiceCredits: number | null;
+  onToggle: () => void;
+  /** Optional callback the parent can use to also stop in-flight TTS
+   *  when toggling off. The parent already does this via stopTTS so
+   *  we don't replicate it here — kept as a prop in case future
+   *  callers want to wire something else. */
+}
+
+export default function VoiceModeButton({
+  voiceEnabled,
+  voiceCredits,
+  onToggle,
+}: Props) {
+  const { lang } = useLang();
+  const [showNoCreditsModal, setShowNoCreditsModal] = useState(false);
+  const [showComingSoon, setShowComingSoon] = useState(false);
+
+  const isExhausted = voiceCredits != null && voiceCredits <= 0;
+
+  const handleClick = () => {
+    // Block the off→on flip when the user has zero credits — surface
+    // the explainer modal instead of silently doing nothing.
+    if (!voiceEnabled && isExhausted) {
+      setShowNoCreditsModal(true);
+      return;
+    }
+    onToggle();
+  };
+
+  const handleBuyClick = () => {
+    // Placeholder for the future top-up flow. For now, surface a
+    // "coming soon" hint inline so the button doesn't feel broken.
+    // TODO: wire up to real purchase flow when payment integration
+    // lands. Keep the button position + label so the migration is a
+    // pure onClick swap.
+    setShowComingSoon(true);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`voice-mode-btn ${voiceEnabled ? 'voice-mode-on' : 'voice-mode-off'} ${isExhausted ? 'voice-mode-exhausted' : ''}`}
+        onClick={handleClick}
+        aria-pressed={voiceEnabled}
+        title={voiceEnabled ? t('chat.voiceDisable', lang) : t('chat.voiceEnable', lang)}
+      >
+        {/* Speaker glyph kept small alongside the text — gives the
+            button a visual anchor without going back to icon-only. */}
+        <svg
+          className="voice-mode-icon"
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+          {voiceEnabled ? (
+            <>
+              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+            </>
+          ) : (
+            <>
+              <line x1="22" y1="9" x2="16" y2="15" />
+              <line x1="16" y1="9" x2="22" y2="15" />
+            </>
+          )}
+        </svg>
+        <span className="voice-mode-label">
+          {voiceEnabled ? t('chat.voiceModeOn', lang) : t('chat.voiceModeOff', lang)}
+        </span>
+        {voiceCredits != null && (
+          <span className="voice-mode-credits">{voiceCredits}</span>
+        )}
+      </button>
+
+      {showNoCreditsModal && (
+        <div
+          className="voice-credits-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="voice-credits-modal-title"
+          onClick={() => setShowNoCreditsModal(false)}
+        >
+          <div
+            className="voice-credits-modal-box"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div id="voice-credits-modal-title" className="voice-credits-modal-title">
+              {t('chat.voiceCreditsModalTitle', lang)}
+            </div>
+            <div className="voice-credits-modal-desc">
+              {t('chat.voiceCreditsModalDesc', lang)}
+            </div>
+            {showComingSoon && (
+              <div className="voice-credits-modal-soon" role="status">
+                {t('chat.voiceCreditsModalComingSoon', lang)}
+              </div>
+            )}
+            <div className="voice-credits-modal-actions">
+              <button
+                type="button"
+                className="voice-credits-modal-buy"
+                onClick={handleBuyClick}
+              >
+                {t('chat.voiceCreditsModalBuy', lang)}
+              </button>
+              <button
+                type="button"
+                className="voice-credits-modal-later"
+                onClick={() => {
+                  setShowNoCreditsModal(false);
+                  setShowComingSoon(false);
+                }}
+              >
+                {t('chat.voiceCreditsModalLater', lang)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
