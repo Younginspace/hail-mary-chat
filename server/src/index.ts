@@ -47,6 +47,7 @@ import {
 } from "./consolidate";
 import { getRockySystemPrompt, getRockyFewShots, getLastTurnHint } from "./prompts/rocky";
 import type { GiftCredits, Lang as RockyLang } from "./prompts/rocky";
+import { parseSpeakerBlocks, extractBlockText } from "./messageCleanup";
 
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
@@ -2193,10 +2194,14 @@ app.get("/api/tts", async (c) => {
   // ── 3. Daily TTS caps — two tiers, CAS on CHARACTER count ──
   // Tier 1: per-user (1000 chars/day). Prevents a single heavy user
   // from burning the whole operator pool in an afternoon. Scope =
-  // user.user_id.
+  // user.user_id. SKIPPED for freePlay (favorites + already-cached
+  // owned content) — see "free-play exception" below.
   // Tier 2: global across all users (8000 chars/day). Keeps ~3000
   // chars of MiniMax's 11k ceiling available for operator/admin
-  // testing via X-Admin-Token.
+  // testing via X-Admin-Token. Always applies, even on freePlay,
+  // so a single user with many cache-miss favorites can't blow out
+  // the global pool.
+  //
   // Both are CAS so two concurrent /api/tts calls can't both sneak past
   // the ceiling. charCost is bounded server-side by what MiniMax actually
   // renders, not what the client sent — after the cleanup pipeline drops
@@ -2207,21 +2212,34 @@ app.get("/api/tts", async (c) => {
   // global fails, the per-user counter stays inflated by charCost for
   // this user today. Bounded (~60 chars per hit) and only occurs when
   // we're already refunding the user's credit, so acceptable.
+  //
+  // Free-play exception (added after the user quota bug report):
+  //   freePlay = isFavorite || the user has favorited this exact text.
+  //   Cache hits on freePlay return at step 1 without ever touching the
+  //   counters (always free). But cache MISS on freePlay was previously
+  //   charging per-user 1000-char/day cap, which meant a user with 5-10
+  //   cache-miss favorites would hit "资源不足" after replaying their
+  //   own favorites a single time after midnight. That's user-hostile —
+  //   replay of content they explicitly saved should not count against
+  //   their daily allowance. Skip the per-user CAS for freePlay; keep
+  //   the global CAS so a user with 100 unique favorites still can't
+  //   spam-render and burn the global pool.
   {
-    const userUsage = await db
-      .insert(daily_api_usage)
-      .values({ date: today, api: "tts", scope: user.user_id, count: charCost, updated_at: now })
-      .onConflictDoUpdate({
-        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
-        set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
-        setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_PER_USER_CHAR_CAP}`,
-      })
-      .returning({ count: daily_api_usage.count });
+    if (!freePlay) {
+      const userUsage = await db
+        .insert(daily_api_usage)
+        .values({ date: today, api: "tts", scope: user.user_id, count: charCost, updated_at: now })
+        .onConflictDoUpdate({
+          target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+          set: { count: sql`${daily_api_usage.count} + ${charCost}`, updated_at: now },
+          setWhere: sql`${daily_api_usage.count} + ${charCost} <= ${TTS_DAILY_PER_USER_CHAR_CAP}`,
+        })
+        .returning({ count: daily_api_usage.count });
 
-    if (userUsage.length === 0) {
-      // Per-user cap hit. Refund the credit so the user isn't punished
-      // for hitting their own ceiling.
-      if (!freePlay) {
+      if (userUsage.length === 0) {
+        // Per-user cap hit. Refund the credit so the user isn't punished
+        // for hitting their own ceiling. Only reached when !freePlay so
+        // the credit deduction step earlier did fire.
         await db
           .update(users)
           .set({ voice_credits: sql`${users.voice_credits} + 1` })
@@ -2234,8 +2252,8 @@ app.get("/api/tts", async (c) => {
           session_id: url.searchParams.get("session_id"),
           created_at: now,
         });
+        return c.json({ error: "user_quota_exceeded" }, 429);
       }
-      return c.json({ error: "user_quota_exceeded" }, 429);
     }
 
     const usage = await db
@@ -3389,6 +3407,166 @@ app.post("/api/admin/migrate-grace-favorites", async (c) => {
     candidates_found: candidates.length,
     migrated_favorites: migrated,
     deleted_cache_rows: deletedCache,
+    errors,
+  });
+});
+
+// ── POST /api/admin/recover-grace-favorites-by-message ──────────────
+//
+// Bug-fix recovery for the heuristic-driven /api/admin/migrate-grace-
+// favorites endpoint above. The text-pattern matching missed Grace lines
+// without explicit markers ("Yeah yeah, don't make it weird, buddy.."
+// — no "Earth kid", no "alright alright", no negative markers either).
+// User-reported, confirmed by sampling the messages table.
+//
+// This endpoint uses GROUND TRUTH instead: for each rocky-marked
+// favorite with a non-null source_session, we pull the assistant
+// messages from that session and parseSpeakerBlocks them. If we find
+// a [GRACE] block whose extractBlockText matches the favorite's
+// message_content, we flip the favorite. No string heuristics, no
+// false positives.
+//
+// Idempotent: only operates on speaker='rocky' favorites; flips them
+// to 'grace' once and leaves all already-correctly-classified
+// favorites alone. Safe to re-run.
+//
+// Limitations:
+//   - Favorites with NULL source_session can't be recovered (preset/
+//     echo content from before source_session tracking landed). Those
+//     are typically Rocky preset replies anyway, so leaving them as
+//     'rocky' is the right answer.
+//   - We re-hash with grace_voice_id but DON'T touch audio_cache. If
+//     the original chat playback rendered the Grace block under
+//     grace-hash, the new favorite hash will hit cache on next play
+//     (free). If the chat playback never rendered the Grace audio
+//     (text-mode session, never voiced), next play will cache-miss
+//     and render fresh — Bug 2's free-play exception now keeps that
+//     from charging the per-user daily cap.
+app.post("/api/admin/recover-grace-favorites-by-message", async (c) => {
+  if (!isVoiceAdmin()) return c.json({ error: "forbidden" }, 403);
+
+  const rockyVoice = vars.get("MINIMAX_TTS_VOICE_ID") ?? DEFAULT_TTS_VOICE_ID;
+  const graceVoice = vars.get("MINIMAX_TTS_VOICE_ID_GRACE") || rockyVoice;
+  if (graceVoice === rockyVoice) {
+    return c.json(
+      {
+        error: "no_grace_voice",
+        detail: "MINIMAX_TTS_VOICE_ID_GRACE is unset or equals Rocky's voice — refusing to migrate",
+      },
+      400,
+    );
+  }
+
+  // Optional: limit the recovery to a single user (for targeted
+  // restore). Body shape: { user_id?: string, dry_run?: boolean }
+  const body = (await c.req
+    .json<{ user_id?: string; dry_run?: boolean }>()
+    .catch(() => ({}))) as { user_id?: string; dry_run?: boolean };
+  const dryRun = body.dry_run === true;
+
+  // Pull rocky-tagged favorites that have a source session. We can't
+  // recover ground truth without messages; favorites with no source
+  // session stay rocky regardless.
+  const baseConds = [
+    eq(favorites.speaker, "rocky"),
+    isNotNull(favorites.source_session),
+  ];
+  if (body.user_id) baseConds.push(eq(favorites.user_id, body.user_id));
+  const candidates = await db
+    .select({
+      id: favorites.id,
+      user_id: favorites.user_id,
+      message_content: favorites.message_content,
+      lang: favorites.lang,
+      old_hash: favorites.content_hash,
+      source_session: favorites.source_session,
+    })
+    .from(favorites)
+    .where(and(...baseConds));
+
+  let recovered = 0;
+  let alreadyCorrect = 0;
+  const flipped: Array<{ id: string; user_id: string; preview: string }> = [];
+  const errors: Array<{ id: string; message: string }> = [];
+
+  for (const fav of candidates) {
+    try {
+      // Pull assistant messages in the source session that contain a
+      // [GRACE] marker — those are the only ones that can possibly
+      // produce a grace block matching this favorite. Cuts the
+      // parseSpeakerBlocks work down to relevant messages only.
+      const candidateMessages = await db
+        .select({ content: messagesTable.content })
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.session_id, fav.source_session as string),
+            eq(messagesTable.role, "assistant"),
+          ),
+        );
+
+      let matchedAsGrace = false;
+      const target = fav.message_content.trim();
+
+      for (const msg of candidateMessages) {
+        if (!msg.content.includes("[GRACE]")) continue;
+        const blocks = parseSpeakerBlocks(msg.content);
+        for (const block of blocks) {
+          const cleaned = extractBlockText(block.rawContent, block.speaker).trim();
+          if (cleaned === target && block.speaker === "grace") {
+            matchedAsGrace = true;
+            break;
+          }
+        }
+        if (matchedAsGrace) break;
+      }
+
+      if (!matchedAsGrace) {
+        alreadyCorrect++;
+        continue;
+      }
+
+      flipped.push({
+        id: fav.id,
+        user_id: fav.user_id,
+        preview: target.slice(0, 80),
+      });
+
+      if (dryRun) {
+        recovered++;
+        continue;
+      }
+
+      const newHash = await hashAudioContent(target, fav.lang, graceVoice);
+      try {
+        await db
+          .update(favorites)
+          .set({ speaker: "grace", content_hash: newHash })
+          .where(eq(favorites.id, fav.id));
+      } catch (err) {
+        // UNIQUE(user_id, content_hash) collision: this user already has a
+        // post-fix Grace favorite with the same hash. Drop the legacy
+        // duplicate.
+        if (String(err).includes("UNIQUE")) {
+          await db.delete(favorites).where(eq(favorites.id, fav.id));
+        } else {
+          throw err;
+        }
+      }
+
+      recovered++;
+    } catch (err) {
+      errors.push({ id: fav.id, message: String(err) });
+    }
+  }
+
+  return c.json({
+    ok: true,
+    dry_run: dryRun,
+    candidates_examined: candidates.length,
+    recovered,
+    already_correct: alreadyCorrect,
+    flipped: flipped.slice(0, 50),
     errors,
   });
 });
