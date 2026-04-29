@@ -4180,3 +4180,454 @@ body {
 .share-toolbar-generate:not(:disabled):active {
   transform: scale(0.97);
 }
+
+/* ========== Affinity indicator (mode-bar) ========== */
+/* Replaces the old static "LATENCY 4.2ly" span. Tappable strip that
+   shows current level + thin progress bar + percentage to next.
+   Designed to fit alongside "X / Y remaining" in the mode-bar without
+   wrapping on mobile. */
+.affinity-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: 0.6px;
+  color: var(--accent-warm-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: var(--tx-smooth-150);
+  /* Press feedback per emil — UI must feel listened to. */
+}
+.affinity-strip:hover {
+  color: var(--accent-warm);
+  border-color: rgba(216, 176, 128, 0.25);
+}
+.affinity-strip:active {
+  transform: scale(0.97);
+}
+.affinity-strip-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.affinity-strip-divider {
+  opacity: 0.4;
+}
+.affinity-strip-progress {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.affinity-strip-bar {
+  position: relative;
+  width: 48px;
+  height: 2px;
+  background: rgba(216, 176, 128, 0.18);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.affinity-strip-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-warm);
+  transform-origin: left center;
+  /* Width animates on prop change — gives the bar a smooth slide
+     when /api/me returns a higher progress value post-consolidation
+     instead of a jump cut. */
+  transition: width 600ms var(--ease-out);
+}
+.affinity-strip-max .affinity-strip-fill {
+  background: linear-gradient(90deg, var(--accent-warm), #f0c896);
+}
+
+/* ========== Affinity details modal ========== */
+.affinity-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.66);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+  /* Modal entry — scale 0.95 (never 0) per emil, ease-out for
+     responsiveness on the open path. */
+  animation: affinity-modal-fade-in 200ms var(--ease-out);
+}
+@keyframes affinity-modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.affinity-modal-card {
+  background: #0d1014;
+  border: 1px solid rgba(216, 176, 128, 0.35);
+  border-radius: 10px;
+  padding: 18px 18px 16px;
+  width: 100%;
+  max-width: 460px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  animation: affinity-modal-card-in 220ms var(--ease-out);
+}
+@keyframes affinity-modal-card-in {
+  from { opacity: 0; transform: scale(0.95) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.affinity-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.affinity-modal-title {
+  font-size: 13px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--accent-warm);
+  font-weight: 600;
+}
+.affinity-modal-close {
+  background: transparent;
+  border: none;
+  color: rgba(214, 241, 233, 0.55);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: var(--tx-smooth-150);
+}
+.affinity-modal-close:hover {
+  color: #d6f1e9;
+  background: rgba(214, 241, 233, 0.08);
+}
+.affinity-modal-close:active { transform: scale(0.94); }
+.affinity-modal-stage {
+  display: grid;
+  grid-template-columns: 32px 1fr 32px;
+  align-items: stretch;
+  gap: 6px;
+}
+.affinity-modal-arrow {
+  background: transparent;
+  border: 1px solid rgba(216, 176, 128, 0.25);
+  border-radius: 4px;
+  color: var(--accent-warm-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: var(--tx-smooth-150);
+}
+.affinity-modal-arrow:hover:not(:disabled) {
+  color: var(--accent-warm);
+  border-color: var(--accent-warm);
+}
+.affinity-modal-arrow:active:not(:disabled) { transform: scale(0.94); }
+.affinity-modal-arrow:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+.affinity-modal-cards {
+  position: relative;
+  min-height: 220px;
+  /* Cards stack — only the active one is shown via display, others
+     stay in DOM for keyboard nav state but render hidden. */
+}
+.affinity-card {
+  display: none;
+  border: 1px solid rgba(216, 176, 128, 0.18);
+  border-radius: 8px;
+  padding: 16px 14px 14px;
+  background: rgba(216, 176, 128, 0.03);
+  /* Card swap — fade + slight slide so left/right feels directional.
+     Direction-aware would be nicer but adds complexity for marginal
+     polish; skip until we hear it's needed. */
+  animation: affinity-card-in 240ms var(--ease-out);
+}
+@keyframes affinity-card-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.affinity-card-active { display: block; }
+.affinity-card-current {
+  border-color: var(--accent-warm);
+  background: rgba(216, 176, 128, 0.06);
+  box-shadow: 0 0 0 1px rgba(216, 176, 128, 0.18) inset;
+}
+.affinity-card-locked .affinity-card-name,
+.affinity-card-locked .affinity-card-tagline,
+.affinity-card-locked .affinity-card-perks {
+  opacity: 0.55;
+}
+.affinity-card-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  color: rgba(214, 241, 233, 0.45);
+  margin-bottom: 6px;
+}
+.affinity-card-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.affinity-card-pill-current {
+  background: var(--accent-warm);
+  color: #0d1014;
+}
+.affinity-card-pill-locked {
+  background: transparent;
+  border: 1px solid rgba(214, 241, 233, 0.2);
+  color: rgba(214, 241, 233, 0.45);
+}
+.affinity-card-name {
+  font-size: 22px;
+  font-weight: 600;
+  color: #d6f1e9;
+  margin-bottom: 8px;
+  letter-spacing: 0.4px;
+}
+.affinity-card-tagline {
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(214, 241, 233, 0.75);
+  margin-bottom: 12px;
+}
+.affinity-card-perks {
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: var(--accent-warm-dim);
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent-warm-dim);
+  background: rgba(216, 176, 128, 0.04);
+  border-radius: 0 4px 4px 0;
+}
+.affinity-card-progress {
+  margin-top: 14px;
+}
+.affinity-card-progress-bar {
+  height: 4px;
+  background: rgba(216, 176, 128, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.affinity-card-progress-fill {
+  height: 100%;
+  background: var(--accent-warm);
+  transition: width 600ms var(--ease-out);
+}
+.affinity-card-progress-label {
+  margin-top: 6px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: rgba(214, 241, 233, 0.6);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.affinity-card-progress-max {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 1.6px;
+  font-weight: 700;
+  color: var(--accent-warm);
+}
+.affinity-modal-dots {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 14px;
+}
+.affinity-modal-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(214, 241, 233, 0.18);
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: var(--tx-smooth-150);
+}
+.affinity-modal-dot:hover { background: rgba(214, 241, 233, 0.35); }
+.affinity-modal-dot.is-active {
+  background: var(--accent-warm);
+  transform: scale(1.2);
+}
+
+/* ========== Voice mode chip ========== */
+/* Replaces the icon-only .tts-toggle. Wider chip with text label so
+   users can see "VOICE: OFF" + credits count at a glance — the old
+   button silently disabled itself when credits=0 and people didn't
+   know why. */
+.voice-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.9px;
+  padding: 5px 9px;
+  border-radius: 4px;
+  border: 1px solid rgba(214, 241, 233, 0.22);
+  background: transparent;
+  color: rgba(214, 241, 233, 0.7);
+  cursor: pointer;
+  transition: var(--tx-smooth-150);
+  white-space: nowrap;
+}
+.voice-mode-btn:hover {
+  border-color: rgba(214, 241, 233, 0.5);
+  color: #d6f1e9;
+}
+.voice-mode-btn:active { transform: scale(0.97); }
+.voice-mode-btn.voice-mode-on {
+  border-color: #00d4aa;
+  color: #00d4aa;
+  background: rgba(0, 212, 170, 0.08);
+}
+.voice-mode-btn.voice-mode-on:hover {
+  background: rgba(0, 212, 170, 0.14);
+}
+.voice-mode-btn.voice-mode-exhausted {
+  /* Visually muted but still clickable — clicking opens the
+     no-credits modal rather than silently no-op'ing. */
+  color: rgba(214, 241, 233, 0.45);
+  border-color: rgba(214, 241, 233, 0.15);
+}
+.voice-mode-credits {
+  padding-left: 6px;
+  margin-left: 2px;
+  border-left: 1px solid currentColor;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+/* No-credits modal — reuses the visual language of hangup-confirm
+   (same backdrop blur, same panel shape, same action layout) for
+   consistency. The only structural difference is the "coming soon"
+   inline message that surfaces under the buy button. */
+.voice-credits-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.66);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+  animation: affinity-modal-fade-in 200ms var(--ease-out);
+}
+.voice-credits-modal-box {
+  background: #0d1014;
+  border: 1px solid rgba(214, 241, 233, 0.2);
+  border-radius: 10px;
+  padding: 22px 22px 18px;
+  max-width: 380px;
+  width: 100%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  animation: affinity-modal-card-in 220ms var(--ease-out);
+}
+.voice-credits-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-warm);
+  margin-bottom: 10px;
+  letter-spacing: 0.4px;
+}
+.voice-credits-modal-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(214, 241, 233, 0.75);
+  margin-bottom: 18px;
+}
+.voice-credits-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.voice-credits-modal-buy,
+.voice-credits-modal-later {
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: var(--tx-smooth-150);
+}
+.voice-credits-modal-buy {
+  background: var(--accent-warm);
+  border: 1px solid var(--accent-warm);
+  color: #0d1014;
+}
+.voice-credits-modal-buy:hover:not(:disabled) {
+  background: #e8c192;
+  border-color: #e8c192;
+}
+.voice-credits-modal-buy:active:not(:disabled) { transform: scale(0.97); }
+/* Disabled state — Top up is shown until payment integration ships;
+   the "(coming soon)" suffix in the label is the explanation. Muted
+   palette + not-allowed cursor + no hover feedback so it reads as
+   intentionally inactive, not broken. */
+.voice-credits-modal-buy:disabled {
+  background: rgba(216, 176, 128, 0.18);
+  border-color: rgba(216, 176, 128, 0.25);
+  color: rgba(214, 241, 233, 0.45);
+  cursor: not-allowed;
+}
+.voice-credits-modal-later {
+  background: transparent;
+  border: 1px solid rgba(214, 241, 233, 0.25);
+  color: rgba(214, 241, 233, 0.7);
+}
+.voice-credits-modal-later:hover {
+  border-color: #d6f1e9;
+  color: #d6f1e9;
+}
+.voice-credits-modal-later:active { transform: scale(0.97); }
+
+/* Lifetime-credits-exhausted banner is interactive — clicking opens
+   the affinity-details modal so the user sees the level-up path. */
+button.voice-exhausted-bar {
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+}
+button.voice-exhausted-bar:hover {
+  filter: brightness(1.15);
+}
+button.voice-exhausted-bar:active {
+  /* 0.97 keeps press feedback consistent with every other interactive
+     element in the app — fav-play, voice-mode-btn, modal buttons all
+     use the same scale. Prior 0.99 was a typo, not intentional. */
+  transform: scale(0.97);
+}
+
+/* Mobile fit — affinity strip already uses flexbox; just ensure the
+   cards modal doesn't overflow, and the voice-mode chip's credits
+   counter doesn't break on small screens. */
+@media (max-width: 480px) {
+  .affinity-modal-card {
+    padding: 14px 14px 12px;
+  }
+  .affinity-card-name { font-size: 19px; }
+  .voice-mode-btn {
+    padding: 4px 7px;
+    font-size: 10.5px;
+    letter-spacing: 0.6px;
+  }
+  .affinity-strip-bar { width: 38px; }
+}

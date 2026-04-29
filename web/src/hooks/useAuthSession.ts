@@ -16,6 +16,15 @@ export interface AdoptedMe {
   callsign: string | null;
   adopted: boolean;
   affinity_level?: number;
+  // 0–100 progress toward the next affinity level. null when the user
+  // is at the max level (4). Server hides the underlying trust/warmth
+  // scores intentionally — see /api/me on the server for rationale.
+  progress_to_next?: number | null;
+  // Lifetime voice-credits balance. Mirrored here so the affinity /
+  // voice-mode UI surfaces stay in sync with whatever the chat surface
+  // already knows from /api/voice-credits, without requiring two
+  // refetches every time the level updates.
+  voice_credits?: number;
 }
 
 async function adoptDevice(callsign?: string): Promise<AdoptedMe | null> {
