@@ -84,8 +84,11 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // "Text to Speech HD" tier bills in input CHARACTERS per day, not
 // request count — confirmed against the vendor docs + billing console
 // on 2026-04-23. Total quota is 11,000 characters / day. We cap user
-// playback at 8,000 chars and leave 3,000 as the operator buffer (dev
-// / debugging / new-feature trials).
+// playback at 10,000 chars and leave ~1,000 as the operator buffer
+// (dev / debugging / new-feature trials). Bumped from 8000 → 10000 on
+// 2026-04-29 — daily traffic was occasionally bumping the prior
+// ceiling, and tightening operator buffer to 1k is acceptable since
+// admin-token bypass is gone (manual dashboard testing is rare).
 //
 // Previous implementations counted requests and capped at 9,900 req/day,
 // which never bound the real spend: one session of moderate-length
@@ -95,10 +98,8 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // characters, not calls (same column, new semantics — any historical
 // rows are low enough that the switch is invisible).
 //
-// Single global cap: 8000 chars/day across all users. Leaves ~3000
-// chars of MiniMax's daily 11k ceiling as operator reserve (absorbed
-// by manual MiniMax dashboard testing — admin-token bypass was
-// removed per the no-secrets-through-agent rule).
+// Single global cap: 10000 chars/day across all users. Leaves ~1000
+// chars of MiniMax's daily 11k ceiling as operator reserve.
 //
 // The per-user 1000-char/day cap that used to live alongside this was
 // removed on 2026-04-29 because:
@@ -113,7 +114,7 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // Net: the daily char cap was no longer constraining anything that
 // voice_credits didn't already constrain harder. Killing it removes
 // confusion, simpler code, same global $$ ceiling.
-const TTS_DAILY_GLOBAL_CHAR_CAP = 8000;
+const TTS_DAILY_GLOBAL_CHAR_CAP = 10000;
 
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
 
@@ -2173,8 +2174,8 @@ app.get("/api/tts", async (c) => {
   // trusted, the per-user 1000-char/day cap meant abuse was bounded.
   // Once the per-user cap is skipped on freePlay (the Bug 2 fix below),
   // trusting an unverified hint would let any client render up to
-  // 8000 chars/day per user for free by passing ?favorite=true with
-  // arbitrary text. Caught in code review of PR #29.
+  // TTS_DAILY_GLOBAL_CHAR_CAP chars/day per user for free by passing
+  // ?favorite=true with arbitrary text. Caught in code review of PR #29.
   //
   // We still log the hint for telemetry, but the only thing that
   // grants freePlay now is the DB row check below.
