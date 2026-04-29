@@ -860,10 +860,16 @@ export default function ChatInterface({
             }
             const selected = shareSelectedIds.includes(msg.id);
             const capped = shareSelectedIds.length >= SHARE_MAX;
-            // Exclude greeting + streaming from share picks (nothing to
-            // share pre-answer).
+            // Exclude greeting + streaming + history-divider from share
+            // picks (nothing to share pre-answer; divider has no body).
+            // The divider is filtered higher up via the early return,
+            // so this guard is belt-and-suspenders, but kept so future
+            // refactors can't accidentally make the divider eligible.
             const shareEligible =
-              shareSelectMode && msg.id !== 'greeting' && !msg.isStreaming;
+              shareSelectMode &&
+              msg.id !== 'greeting' &&
+              !msg.isStreaming &&
+              !msg.isHistoryDivider;
             return (
               <MessageBubble
                 key={msg.id}

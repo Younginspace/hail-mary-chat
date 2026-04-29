@@ -6,7 +6,7 @@ import { findDefaultDialog } from '../utils/defaultDialogs';
 import type { ChatMode } from '../utils/playLimit';
 import type { Lang } from '../i18n';
 import { t } from '../i18n';
-import { generateGift, type GiftType } from '../utils/sessionApi';
+import { generateGift, type GiftType, type RecentHistoryMessage } from '../utils/sessionApi';
 import { genUuid } from '../utils/uuid';
 
 export type GiftImageSubtype = 'realistic' | 'comic';
@@ -80,13 +80,11 @@ export function useChat(
   // CONSOLIDATED prior sessions so a returning user sees "where we
   // left off" instead of a blank chat. Empty for first-time users.
   // Each entry carries originSessionId so favoriting a historical
-  // line attributes source_session correctly.
-  initialHistory: Array<{
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-    session_id: string;
-  }> = [],
+  // line attributes source_session correctly. RecentHistoryMessage
+  // is the shared type from sessionApi.ts; importing it here avoids
+  // a parallel inline type that would silently drift if the server
+  // shape ever changes.
+  initialHistory: RecentHistoryMessage[] = [],
 ) {
   // Per-session turn cap. Infinity means uncapped (L2+ only); we still
   // take Math.max(0, MAX_TURNS - userTurns) for `turnsLeft`, which
