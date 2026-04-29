@@ -37,7 +37,7 @@ import MessageBubble from './MessageBubble';
 import LangSwitcher from './LangSwitcher';
 import LevelUpCeremony from './LevelUpCeremony';
 import ShareCard from './ShareCard';
-import type { LevelUpPayload } from '../utils/sessionApi';
+import type { LevelUpPayload, RecentHistoryMessage } from '../utils/sessionApi';
 
 const SHARE_MAX = 6;
 
@@ -61,6 +61,10 @@ interface ChatInterfaceProps {
   onBack: () => void;
   initialLevelUp: LevelUpPayload | null;
   onLevelUpDismiss: () => void;
+  // Pre-loaded message tail from /api/session/start. Forwarded into
+  // useChat which prepends them above the current session's greeting
+  // with a divider in between. Empty array for first-time users.
+  initialHistory: RecentHistoryMessage[];
 }
 
 // Mobile-only view state. Desktop CSS shows both panes regardless.
@@ -74,6 +78,7 @@ export default function ChatInterface({
   onBack,
   initialLevelUp,
   onLevelUpDismiss,
+  initialHistory,
 }: ChatInterfaceProps) {
   const { lang } = useLang();
   // useAuthSession lifted above useChat so we can feed affinity_level
@@ -87,6 +92,7 @@ export default function ChatInterface({
     mode,
     sessionId,
     affinityLevel,
+    initialHistory,
   );
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
@@ -118,15 +124,30 @@ export default function ChatInterface({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastSpokenIdRef = useRef<string>('');
   const greetingSpoken = useRef(false);
-  const loggedIdsRef = useRef<Set<string>>(new Set());
+  // Pre-seed loggedIdsRef with all history-message ids on mount so
+  // the message-log effect below doesn't re-POST them to the server
+  // (they're already in the messages table — that's where they came
+  // from). The greeting id is also pre-seeded since it's special-cased
+  // in the loop, but doing it here keeps the gate symmetric.
+  const loggedIdsRef = useRef<Set<string>>(
+    new Set(initialHistory.map((m) => m.id))
+  );
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Log each user/assistant message to backend (fire-and-forget). Pass
   // msg.id so the server uses the same primary key; /api/tts will later
   // update this row's tts_content_hash using that id.
+  //
+  // Skip the history-divider sentinel (UI-only), the greeting (special-
+  // cased), streaming messages (will log when complete), and any
+  // message tagged with originSessionId (already logged in its
+  // original session, would create a duplicate row here under the
+  // current session_id otherwise).
   useEffect(() => {
     for (const msg of messages) {
       if (msg.id === 'greeting') continue;
+      if (msg.isHistoryDivider) continue;
+      if (msg.originSessionId) continue;
       if (msg.isStreaming) continue;
       if (loggedIdsRef.current.has(msg.id)) continue;
       loggedIdsRef.current.add(msg.id);
@@ -467,7 +488,14 @@ export default function ChatInterface({
         // single-speaker replies where extractMood on rawContent yields
         // null.
         mood: block.mood ?? extractMood(msg.content),
-        source_session: sessionId,
+        // For history-loaded messages, attribute source_session to the
+        // ORIGINAL session that produced the line — not the current
+        // session we just opened. Otherwise a heart-tap on something
+        // Rocky said three days ago would point at today's session,
+        // which is misleading and breaks any per-session lookups
+        // (e.g. the recover-grace-favorites admin endpoint that
+        // walks messages by session_id).
+        source_session: msg.originSessionId ?? sessionId,
         // Speaker decides which voice_id the server hashes against.
         // Grace blocks must travel as 'grace' so replay routes to the
         // cloned Gosling voice instead of Rocky's.
@@ -815,6 +843,21 @@ export default function ChatInterface({
 
         <div ref={chatAreaRef} className="chat-area">
           {messages.map((msg) => {
+            // History divider — rendered between pre-loaded history
+            // and the current session's fresh greeting. Only present
+            // when initialHistory was non-empty (useChat skips the
+            // sentinel for first-time users).
+            if (msg.isHistoryDivider) {
+              return (
+                <div key={msg.id} className="chat-history-divider" role="separator">
+                  <span className="chat-history-divider-line" aria-hidden="true" />
+                  <span className="chat-history-divider-label">
+                    {t('chat.previousCall', lang)}
+                  </span>
+                  <span className="chat-history-divider-line" aria-hidden="true" />
+                </div>
+              );
+            }
             const selected = shareSelectedIds.includes(msg.id);
             const capped = shareSelectedIds.length >= SHARE_MAX;
             // Exclude greeting + streaming from share picks (nothing to

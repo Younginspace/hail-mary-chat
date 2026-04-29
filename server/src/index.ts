@@ -36,7 +36,7 @@ import {
   users,
   voice_credit_ledger,
 } from "@defs";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notLike, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
@@ -1028,6 +1028,55 @@ app.post("/api/session/start", async (c) => {
     turn_count: 0,
   });
 
+  // ── Pre-load recent message history ────────────────────────────
+  // Last 50 user/assistant messages from this user's CONSOLIDATED
+  // sessions. The client renders them above the new greeting so a
+  // returning user sees "where we left off" instead of a blank slate.
+  //
+  // Filters:
+  //   * sessions.summary IS NOT NULL — only sessions that actually
+  //     completed and got their memory consolidated; avoids exposing
+  //     in-flight or zero-turn rows.
+  //   * messages.id != 'greeting' — every session's mount adds a
+  //     hardcoded greeting row, but we always synthesize a fresh
+  //     greeting client-side. Including the stored one would either
+  //     double-render OR collide with React's key system.
+  //   * messages.id NOT LIKE 'farewell-%' — farewell text is also
+  //     synthesized client-side at session-end and the stored copy
+  //     is just an artifact. Showing it as the first item in
+  //     "previous call" history would be jarring ("Rocky said
+  //     goodbye last time" — but he didn't really, that was a
+  //     boilerplate string).
+  //
+  // We pull session_id alongside each message so the client knows
+  // which historical session a favorited line came from — the
+  // favorites row's source_session field then points at the
+  // ORIGINAL session, not the new one we're starting.
+  const historyRows = await db
+    .select({
+      id: messagesTable.id,
+      role: messagesTable.role,
+      content: messagesTable.content,
+      created_at: messagesTable.created_at,
+      session_id: messagesTable.session_id,
+    })
+    .from(messagesTable)
+    .innerJoin(sessions, eq(messagesTable.session_id, sessions.id))
+    .where(
+      and(
+        eq(sessions.user_id, user.user_id),
+        isNotNull(sessions.summary),
+        ne(messagesTable.id, "greeting"),
+        notLike(messagesTable.id, "farewell-%"),
+      )
+    )
+    .orderBy(desc(messagesTable.created_at))
+    .limit(50);
+  // Reverse to chronological order so the client can splice it onto
+  // the front of the message list without further sorting. The DB
+  // ORDER BY DESC just gives us "the most recent 50".
+  historyRows.reverse();
+
   // Opportunistic stale-session sweep for THIS user — picks up the
   // returning user's own previous orphan session immediately, no
   // 30-min wait. Forward-only via the cutoff in consolidate.ts.
@@ -1057,6 +1106,10 @@ app.post("/api/session/start", async (c) => {
     unlimited: true,
     affinity_level,
     level_up,
+    // Pre-loaded conversation history — see the historyRows query
+    // above. Each entry carries its origin session_id so the client
+    // can attribute favorites correctly.
+    recent_history: historyRows,
   });
 });
 

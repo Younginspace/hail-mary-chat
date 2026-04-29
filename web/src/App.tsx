@@ -6,7 +6,7 @@ import StartScreen from './components/StartScreen';
 import { LangProvider } from './i18n/LangContext';
 import { preloadAllRockyAudio } from './utils/rockyAudio';
 import type { ChatMode } from './utils/playLimit';
-import type { LevelUpPayload } from './utils/sessionApi';
+import type { LevelUpPayload, RecentHistoryMessage } from './utils/sessionApi';
 import './styles/terminal.css';
 
 type AppPhase = 'start' | 'chat' | 'echo' | 'favorites';
@@ -16,16 +16,21 @@ export default function App() {
   const [chatMode, setChatMode] = useState<ChatMode>('text');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [pendingLevelUp, setPendingLevelUp] = useState<LevelUpPayload | null>(null);
+  // Pre-loaded conversation tail handed in by StartScreen via
+  // /api/session/start. Forwarded into ChatInterface so the user sees
+  // their last conversation above the new greeting on re-entry.
+  const [pendingHistory, setPendingHistory] = useState<RecentHistoryMessage[]>([]);
 
   useEffect(() => {
     preloadAllRockyAudio();
   }, []);
 
   const handleConnected = useCallback(
-    (mode: ChatMode, session_id: string, levelUp: LevelUpPayload | null) => {
+    (mode: ChatMode, session_id: string, levelUp: LevelUpPayload | null, history: RecentHistoryMessage[]) => {
       setChatMode(mode);
       setSessionId(session_id);
       setPendingLevelUp(levelUp);
+      setPendingHistory(history);
       setPhase('chat');
     },
     []
@@ -67,6 +72,7 @@ export default function App() {
           onBack={handleBackToStart}
           initialLevelUp={pendingLevelUp}
           onLevelUpDismiss={() => setPendingLevelUp(null)}
+          initialHistory={pendingHistory}
         />
       )}
       {phase === 'echo' && <EchoInterface onBack={handleBackToStart} />}

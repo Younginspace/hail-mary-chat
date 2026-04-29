@@ -29,6 +29,16 @@ export interface DisplayMessage {
   isStreaming?: boolean;
   isDefault?: boolean;   // 预置对话标记，TTS 用本地音频
   gift?: GiftAttachment;
+  // Set on messages loaded as history from previous sessions. Points
+  // at the original session_id so favorites can attribute correctly
+  // (otherwise a heart-tap on a historical line would be filed under
+  // the new session). Undefined for messages from the current session.
+  originSessionId?: string;
+  // Sentinel for the "— previous call —" divider rendered between
+  // pre-loaded history and the current session's fresh greeting.
+  // ChatInterface checks this flag and renders a divider element
+  // instead of a MessageBubble.
+  isHistoryDivider?: boolean;
 }
 
 // Match `[GIFT:type(:subtype) "description"]`. Subtype is optional for
@@ -65,6 +75,18 @@ export function useChat(
   // safe (capped) behavior — never accidentally remove the cap from a
   // user who shouldn't have it removed.
   affinityLevel: number = 1,
+  // Pre-loaded message tail from /api/session/start. The server
+  // returns the last ~50 user/assistant messages from the user's
+  // CONSOLIDATED prior sessions so a returning user sees "where we
+  // left off" instead of a blank chat. Empty for first-time users.
+  // Each entry carries originSessionId so favoriting a historical
+  // line attributes source_session correctly.
+  initialHistory: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    session_id: string;
+  }> = [],
 ) {
   // Per-session turn cap. Infinity means uncapped (L2+ only); we still
   // take Math.max(0, MAX_TURNS - userTurns) for `turnsLeft`, which
@@ -73,13 +95,38 @@ export function useChat(
   const MAX_TURNS = affinityLevel >= 2
     ? Number.POSITIVE_INFINITY
     : (mode === 'text' ? 50 : 10);
-  const [messages, setMessages] = useState<DisplayMessage[]>([
-    {
+  // Initial messages list:
+  //   1. Pre-loaded history (from previous consolidated sessions),
+  //      each tagged with its origin session_id so favoriting still
+  //      attributes to the right past conversation.
+  //   2. A divider sentinel — id='history-divider' — that the
+  //      ChatInterface render treats specially (renders a "previous
+  //      call" line instead of a MessageBubble). Only inserted if
+  //      there's actually history to separate.
+  //   3. The fresh greeting for THIS session.
+  // useState initializer runs once on mount so we don't overwrite
+  // user-sent messages on later re-renders if initialHistory ref
+  // changes.
+  const [messages, setMessages] = useState<DisplayMessage[]>(() => {
+    const greeting: DisplayMessage = {
       id: 'greeting',
       role: 'assistant',
       content: getRockyGreeting(lang),
-    },
-  ]);
+    };
+    if (initialHistory.length === 0) return [greeting];
+    const historyAsDisplay: DisplayMessage[] = initialHistory.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      originSessionId: m.session_id,
+    }));
+    return [
+      ...historyAsDisplay,
+      // Divider sentinel — see DisplayMessage.isHistoryDivider.
+      { id: 'history-divider', role: 'assistant', content: '', isHistoryDivider: true },
+      greeting,
+    ];
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [userTurns, setUserTurns] = useState(0);
   const [isEnded, setIsEnded] = useState(false);
@@ -100,17 +147,23 @@ export function useChat(
     };
   }, []);
 
-  // Update greeting when lang changes (only if no user messages yet)
+  // Update greeting when lang changes (only if no user messages yet).
+  // IMPORTANT: rewrite the greeting's content in place; do NOT replace
+  // the entire messages array. The pre-loaded history + divider sit
+  // ABOVE the greeting in the array — clobbering with [greeting] would
+  // throw all of that away on every lang change AND on the initial
+  // mount-time effect fire (because lang/userTurns changing triggers
+  // it). That was the bug that left history-having users seeing only
+  // the greeting.
   useEffect(() => {
-    if (userTurns === 0) {
-      setMessages([
-        {
-          id: 'greeting',
-          role: 'assistant',
-          content: getRockyGreeting(lang),
-        },
-      ]);
-    }
+    if (userTurns > 0) return;
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === 'greeting'
+          ? { ...m, content: getRockyGreeting(lang) }
+          : m
+      )
+    );
   }, [lang, userTurns]);
 
   const sendMessage = useCallback(
@@ -174,9 +227,22 @@ export function useChat(
 
       // Build raw user/assistant chat history only — server handles
       // system prompt, few-shots, memory context, and last-turn hint.
+      //
+      // EXCLUDE pre-loaded history (messages with originSessionId)
+      // and the history-divider sentinel. Those are UI-only:
+      //   * the server already injects past-session memory via
+      //     the consolidation pipeline (rapport + extracted facts),
+      //     so re-feeding 50 raw historical messages would just
+      //     bloat the prompt without adding signal
+      //   * the divider has empty content and would land as an
+      //     empty assistant message — confusing for the LLM
+      // Net: only the current session's messages (greeting + the
+      // user/assistant exchange so far) reach the LLM.
       const apiMessages: ChatMessage[] = [];
       const history = [...messages, userMsg];
       for (const msg of history) {
+        if (msg.isHistoryDivider) continue;
+        if (msg.originSessionId) continue;
         if (msg.id === 'greeting') {
           apiMessages.push({ role: 'assistant', content: getRockyGreeting(lang) });
         } else {

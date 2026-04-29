@@ -156,6 +156,14 @@ const translations = {
   //  turn counter switched from "{n} / {m} REMAINING" to
   //  "Chat {n}/{m}" — the new format is short enough to not need a
   //  localized label.)
+  // Divider shown above the new session's greeting when the user has
+  // pre-loaded conversation history. Separates "what we said before"
+  // from "this is a new call".
+  'chat.previousCall': {
+    zh: '上次的通讯',
+    en: 'previous call',
+    ja: '前回の通話',
+  },
   'chat.inputPlaceholder': {
     zh: '发送星际消息...',
     en: 'Send interstellar message...',

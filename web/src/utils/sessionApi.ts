@@ -18,11 +18,29 @@ export interface LevelUpPayload {
   grace_credits: number;
 }
 
+// One row of pre-loaded conversation history. Each item carries its
+// ORIGINATING session_id so when the user favorites a historical
+// line, the favorite's source_session points at the actual session
+// where it was said — not the new session that just started. Used by
+// the chat playback / favorite handlers in ChatInterface.
+export interface RecentHistoryMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: number;
+  session_id: string;
+}
+
 export interface StartSessionResult {
   ok: true;
   session_id: string;
   affinity_level: number;
   level_up: LevelUpPayload | null;
+  // Last ~50 user/assistant messages from this user's previously-
+  // consolidated sessions, chronological order. Empty for first-time
+  // users. ChatInterface prepends these above the new greeting with
+  // a "previous call" divider in between.
+  recent_history: RecentHistoryMessage[];
 }
 export interface StartSessionDenied {
   ok: false;
@@ -50,12 +68,16 @@ export async function startSession(
       session_id: string;
       affinity_level?: number;
       level_up?: LevelUpPayload | null;
+      recent_history?: RecentHistoryMessage[];
     };
     return {
       ok: true,
       session_id: json.session_id,
       affinity_level: json.affinity_level ?? 1,
       level_up: json.level_up ?? null,
+      // Default to [] for older server builds that don't return the
+      // field — keeps the client compatible across rolling deploys.
+      recent_history: json.recent_history ?? [],
     };
   } catch (err) {
     console.warn('startSession failed', err);
