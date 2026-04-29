@@ -192,7 +192,24 @@ export default function ChatInterface({
     return () => window.removeEventListener('pagehide', onPageHide);
   }, [sessionId]);
 
-  // Smart auto-scroll. Rules:
+  // Force-scroll to the bottom on first mount. Without this, returning
+  // users with pre-loaded history land at the TOP of the chat-area
+  // (oldest historical message in view) and have to manually scroll
+  // down to find the new greeting + input box. The smart-scroll
+  // effect below can't handle this case — it gates on either
+  // "just sent a message" or "already near bottom", and on first
+  // mount neither is true. `behavior: 'auto'` (instant, no smooth
+  // animation) is intentional: a half-second smooth scroll past 50
+  // historical bubbles looks janky and the user didn't initiate the
+  // scroll, so animating draws attention to a transition they didn't
+  // ask for.
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end', inline: 'nearest' });
+    });
+  }, []);
+
+  // Smart auto-scroll for SUBSEQUENT message updates. Rules:
   //   1. If the user just sent a message (last entry is a 'user' role),
   //      ALWAYS scroll to bottom — they want to see their own send.
   //   2. Otherwise only scroll if they're already close to the bottom
