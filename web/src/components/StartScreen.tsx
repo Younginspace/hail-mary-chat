@@ -122,11 +122,50 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
       setPhase('home');
       return;
     }
+
+    // Returning users (those with prior consolidated sessions on file)
+    // skip the 6.2-second ERID-LINK CONNECTING theatrics. The connecting
+    // log was originally written to set the brand tone for first-time
+    // users — once you've made the call before, every re-run is just
+    // sitting through the intro again. Fast-path: fade out whatever
+    // panel is currently visible and hand straight to onConnected.
+    //
+    // First-time users (recent_history empty) keep the full theatrics —
+    // it only happens once per user, and it sets the sci-fi tone.
+    const isReturning = result.recent_history.length > 0;
+    if (isReturning) {
+      const prefersReduced =
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const finish = () =>
+        onConnected('text', result.session_id, result.level_up, result.recent_history);
+      if (prefersReduced) {
+        finish();
+        return;
+      }
+      // Fade whichever panel is currently mounted. handleDialIn paths
+      // come from phase === 'home'; DialInScreen.onSuccess paths come
+      // from phase === 'dialin'.
+      const activeRef = dialinRef.current ?? homeRef.current;
+      if (activeRef) {
+        gsap.to(activeRef, {
+          opacity: 0,
+          duration: 0.22,
+          ease: 'power2.out',
+          onComplete: finish,
+        });
+      } else {
+        finish();
+      }
+      return;
+    }
+
+    // First-time path (full theatrics — the original 6.2-second flow).
     setPendingSessionId(result.session_id);
     setPendingLevelUp(result.level_up);
     setPendingHistory(result.recent_history);
     setPhase('connecting');
-  }, [lang]);
+  }, [lang, onConnected]);
 
   useEffect(() => {
     if (phase !== 'connecting') return;
