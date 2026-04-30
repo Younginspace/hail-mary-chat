@@ -797,6 +797,87 @@ const translations = {
     en: 'Download',
     ja: 'ダウンロード',
   },
+  // ===== Bedtime stories (#01) =====
+  'bedtime.title': {
+    zh: '睡前故事',
+    en: 'Bedtime',
+    ja: '寝る前のお話',
+  },
+  'bedtime.openLabel': {
+    zh: '让 Rocky 哄你睡',
+    en: 'Have Rocky read you to sleep',
+    ja: 'Rocky に寝かしつけてもらう',
+  },
+  'bedtime.close': {
+    zh: '关闭',
+    en: 'Close',
+    ja: '閉じる',
+  },
+  'bedtime.listHint': {
+    zh: '挑一个故事，Rocky 给你哄睡。',
+    en: 'Pick a story. Rocky will read you to sleep.',
+    ja: 'お話を選んで。Rocky が読んであげる。',
+  },
+  'bedtime.minutesShort': {
+    zh: '分钟',
+    en: 'min',
+    ja: '分',
+  },
+  'bedtime.lockedAt': {
+    zh: 'Lv{level} 解锁',
+    en: 'Unlocks at Lv{level}',
+    ja: 'Lv{level} で解錠',
+  },
+  'bedtime.backToList': {
+    zh: '返回故事列表',
+    en: 'Back to stories',
+    ja: 'お話一覧に戻る',
+  },
+  'bedtime.audioNotReady': {
+    zh: 'Rocky 还在录这段。先回去聊聊？',
+    en: "Rocky's still recording this one. Try another?",
+    ja: 'Rocky はまだ録音中。別のを試す？',
+  },
+  'bedtime.play': {
+    zh: '播放',
+    en: 'Play',
+    ja: '再生',
+  },
+  'bedtime.pause': {
+    zh: '暂停',
+    en: 'Pause',
+    ja: '一時停止',
+  },
+  'bedtime.seek': {
+    zh: '进度',
+    en: 'Seek',
+    ja: 'シーク',
+  },
+  'bedtime.sleepTimer': {
+    zh: '睡眠定时',
+    en: 'Sleep timer',
+    ja: 'スリープタイマー',
+  },
+  'bedtime.sleepOff': {
+    zh: '不限',
+    en: 'Off',
+    ja: 'オフ',
+  },
+  'bedtime.sleep5': {
+    zh: '5 分钟',
+    en: '5 min',
+    ja: '5 分',
+  },
+  'bedtime.sleep15': {
+    zh: '15 分钟',
+    en: '15 min',
+    ja: '15 分',
+  },
+  'bedtime.sleep30': {
+    zh: '30 分钟',
+    en: '30 min',
+    ja: '30 分',
+  },
 } as const;
 
 export type TranslationKey = keyof typeof translations;
