@@ -4655,3 +4655,284 @@ button.voice-exhausted-bar:active {
     gap: 8px;
   }
 }
+
+/* ============================================================
+ * #01 Bedtime Player — full-screen modal (specs/2026-04-30/01-*)
+ * Mirrors .affinity-modal pattern but darker (bedtime vibe) and
+ * full-bleed on small screens. emil-design-eng: ease-out 200ms,
+ * scale(0.95) start, never scale(0).
+ * ============================================================ */
+.bedtime-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 12, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100; /* above affinity-modal so 🌙 → bedtime never gets buried */
+  padding: 16px;
+  animation: bedtime-fade-in 200ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+@keyframes bedtime-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.bedtime-modal {
+  background: #0a0d12;
+  border: 1px solid rgba(216, 176, 128, 0.28);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 18px 20px 22px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  animation: bedtime-card-in 220ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+@keyframes bedtime-card-in {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.bedtime-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.bedtime-modal-title {
+  font-size: 13px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--accent-warm, #d8b080);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bedtime-modal-close {
+  background: transparent;
+  border: none;
+  color: rgba(214, 241, 233, 0.55);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: var(--tx-smooth-150, all 150ms ease);
+}
+.bedtime-modal-close:hover {
+  color: #d6f1e9;
+  background: rgba(255, 255, 255, 0.06);
+}
+.bedtime-modal-close:active {
+  transform: scale(0.97);
+}
+
+/* ── List view ─────────────────────────────────────────────── */
+.bedtime-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bedtime-list-hint {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: rgba(214, 241, 233, 0.55);
+  letter-spacing: 0.5px;
+}
+.bedtime-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(216, 176, 128, 0.14);
+  border-radius: 8px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #d6f1e9;
+  font-family: inherit;
+  transition: transform 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+              border-color 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+              background-color 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+.bedtime-card:hover:not(:disabled) {
+  border-color: rgba(216, 176, 128, 0.42);
+  background: rgba(216, 176, 128, 0.05);
+}
+.bedtime-card:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.bedtime-card--locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.bedtime-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.bedtime-card-subtitle {
+  font-size: 12.5px;
+  color: rgba(214, 241, 233, 0.65);
+  font-style: italic;
+}
+.bedtime-card-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(214, 241, 233, 0.45);
+  letter-spacing: 0.8px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.bedtime-card-lock {
+  color: var(--accent-warm, #d8b080);
+}
+
+/* ── Player view ───────────────────────────────────────────── */
+.bedtime-player {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.bedtime-player-back {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: rgba(214, 241, 233, 0.55);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+  margin: -4px -6px 0;
+  border-radius: 4px;
+  transition: var(--tx-smooth-150, all 150ms ease);
+}
+.bedtime-player-back:hover {
+  color: #d6f1e9;
+  background: rgba(255, 255, 255, 0.04);
+}
+.bedtime-player-title {
+  font-size: 18px;
+  margin: 0;
+  font-weight: 600;
+  color: #d6f1e9;
+  letter-spacing: 0.5px;
+}
+.bedtime-player-subtitle {
+  margin: -10px 0 0;
+  font-size: 12.5px;
+  color: rgba(214, 241, 233, 0.6);
+  font-style: italic;
+}
+.bedtime-player-empty {
+  margin-top: 24px;
+  padding: 32px 16px;
+  text-align: center;
+  color: rgba(214, 241, 233, 0.55);
+  font-size: 13px;
+  border: 1px dashed rgba(216, 176, 128, 0.2);
+  border-radius: 8px;
+}
+.bedtime-player-controls {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+}
+.bedtime-player-play {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-warm, #d8b080);
+  color: #0a0d12;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+.bedtime-player-play:hover:not(:disabled) {
+  transform: scale(1.04);
+}
+.bedtime-player-play:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.bedtime-player-play:disabled {
+  opacity: 0.4;
+  cursor: wait;
+}
+.bedtime-player-scrubber {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bedtime-player-scrubber input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-warm, #d8b080);
+}
+.bedtime-player-time {
+  font-size: 11px;
+  color: rgba(214, 241, 233, 0.55);
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+.bedtime-player-sleep {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bedtime-player-sleep-label {
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: rgba(214, 241, 233, 0.55);
+}
+.bedtime-player-sleep-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.bedtime-sleep-opt {
+  background: transparent;
+  border: 1px solid rgba(216, 176, 128, 0.18);
+  color: rgba(214, 241, 233, 0.7);
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: var(--tx-smooth-150, all 150ms ease);
+}
+.bedtime-sleep-opt:hover {
+  border-color: rgba(216, 176, 128, 0.42);
+  color: #d6f1e9;
+}
+.bedtime-sleep-opt:active {
+  transform: scale(0.97);
+}
+.bedtime-sleep-opt.is-active {
+  border-color: var(--accent-warm, #d8b080);
+  color: var(--accent-warm, #d8b080);
+  background: rgba(216, 176, 128, 0.08);
+}
+
+@media (max-width: 480px) {
+  .bedtime-modal {
+    max-width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    padding: 16px 18px 24px;
+  }
+  .bedtime-player-play {
+    width: 56px;
+    height: 56px;
+    font-size: 20px;
+  }
+}

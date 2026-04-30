@@ -26,6 +26,7 @@ import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlay
 import AffinityIndicator from './AffinityIndicator';
 import AffinityDetailsModal from './AffinityDetailsModal';
 import VoiceModeButton from './VoiceModeButton';
+import BedtimePlayer from './BedtimePlayer';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -114,6 +115,12 @@ export default function ChatInterface({
   // gives users hitting the lifetime limit an immediate path to learn
   // about the level-up route to more credits).
   const [affinityModalOpen, setAffinityModalOpen] = useState(false);
+  // 🌙 bedtime story player. Pre-rendered MP3s gated by affinity_level
+  // (Lv1: Story A only; Lv2+: all three). Owner runs
+  // scripts/gen-bedtime-stories.sh after script review to populate
+  // /audio/bedtime/*.mp3 — until then the player surfaces a graceful
+  // "audio not ready" empty state.
+  const [bedtimeOpen, setBedtimeOpen] = useState(false);
   // Token of the currently-playing slot from the global audioPlayback
   // coordinator. Used to distinguish "this block's audio finished"
   // from "a newer claim took over" — both arrive via onEnded.
@@ -791,6 +798,18 @@ export default function ChatInterface({
               )}
             </div>
           )}
+          {/* 🌙 bedtime — opens the BedtimePlayer modal. Hidden until the
+              user has at least Lv1 (i.e., me loaded), since the unlock
+              gating is level-based. Cheap to always show though. */}
+          <button
+            type="button"
+            className="status-iconbtn bedtime"
+            onClick={() => setBedtimeOpen(true)}
+            title={t('bedtime.openLabel', lang)}
+            aria-label={t('bedtime.openLabel', lang)}
+          >
+            <span aria-hidden="true" style={{ fontSize: '14px', lineHeight: 1 }}>🌙</span>
+          </button>
           <button
             type="button"
             className="status-iconbtn hangup"
@@ -975,6 +994,12 @@ export default function ChatInterface({
           </>
         )}
       </div>
+
+      <BedtimePlayer
+        open={bedtimeOpen}
+        userLevel={me?.affinity_level ?? 1}
+        onClose={() => setBedtimeOpen(false)}
+      />
 
       {affinityModalOpen && (
         <AffinityDetailsModal
