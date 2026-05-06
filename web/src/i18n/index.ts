@@ -797,6 +797,85 @@ const translations = {
     en: 'Download',
     ja: 'ダウンロード',
   },
+  // ===== Voice input (#07) =====
+  // Press-and-hold mic button on the chat input area. Records via
+  // MediaRecorder, sends to /api/asr (Aliyun DashScope Paraformer-v2),
+  // fills the input box with transcript for user to edit before send.
+  'voiceinput.holdToTalk': {
+    zh: '按住说话',
+    en: 'Hold to talk',
+    ja: '長押しで話す',
+  },
+  'voiceinput.recording': {
+    zh: '正在录音',
+    en: 'Recording',
+    ja: '録音中',
+  },
+  'voiceinput.transcribing': {
+    zh: '听清楚啦，转写中...',
+    en: 'Got it, transcribing...',
+    ja: '受け取った、書き起こし中...',
+  },
+  'voiceinput.dragToCancel': {
+    zh: '上滑取消',
+    en: 'Slide up to cancel',
+    ja: '上にスワイプでキャンセル',
+  },
+  'voiceinput.releaseToCancel': {
+    zh: '松开取消',
+    en: 'Release to cancel',
+    ja: '離してキャンセル',
+  },
+  'voiceinput.error.permission': {
+    zh: '麦克风权限被拒，请在浏览器里允许后重试',
+    en: 'Microphone permission denied. Allow in your browser and try again.',
+    ja: 'マイク権限が拒否されました。ブラウザで許可してね',
+  },
+  'voiceinput.error.unsupported': {
+    zh: '当前浏览器不支持录音，换一个浏览器试试',
+    en: 'This browser does not support recording. Try a different one.',
+    ja: 'このブラウザは録音に対応していない',
+  },
+  'voiceinput.error.noMic': {
+    zh: '没找到麦克风',
+    en: 'No microphone found',
+    ja: 'マイクが見つからない',
+  },
+  'voiceinput.error.tooLong': {
+    zh: '录音太长，最多 60 秒',
+    en: 'Recording too long. Max 60 seconds.',
+    ja: '録音が長すぎる。最大60秒',
+  },
+  'voiceinput.error.format': {
+    zh: '音频格式不支持，请换一个浏览器试试',
+    en: 'Audio format not supported. Try a different browser.',
+    ja: '音声形式が非対応',
+  },
+  'voiceinput.error.network': {
+    zh: '网络不稳，转写失败',
+    en: 'Network unstable. Transcription failed.',
+    ja: 'ネットワーク不安定で書き起こし失敗',
+  },
+  'voiceinput.error.failed': {
+    zh: 'Rocky 没听清，再说一次试试',
+    en: "Rocky didn't catch that. Try again.",
+    ja: 'Rockyが聞き取れなかった。もう一度試して',
+  },
+  'voiceinput.error.empty': {
+    zh: '没听到声音呢',
+    en: "Didn't hear anything",
+    ja: '何も聞こえなかった',
+  },
+  'voiceinput.error.timeout': {
+    zh: '转写超时，再试一次',
+    en: 'Transcription timed out. Try again.',
+    ja: '書き起こしがタイムアウト',
+  },
+  'voiceinput.error.generic': {
+    zh: '出了点问题，再试一次',
+    en: 'Something went wrong. Try again.',
+    ja: '問題が発生。もう一度試して',
+  },
 } as const;
 
 export type TranslationKey = keyof typeof translations;

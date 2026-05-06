@@ -26,6 +26,7 @@ import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlay
 import AffinityIndicator from './AffinityIndicator';
 import AffinityDetailsModal from './AffinityDetailsModal';
 import VoiceModeButton from './VoiceModeButton';
+import VoiceInputButton from './VoiceInputButton';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -967,6 +968,18 @@ export default function ChatInterface({
               disabled={isLoading}
               rows={3}
               autoFocus
+            />
+            {/* #07 Voice input — press-and-hold to record, release to send.
+                Drag up cancels. Transcription fills the textarea so the
+                user can edit before pressing Send (never auto-sends). */}
+            <VoiceInputButton
+              disabled={isLoading}
+              onTranscript={(text) => {
+                // Append to existing input (or set if empty) so users can
+                // dictate one fragment at a time without losing context.
+                setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${text}` : text));
+                textareaRef.current?.focus();
+              }}
             />
             <button className="send-btn" type="submit" disabled={isLoading || !input.trim()}>
               {t('chat.sendButton', lang)}

@@ -1742,6 +1742,244 @@ function buildGiftStrippingTransform(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  #07 — /api/asr  (Aliyun DashScope Paraformer-v2 voice input)
+//
+//  Async transcription pipeline:
+//    1. Client POSTs base64-encoded audio (webm/opus from MediaRecorder
+//       on most browsers, mp4/aac on iOS Safari).
+//    2. Worker decodes, uploads to R2 (rocky-audio bucket, asr-tmp/
+//       prefix), creates a presigned GET URL with 10-minute TTL.
+//    3. Worker calls DashScope async transcription, passes the URL,
+//       polls task status every 250ms (max 30 attempts ≈ 7.5s).
+//    4. Returns { transcript } on success, error code otherwise.
+//    5. Cleanup: the R2 object is deleted via ctx.runInBackground
+//       after the response is sent.
+//
+//  Vendor: Aliyun DashScope (百炼) — chosen over Volcengine /
+//  iFlytek for ¥0.288/hour pricing (vs ¥1.7+/hour) and clean Bearer
+//  auth. 36k seconds/month free quota covers ≤500 active users free.
+//  Same DASHSCOPE_API_KEY is reused by /api/chat-with-image (#06).
+// ═══════════════════════════════════════════════════════════════════
+
+const ASR_DEFAULT_API_URL = "https://dashscope.aliyuncs.com";
+const ASR_MODEL = "paraformer-v2";
+const ASR_MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5 MB ≈ 5+ min of opus
+const ASR_POLL_INTERVAL_MS = 250;
+const ASR_POLL_MAX_ATTEMPTS = 30; // 30 × 250ms = 7.5 s timeout
+
+app.post("/api/asr", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  const apiKey = secret.get("DASHSCOPE_API_KEY");
+  if (!apiKey) {
+    return c.json({ error: "missing_secret", detail: "DASHSCOPE_API_KEY not set" }, 500);
+  }
+  // Endpoint hardcoded — DashScope only exposes this one URL for
+  // transcription (no domestic-vs-international split for this product).
+  // If we ever need a fallback, add DASHSCOPE_API_URL to VarKey first.
+  const apiBase = ASR_DEFAULT_API_URL;
+
+  // Body: { audioBase64: string, mimeType: string, lang?: 'zh'|'en'|'ja' }
+  // We accept base64-in-JSON rather than multipart because Workers'
+  // body-size limit on multipart is harsher and SSR streaming JSON is
+  // the path-of-least-resistance for the existing client fetch wrapper.
+  let body: { audioBase64?: unknown; mimeType?: unknown; lang?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  const { audioBase64, mimeType, lang: rawLang } = body;
+  if (typeof audioBase64 !== "string" || !audioBase64) {
+    return c.json({ error: "audio_required" }, 400);
+  }
+  if (typeof mimeType !== "string" || !mimeType) {
+    return c.json({ error: "mime_required" }, 400);
+  }
+  // Whitelist what we can plausibly hand to DashScope. opus/webm are
+  // the MediaRecorder defaults; mp4/aac are iOS Safari's preference.
+  // wav/mp3 are rare from a browser but harmless. Reject anything else
+  // before burning a vendor call.
+  const ext = (() => {
+    if (mimeType.includes("webm")) return "webm";
+    if (mimeType.includes("ogg")) return "ogg";
+    if (mimeType.includes("mp4") || mimeType.includes("aac")) return "m4a";
+    if (mimeType.includes("mpeg") || mimeType === "audio/mpeg") return "mp3";
+    if (mimeType.includes("wav")) return "wav";
+    return null;
+  })();
+  if (!ext) {
+    return c.json({ error: "unsupported_audio_format", detail: mimeType }, 400);
+  }
+  const lang = rawLang === "zh" || rawLang === "en" || rawLang === "ja" ? rawLang : "en";
+
+  // Decode + size-cap before we touch storage. atob will throw if the
+  // input isn't valid base64; treat that as 400 instead of 500.
+  let audioBytes: Uint8Array;
+  try {
+    const binary = atob(audioBase64);
+    if (binary.length > ASR_MAX_AUDIO_BYTES) {
+      return c.json({ error: "audio_too_large", maxBytes: ASR_MAX_AUDIO_BYTES }, 413);
+    }
+    audioBytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) audioBytes[i] = binary.charCodeAt(i);
+  } catch {
+    return c.json({ error: "invalid_base64" }, 400);
+  }
+
+  // Upload to R2. Path includes user id so per-user listing is sane;
+  // crypto.randomUUID() avoids collisions when the same user sends two
+  // clips back-to-back. The asr-tmp/ prefix is reserved — DON'T expose
+  // public access, presigned GET URL is the only way DashScope reaches it.
+  const r2Key = `asr-tmp/${user.user_id}/${crypto.randomUUID()}.${ext}`;
+  try {
+    await storage.from(buckets.rockyAudio).put(r2Key, audioBytes);
+  } catch (err) {
+    console.error("ASR R2 upload failed:", err);
+    return c.json({ error: "storage_failed" }, 502);
+  }
+
+  // Schedule cleanup regardless of how this request returns. ctx.runInBackground
+  // lets the delete finish after we've responded.
+  const cleanup = () => {
+    ctx.runInBackground(
+      storage.from(buckets.rockyAudio).delete(r2Key).catch((err) => {
+        console.warn("ASR R2 cleanup failed (non-fatal):", err);
+      })
+    );
+  };
+
+  let signedUrl: string;
+  try {
+    const presigned = await storage.from(buckets.rockyAudio).createPresignedGetUrl(r2Key, 600);
+    signedUrl = presigned.downloadUrl;
+  } catch (err) {
+    console.error("ASR presign failed:", err);
+    cleanup();
+    return c.json({ error: "presign_failed" }, 502);
+  }
+
+  // Submit async transcription task.
+  let taskId: string;
+  try {
+    const submitResp = await fetch(`${apiBase}/api/v1/services/audio/asr/transcription`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+      },
+      body: JSON.stringify({
+        model: ASR_MODEL,
+        input: { file_urls: [signedUrl] },
+        parameters: { language_hints: [lang] },
+      }),
+    });
+    if (!submitResp.ok) {
+      const text = await submitResp.text();
+      console.error(`ASR submit failed (${submitResp.status}):`, text);
+      cleanup();
+      return c.json({ error: "asr_submit_failed", detail: text }, 502);
+    }
+    const submitJson = (await submitResp.json()) as {
+      output?: { task_id?: string; task_status?: string };
+      message?: string;
+    };
+    // Defensive: DashScope occasionally returns task_status=FAILED
+    // synchronously on submit (e.g., the file URL was unreachable
+    // from their region). Bail now rather than burn the polling window.
+    const submitStatus = submitJson.output?.task_status;
+    if (submitStatus === "FAILED" || submitStatus === "REJECTED") {
+      console.error("ASR submit returned terminal status:", JSON.stringify(submitJson));
+      cleanup();
+      return c.json({ error: "asr_submit_failed", detail: submitJson.message ?? submitStatus }, 502);
+    }
+    const id = submitJson.output?.task_id;
+    if (!id) {
+      console.error("ASR submit missing task_id:", JSON.stringify(submitJson));
+      cleanup();
+      return c.json({ error: "asr_submit_no_task_id" }, 502);
+    }
+    taskId = id;
+  } catch (err) {
+    console.error("ASR submit fetch threw:", err);
+    cleanup();
+    return c.json({ error: "asr_submit_threw" }, 502);
+  }
+
+  // Poll. 30 × 250ms = 7.5s ceiling. Most short utterances (≤30s)
+  // resolve in 1-3s based on DashScope's published latency.
+  for (let attempt = 0; attempt < ASR_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((r) => setTimeout(r, ASR_POLL_INTERVAL_MS));
+    type StatusShape = {
+      output?: {
+        task_status?: string;
+        results?: Array<{ transcripts?: Array<{ text?: string }>; transcription_url?: string }>;
+        transcripts?: Array<{ text?: string }>;
+      };
+    };
+    let statusJson: StatusShape;
+    try {
+      const statusResp = await fetch(`${apiBase}/api/v1/tasks/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!statusResp.ok) continue;
+      statusJson = (await statusResp.json()) as StatusShape;
+    } catch {
+      continue;
+    }
+    const status = statusJson.output?.task_status;
+    if (status === "SUCCEEDED") {
+      // Per Aliyun Paraformer-v2 docs the transcript lives ONLY at
+      // output.results[0].transcription_url — an external JSON URL
+      // valid for 24h. There is no inline transcript in the polling
+      // response. Fetch + parse with explicit error paths: a missing
+      // URL or fetch failure must not silently degrade to "empty
+      // transcript" (which would look identical to "user said nothing").
+      const transcriptionUrl = statusJson.output?.results?.[0]?.transcription_url;
+      if (typeof transcriptionUrl !== "string") {
+        console.error("ASR SUCCEEDED but no transcription_url:", JSON.stringify(statusJson));
+        cleanup();
+        return c.json({ error: "asr_no_transcript_url" }, 502);
+      }
+      let transcript = "";
+      try {
+        const tRes = await fetch(transcriptionUrl);
+        if (!tRes.ok) {
+          console.error(`ASR transcription_url ${tRes.status}:`, await tRes.text().catch(() => ""));
+          cleanup();
+          return c.json({ error: "asr_transcript_url_failed", status: tRes.status }, 502);
+        }
+        const tJson = (await tRes.json()) as { transcripts?: Array<{ text?: string }> };
+        transcript = (tJson.transcripts?.[0]?.text ?? "").trim();
+      } catch (err) {
+        console.error("ASR transcription_url fetch threw:", err);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_failed" }, 502);
+      }
+      cleanup();
+      if (!transcript) {
+        return c.json({ error: "asr_empty_transcript" }, 502);
+      }
+      return c.json({ transcript });
+    }
+    if (status === "FAILED" || status === "CANCELED" || status === "REJECTED") {
+      console.error("ASR task failed:", JSON.stringify(statusJson));
+      cleanup();
+      return c.json({ error: "asr_failed", status }, 502);
+    }
+    // PENDING / RUNNING → continue polling
+  }
+
+  // Timed out — DashScope task may still complete in the background,
+  // but we won't wait. Caller should retry from scratch.
+  cleanup();
+  return c.json({ error: "asr_timeout" }, 504);
+});
+
+// ═══════════════════════════════════════════════════════════════════
 //  P5 F2 — /api/voice-credits  (GET balance)
 // ═══════════════════════════════════════════════════════════════════
 
