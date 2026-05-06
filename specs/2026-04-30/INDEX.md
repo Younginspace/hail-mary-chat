@@ -76,3 +76,13 @@ W3+ (after W2 ships):
 - **不在 prod 测试**：所有 PR 必须先本地 + Playwright 验证
 - **secret 不进 chat**：用 `edgespark secret set <KEY>` 拿浏览器 URL 让用户填
 - **每个 PR 都要做独立 code review**：用 general-purpose subagent 跑一轮再合
+
+## Backlog（不在本批，但记下来）
+
+| 项 | 价值 | 难度 | 触发条件 |
+| --- | --- | --- | --- |
+| **gitleaks pre-commit hook** | 自动拦截误 commit 的 API key（机器层兜底，不再依赖 agent 肉眼审）| 5 分钟 | 本批 5 个 PR review 完后做，2026-04-30 讨论中标记 |
+| **/api/asr 单用户日次数 limiter** | 防止恶意用户单日烧光 ASR 配额 / 防误用 | ~1 小时 | #07 merge + 公测前必须做 |
+| **/api/chat 识图分支单用户日图数限制** | 同上，识图侧 + 同图 hash 去重 | ~1.5 小时 | #06 merge + 公测前必须做 |
+| **NSFW image moderation**（Cloudflare Workers AI image classifier）| #06 公开发布前必须 | 0.5 天 | #06 merge + 公开发布前 |
+| **Vendor health canary endpoint + Bark/飞书 webhook 告警** | 防止 SEV-1 复现（MiniMax 配额耗尽 / vendor 失效）静默；5 分钟内主动通知 owner | 1.5-2 小时 | 用户决定是否做（2026-04-30 讨论中说"先不管"）|
