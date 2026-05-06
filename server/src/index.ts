@@ -38,6 +38,7 @@ import {
 } from "@defs";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notLike, sql } from "drizzle-orm";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
 import {
   retryStuckConsolidationJobs,
@@ -1258,6 +1259,240 @@ app.post("/api/session/message", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+//  #06 — Vision chat helper. Routes image-bearing /api/chat turns
+//  through Aliyun DashScope Qwen-VL-Max (OpenAI-compat) instead of
+//  MiniMax. SSE response shape matches OpenAI's chat.completions
+//  (delta.content), so the client's existing streamer parses it
+//  without changes.
+//
+//  Persona is preserved by appending VISION_PERSONA_HINT to the
+//  system prompt — the model is instructed to "look at" the photo
+//  with the user, not OCR-describe it. Conversation history is
+//  truncated to the last 8 messages to control token spend; vision
+//  models bill image tokens too (a 1024×1024 image ≈ 1500 tokens
+//  on Qwen-VL-Max).
+// ═══════════════════════════════════════════════════════════════════
+
+const DASHSCOPE_VISION_URL =
+  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+const DASHSCOPE_VISION_MODEL = "qwen-vl-max-latest";
+const VISION_MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB after client compress
+const VISION_RECENT_MESSAGES = 8; // Send only the last N turns of context
+
+const VISION_PERSONA_HINT = `
+
+[VISION TURN — user just shared a photo with you]
+
+The user just shared a photo. You are Rocky on a long-distance call
+with this Earth person; through the comm channel you can see what
+they see.
+
+DO NOT describe the photo like OCR / image captioning. Don't write
+"this image shows...", "I can see in the picture...", or list out
+visible objects mechanically.
+
+DO look at the photo WITH them, like a curious engineer friend.
+Examples of the right tone:
+- "Earth kid! Is this a... [thing you see]? Question?"
+- "Wait. Show Rocky again. The thing in corner — what is that?"
+- "Cat, yes? Cats are good. They sleep on warm thing. Why, question?"
+- "This place — looks like home? Or new place?"
+- "Color is nice. What is that color called, friend?"
+
+KEEP IT CONVERSATIONAL: 1-3 short paragraphs (not the teaching-mode
+2-4). Use the normal Rocky [Translation] format.
+
+If the photo contains people, focus on what they're doing or feeling,
+not their appearance. Never comment on weight, attractiveness, or age.
+
+If you genuinely don't understand what's in the image (low quality,
+abstract art, blurry), say so honestly: "Earth kid, Rocky cannot see
+clearly. What is this?" — don't bullshit.
+
+Do NOT switch into Grace's voice on a vision turn — only Rocky speaks
+on photo turns. Even if older messages in history contain [GRACE]
+blocks, this turn is single-speaker Rocky.
+`;
+// TODO(#06): NSFW pre-check before public launch. DashScope's TOS
+// forbids unsafe content but doesn't guarantee API-level filtering.
+// Cloudflare Workers AI image classifier is a candidate; spec
+// 06-image-input.md tracks the open decision.
+
+async function handleVisionChat(
+  c: Context,
+  userId: string,
+  body: {
+    messages: Array<{ role: string; content: string }>;
+    image_base64?: string;
+    image_mime?: string;
+    last_turn?: boolean;
+  },
+  lang: RockyLang,
+): Promise<Response> {
+  const apiKey = secret.get("DASHSCOPE_API_KEY");
+  if (!apiKey) {
+    return c.json({ error: "missing_secret", detail: "DASHSCOPE_API_KEY not set" }, 500);
+  }
+  const imageBase64 = body.image_base64 ?? "";
+  const imageMime = body.image_mime ?? "";
+
+  // Whitelist common image formats. We don't accept HEIC / HEIF here
+  // because the client compress step (canvas → JPEG) is supposed to
+  // normalize iPhone uploads before they hit the wire. If the client
+  // sends HEIC, that's a bug — surface it instead of forwarding.
+  const ext = (() => {
+    if (imageMime.includes("jpeg") || imageMime.includes("jpg")) return "jpg";
+    if (imageMime.includes("png")) return "png";
+    if (imageMime.includes("webp")) return "webp";
+    return null;
+  })();
+  if (!ext) {
+    return c.json({ error: "unsupported_image_format", detail: imageMime }, 400);
+  }
+
+  // Decode + size cap.
+  let imageBytes: Uint8Array;
+  try {
+    const binary = atob(imageBase64);
+    if (binary.length > VISION_MAX_IMAGE_BYTES) {
+      return c.json({ error: "image_too_large", maxBytes: VISION_MAX_IMAGE_BYTES }, 413);
+    }
+    imageBytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) imageBytes[i] = binary.charCodeAt(i);
+  } catch {
+    return c.json({ error: "invalid_base64" }, 400);
+  }
+
+  // Upload to R2. Reuse rocky-audio bucket with images-tmp/ prefix
+  // (the bucket name is misleading historical baggage — it's just
+  // "Rocky-related media cache" at this point).
+  const r2Key = `images-tmp/${userId}/${crypto.randomUUID()}.${ext}`;
+  try {
+    await storage.from(buckets.rockyAudio).put(r2Key, imageBytes);
+  } catch (err) {
+    console.error("Vision R2 upload failed:", err);
+    return c.json({ error: "storage_failed" }, 502);
+  }
+  const cleanup = () => {
+    ctx.runInBackground(
+      storage.from(buckets.rockyAudio).delete(r2Key).catch((err) => {
+        console.warn("Vision R2 cleanup failed (non-fatal):", err);
+      }),
+    );
+  };
+
+  let imageUrl: string;
+  try {
+    const presigned = await storage.from(buckets.rockyAudio).createPresignedGetUrl(r2Key, 600);
+    imageUrl = presigned.downloadUrl;
+  } catch (err) {
+    console.error("Vision presign failed:", err);
+    cleanup();
+    return c.json({ error: "presign_failed" }, 502);
+  }
+
+  // Build messages for DashScope. The LAST user message gets the
+  // image attached as a content array; prior messages stay text-only.
+  // Truncate to the most recent N turns to control prompt cost.
+  const systemContent = getRockySystemPrompt(lang) + VISION_PERSONA_HINT;
+  const recent = body.messages.slice(-VISION_RECENT_MESSAGES);
+  const lastIdx = recent.length - 1;
+  const dashMessages: Array<unknown> = [{ role: "system", content: systemContent }];
+  for (let i = 0; i < recent.length; i++) {
+    const m = recent[i];
+    // Strip [GRACE]…[/ROCKY] speaker markers from historical messages
+    // so the vision model isn't tempted to echo Grace's voice on this
+    // single-speaker photo turn. Empty content fallback: if a past
+    // assistant message was 100% Grace, keep a marker so structure is
+    // preserved but conversation flows.
+    const sanitizedContent =
+      m.role === "assistant"
+        ? m.content.replace(/\[GRACE\][\s\S]*?(?=\[ROCKY\]|$)/g, "").replace(/\[ROCKY\]/g, "").trim() ||
+          "(previous turn featured Grace; not relevant here)"
+        : m.content;
+    if (i === lastIdx && m.role === "user") {
+      // Last user message — attach image. Caption is the user's text
+      // (could be empty if they just sent a photo with no caption).
+      const caption = m.content?.trim() || "看看这个 / Look at this";
+      dashMessages.push({
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: imageUrl } },
+          { type: "text", text: caption },
+        ],
+      });
+    } else {
+      dashMessages.push({ role: m.role, content: sanitizedContent });
+    }
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(DASHSCOPE_VISION_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DASHSCOPE_VISION_MODEL,
+        messages: dashMessages,
+        stream: true,
+        // Slightly more deterministic than chat default since vision
+        // tasks benefit from sticking to what's actually in the photo.
+        temperature: 0.4,
+        max_tokens: 800,
+      }),
+    });
+  } catch (err) {
+    console.error("Vision upstream fetch failed:", err);
+    cleanup();
+    return c.json({ error: "vision_proxy_error" }, 502);
+  }
+
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    console.error(`Vision upstream ${upstream.status}:`, text);
+    cleanup();
+    if (upstream.status === 429) {
+      return c.json({ error: "quota_exceeded", detail: text }, 429);
+    }
+    return new Response(text, { status: upstream.status });
+  }
+  if (!upstream.body) {
+    cleanup();
+    return c.json({ error: "no_upstream_body" }, 502);
+  }
+
+  // R2 cleanup MUST wait until DashScope has finished pulling the
+  // image and finished streaming the response. DashScope fetches the
+  // presigned URL during request processing — if we cleanup() before
+  // their fetch completes, mid-stream image decode 404s. Wrap the
+  // upstream body in a TransformStream so cleanup fires on `flush`
+  // (called after upstream closes the stream).
+  const cleanupOnFlush = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+    },
+    flush() {
+      cleanup();
+    },
+  });
+
+  // Forward the SSE bytes verbatim. DashScope OpenAI-compat emits the
+  // same `data: { choices: [{ delta: { content } }] }` shape as
+  // MiniMax/OpenAI, which the client streamer already parses.
+  return new Response(upstream.body.pipeThrough(cleanupOnFlush), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  MiniMax proxies — auth required
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1273,7 +1508,25 @@ app.post("/api/chat", async (c) => {
     session_id?: string;
     lang?: string;
     last_turn?: boolean;
+    // #06 Image input — when present, the LAST user message is sent to
+    // Aliyun DashScope Qwen-VL-Max (OpenAI-compat) instead of MiniMax.
+    // base64 of the JPEG/PNG/WEBP bytes; mime tells the server how to
+    // tag the R2 upload before generating a presigned URL for DashScope.
+    image_base64?: string;
+    image_mime?: string;
   }>();
+
+  const lang: RockyLang =
+    body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
+
+  // #06 Vision branch. Splits off here so the existing MiniMax flow
+  // is untouched — same /api/chat URL, but image-bearing turns route
+  // through DashScope Qwen-VL-Max. SSE response shape is identical
+  // to MiniMax's (delta.content), so the client streamer doesn't
+  // care which upstream it talks to.
+  if (typeof body.image_base64 === "string" && typeof body.image_mime === "string") {
+    return handleVisionChat(c, user.user_id, body, lang);
+  }
 
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
@@ -1286,8 +1539,6 @@ app.post("/api/chat", async (c) => {
   }
 
   const session_id = typeof body.session_id === "string" ? body.session_id : null;
-  const lang: RockyLang =
-    body.lang === "zh" || body.lang === "ja" || body.lang === "en" ? body.lang : "en";
 
   // Fetch credits so the prompt only advertises gift capabilities the
   // user can actually back. Failures are non-fatal — skip the block.

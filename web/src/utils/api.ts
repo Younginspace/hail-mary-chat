@@ -16,6 +16,11 @@ export interface ChatConfig {
   lang?: 'en' | 'zh' | 'ja';
   /** Signal that this is the last turn so server appends a farewell hint to the system prompt. */
   last_turn?: boolean;
+  /** #06 Image input — when present, server routes this turn through
+   * DashScope Qwen-VL-Max instead of MiniMax. base64-encoded JPEG bytes
+   * (client-side compress strips HEIC/PNG wrappers in advance). */
+  image_base64?: string;
+  image_mime?: string;
 }
 
 // Payload shape of the server-emitted `gift_trigger` SSE event (P5
@@ -71,6 +76,8 @@ export async function streamChat(
           session_id: config?.session_id,
           lang: config?.lang,
           last_turn: config?.last_turn,
+          image_base64: config?.image_base64,
+          image_mime: config?.image_mime,
         }),
         signal,
       });
