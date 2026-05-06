@@ -20,6 +20,11 @@ export interface ChatConfig {
    * instructions and biases Grace toward science topics. Persisted
    * client-side in localStorage; flipped via the 📚 toggle. */
   teaching_mode?: boolean;
+  /** #06 Image input — when present, server routes this turn through
+   * DashScope Qwen-VL-Max instead of MiniMax. base64-encoded JPEG bytes
+   * (client-side compress strips HEIC/PNG wrappers in advance). */
+  image_base64?: string;
+  image_mime?: string;
 }
 
 // Payload shape of the server-emitted `gift_trigger` SSE event (P5
@@ -76,6 +81,8 @@ export async function streamChat(
           lang: config?.lang,
           last_turn: config?.last_turn,
           teaching_mode: config?.teaching_mode,
+          image_base64: config?.image_base64,
+          image_mime: config?.image_mime,
         }),
         signal,
       });
