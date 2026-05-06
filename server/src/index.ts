@@ -1273,6 +1273,11 @@ app.post("/api/chat", async (c) => {
     session_id?: string;
     lang?: string;
     last_turn?: boolean;
+    // #03 Teaching mode — when true, server appends
+    // TEACHING_MODE_INSTRUCTIONS to system prompt and biases Grace
+    // routing toward science topics. Persisted client-side in
+    // localStorage; flipped via the 📚 toggle in chat header.
+    teaching_mode?: boolean;
   }>();
 
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
@@ -1436,12 +1441,55 @@ app.post("/api/chat", async (c) => {
       }
       if (consecutiveGrace >= 3) graceCue = "wrap-up";
     }
+
+    // ── #03 Teaching mode adjustments ────────────────────────────
+    // (a) Bias Grace toward 'invited' for science questions even when
+    //     the dice roll said 'dormant'. Rationale: Grace is a science
+    //     teacher in PHM canon — she's the natural co-host for these
+    //     topics. The bias only triggers in teaching mode + when last
+    //     user message hits a science keyword.
+    // (b) Lv2+ teaching-mode users override the wrap-up soft cap.
+    //     Per affinity perks copy ("跟 Grace 想聊多久聊多久"), L2+
+    //     gets uncapped Grace; teaching mode is the canonical use case.
+    if (body.teaching_mode) {
+      const lastUserMsg = [...body.messages].reverse().find((m) => m.role === "user");
+      // High-precision science detection — bias is conservative on
+      // purpose. False positives would silently inject Grace into
+      // casual chat (e.g. "我没能量了" → 能量 → Grace shows up). We
+      // dropped a long list of borderline terms (太阳/地球/海洋/能量/
+      // 引力/质量/意识/大脑/动物/植物/atom/brain/gene/ocean/...) that
+      // collide with everyday speech. Specific compounds (引力波,
+      // 进化论, 心理学) are kept; bare ambiguous nouns are not.
+      // English alternatives use \b word boundaries to avoid
+      // "general"→"gene", "anatomy"→"atom", "brainstorm"→"brain".
+      // If recall feels too low in real use, the fix is more
+      // specific compounds, not looser bases.
+      const SCIENCE_RE =
+        /(物理|化学|生物学|天文|宇宙|黑洞|DNA|基因组|进化论|演化|物种|分子|原子|量子|相对论|引力波|波长|细胞|病毒|微生物|化石|气候|地质|银河|恒星|行星|彗星|流星|火山|海啸|生态|心理学)|\b(physics|chemistry|biology|astronomy|cosmology|black ?hole|DNA|evolution|genetic|molecule|quantum|relativity|virus|climate|geology|fossil|species|microbe|wavelength|gravitational wave|galaxy|comet|meteor|volcano|tsunami|ecology|psychology|cognitive)\b/i;
+      const hitsScience = !!lastUserMsg && SCIENCE_RE.test(lastUserMsg.content);
+      if (hitsScience && graceCue === "dormant") {
+        graceCue = "invited";
+      }
+      if (userLevel >= 2 && graceCue === "wrap-up") {
+        // L2+ teaching mode: undo the wrap-up the L1 cap would have set.
+        // (We're in the userLevel<2 if-branch above only when wrap-up
+        // gets set, so this can only fire for L2+ paths that somehow
+        // already had wrap-up set — defensive but cheap.)
+        graceCue = "available";
+      }
+    }
   } catch (err) {
     console.warn("grace cue lookup failed — defaulting to dormant:", err);
     graceCue = "dormant";
   }
 
-  let systemContent = getRockySystemPrompt(lang, giftCredits, graceCue, graceAddress);
+  let systemContent = getRockySystemPrompt(
+    lang,
+    giftCredits,
+    graceCue,
+    graceAddress,
+    body.teaching_mode === true,
+  );
   if (body.last_turn) {
     systemContent += getLastTurnHint(lang);
   }

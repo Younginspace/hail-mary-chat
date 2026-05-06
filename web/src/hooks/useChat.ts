@@ -85,6 +85,10 @@ export function useChat(
   // a parallel inline type that would silently drift if the server
   // shape ever changes.
   initialHistory: RecentHistoryMessage[] = [],
+  // #03 Teaching mode flag. Forwarded to /api/chat as `teaching_mode`.
+  // Persisted in localStorage by ChatInterface; this hook is purely
+  // a passthrough — it doesn't render the toggle or own the state.
+  teachingMode = false,
 ) {
   // Per-session turn cap. Infinity means uncapped (L2+ only); we still
   // take Math.max(0, MAX_TURNS - userTurns) for `turnsLeft`, which
@@ -375,7 +379,13 @@ export function useChat(
             setUserTurns(newTurnCount - 1);
           }
         },
-        { ...ROCKY_API_CONFIG, session_id: sessionId, lang, last_turn: newTurnCount === MAX_TURNS },
+        {
+          ...ROCKY_API_CONFIG,
+          session_id: sessionId,
+          lang,
+          last_turn: newTurnCount === MAX_TURNS,
+          teaching_mode: teachingMode,
+        },
         // Server-side gift_trigger event: preferred path. Fires mid-
         // stream as soon as the tag is fully received server-side.
         (payload) => {
