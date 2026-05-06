@@ -797,6 +797,55 @@ const translations = {
     en: 'Download',
     ja: 'ダウンロード',
   },
+  // ===== Image input (#06) =====
+  // 📷 button next to the text input. User picks a photo, client compresses
+  // to 1600px JPEG, server routes to DashScope Qwen-VL-Max with a Rocky
+  // persona prompt that says "look at the photo with the user".
+  'imageinput.pickLabel': {
+    zh: '发图片给 Rocky 看',
+    en: 'Show Rocky a photo',
+    ja: 'Rockyに写真を見せる',
+  },
+  'imageinput.preview': {
+    zh: '准备发送的图片',
+    en: 'Pending image',
+    ja: '送信予定の画像',
+  },
+  'imageinput.remove': {
+    zh: '取消图片',
+    en: 'Remove image',
+    ja: '画像を取り消す',
+  },
+  'imageinput.error.tooLarge': {
+    zh: '图片太大了，换一张试试',
+    en: 'Image too large. Try a smaller one.',
+    ja: '画像が大きすぎる。別のを試して',
+  },
+  'imageinput.error.notImage': {
+    zh: '只能发图片，其他文件 Rocky 看不懂',
+    en: 'Only image files supported',
+    ja: '画像ファイルのみ対応',
+  },
+  'imageinput.error.format': {
+    zh: '这种图片格式 Rocky 看不了',
+    en: "Rocky can't read this format",
+    ja: 'この形式は対応していない',
+  },
+  'imageinput.error.decode': {
+    zh: '图片打不开，文件可能坏了',
+    en: "Couldn't open the image — file may be corrupted",
+    ja: '画像が開けない — ファイル破損かも',
+  },
+  'imageinput.error.encode': {
+    zh: '图片处理出错，重选一张',
+    en: 'Image processing failed. Pick another.',
+    ja: '画像処理失敗',
+  },
+  'imageinput.error.generic': {
+    zh: '图片出了点问题',
+    en: 'Something went wrong with the image',
+    ja: '画像に問題',
+  },
 } as const;
 
 export type TranslationKey = keyof typeof translations;

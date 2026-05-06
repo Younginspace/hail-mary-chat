@@ -26,6 +26,7 @@ import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlay
 import AffinityIndicator from './AffinityIndicator';
 import AffinityDetailsModal from './AffinityDetailsModal';
 import VoiceModeButton from './VoiceModeButton';
+import ImageUploadButton from './ImageUploadButton';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -109,6 +110,37 @@ export default function ChatInterface({
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
+  // #06 Pending image attachment for the next outbound user turn.
+  // Cleared once the message is submitted (or the user removes it via
+  // the ✕ button on the preview). Holds:
+  //   base64    — the JPEG bytes to send to /api/chat
+  //   mime      — fixed 'image/jpeg' since compressForUpload normalizes
+  //   previewUrl — object URL for the local thumbnail; revoked on clear
+  const [pendingImage, setPendingImage] = useState<{
+    base64: string;
+    mime: 'image/jpeg';
+    previewUrl: string;
+  } | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const clearPendingImage = useCallback(() => {
+    setPendingImage((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    setImageError(null);
+  }, []);
+  // Revoke the preview blob URL on unmount (back-to-home, hangup,
+  // page nav) so we don't leak. The setter callback below also
+  // revokes on every replacement so a rapid double-pick can't leak.
+  const pendingImageRef = useRef(pendingImage);
+  pendingImageRef.current = pendingImage;
+  useEffect(() => {
+    return () => {
+      if (pendingImageRef.current) {
+        URL.revokeObjectURL(pendingImageRef.current.previewUrl);
+      }
+    };
+  }, []);
   // Affinity details modal — opened by tapping the AffinityIndicator
   // strip OR by tapping the "voice budget used up" banner (the latter
   // gives users hitting the lifetime limit an immediate path to learn
@@ -546,10 +578,14 @@ export default function ChatInterface({
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const text = input.trim();
-    if (!text || isLoading) return;
+    // #06 Allow sending with image OR text — pending image alone is a
+    // valid turn (Rocky just looks at the photo). Text alone also fine.
+    if ((!text && !pendingImage) || isLoading) return;
     stopTTS();
     setInput('');
-    sendMessage(text);
+    const img = pendingImage ? { base64: pendingImage.base64, mime: pendingImage.mime } : undefined;
+    clearPendingImage();
+    sendMessage(text, img);
   };
 
   // Manual hang-up: end the session cleanly so consolidation still runs,
@@ -572,10 +608,12 @@ export default function ChatInterface({
     if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     const text = input.trim();
-    if (!text || isLoading) return;
+    if ((!text && !pendingImage) || isLoading) return;
     stopTTS();
     setInput('');
-    sendMessage(text);
+    const img = pendingImage ? { base64: pendingImage.base64, mime: pendingImage.mime } : undefined;
+    clearPendingImage();
+    sendMessage(text, img);
   };
 
   const toggleMobileView = useCallback(() => {
@@ -958,6 +996,25 @@ export default function ChatInterface({
             noValidate
             autoComplete="off"
           >
+            {/* #06 Image preview — only when an image is pending. The
+                ✕ button discards the image without sending. */}
+            {pendingImage && (
+              <div className="image-pending-preview" role="region" aria-label={t('imageinput.preview', lang)}>
+                <img src={pendingImage.previewUrl} alt={t('imageinput.preview', lang)} />
+                <button
+                  type="button"
+                  className="image-pending-remove"
+                  onClick={clearPendingImage}
+                  aria-label={t('imageinput.remove', lang)}
+                  title={t('imageinput.remove', lang)}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            {imageError && (
+              <div className="image-pending-error" role="alert">{imageError}</div>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
@@ -968,7 +1025,29 @@ export default function ChatInterface({
               rows={3}
               autoFocus
             />
-            <button className="send-btn" type="submit" disabled={isLoading || !input.trim()}>
+            {/* #06 Image picker — disabled when a reply is streaming or
+                an image is already pending (one image per turn for v1). */}
+            <ImageUploadButton
+              disabled={isLoading || pendingImage !== null}
+              onPick={(image) => {
+                // Defensive against double-pick race: even though the
+                // button is disabled while pendingImage is non-null,
+                // an in-flight compress could resolve after the user
+                // already cleared the pending image and picked again.
+                // Always revoke the previous URL before setting.
+                setPendingImage((prev) => {
+                  if (prev) URL.revokeObjectURL(prev.previewUrl);
+                  return image;
+                });
+                setImageError(null);
+              }}
+              onError={(msg) => setImageError(msg)}
+            />
+            <button
+              className="send-btn"
+              type="submit"
+              disabled={isLoading || (!input.trim() && !pendingImage)}
+            >
               {t('chat.sendButton', lang)}
             </button>
           </form>

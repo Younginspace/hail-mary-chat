@@ -4655,3 +4655,106 @@ button.voice-exhausted-bar:active {
     gap: 8px;
   }
 }
+
+/* ============================================================
+ * #06 Image input — 📷 button + pending preview thumbnail.
+ * Mirrors emil-design-eng: ease-out 160ms, scale(0.97) on press.
+ * ============================================================ */
+.image-upload-btn {
+  background: transparent;
+  border: 1px solid rgba(216, 176, 128, 0.3);
+  border-radius: 4px;
+  color: rgba(214, 241, 233, 0.8);
+  width: 44px;
+  height: 100%;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+              background-color 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+              border-color 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+.image-upload-btn:hover:not(:disabled) {
+  border-color: var(--accent-warm, #d8b080);
+  color: var(--accent-warm, #d8b080);
+  background: rgba(216, 176, 128, 0.06);
+}
+.image-upload-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.image-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The preview + error sit on their own row above the textarea. The
+ * parent .input-area is a flex ROW with no wrap; we force a row break
+ * by claiming flex-basis:100% on these sibling elements. The textarea
+ * and buttons reflow back onto the next "row" naturally because we
+ * also set flex-wrap:wrap on the parent below. */
+.input-area {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.image-pending-preview {
+  position: relative;
+  display: inline-flex;
+  flex-basis: 100%;
+  margin-bottom: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(216, 176, 128, 0.3);
+  background: #0a0d12;
+  align-self: flex-start;
+  animation: image-preview-in 200ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+@keyframes image-preview-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.image-pending-preview img {
+  display: block;
+  max-width: 120px;
+  max-height: 120px;
+  width: auto;
+  height: auto;
+}
+.image-pending-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: rgba(255, 255, 255, 0.95);
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+              transform 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+.image-pending-remove:hover {
+  background: rgba(232, 76, 76, 0.9);
+}
+.image-pending-remove:active {
+  transform: scale(0.92);
+}
+
+.image-pending-error {
+  flex-basis: 100%;
+  background: rgba(232, 76, 76, 0.12);
+  border: 1px solid rgba(232, 76, 76, 0.4);
+  color: rgba(255, 200, 200, 0.95);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
