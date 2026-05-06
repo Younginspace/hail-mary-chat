@@ -26,6 +26,7 @@ import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlay
 import AffinityIndicator from './AffinityIndicator';
 import AffinityDetailsModal from './AffinityDetailsModal';
 import VoiceModeButton from './VoiceModeButton';
+import TeachingTopicChips from './TeachingTopicChips';
 import type { DisplayMessage } from '../hooks/useChat';
 import type { ChatMode } from '../utils/playLimit';
 import { exportChatMarkdown, renderShareCard } from '../utils/exportChat';
@@ -87,12 +88,23 @@ export default function ChatInterface({
   const affinityLevel = me?.affinity_level ?? 1;
   const isCapHidden = affinityLevel >= 2;
   const maxTurns = mode === 'text' ? 50 : 10;
+  // #03 Teaching mode toggle. Declared above useChat so it can flow in.
+  // Persisted in localStorage so it survives reload + tab restarts.
+  // When on, /api/chat receives teaching_mode=true; server appends
+  // TEACHING_MODE_INSTRUCTIONS, biases Grace toward science topics,
+  // and Lv2+ skips the wrap-up soft cap. Default off so first-time /
+  // casual users get the comforting short-reply mode.
+  const [teachingMode, setTeachingMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('teachingMode') === 'true';
+  });
   const { messages, sendMessage, isLoading, turnsLeft, isEnded, isQuotaExceeded } = useChat(
     lang,
     mode,
     sessionId,
     affinityLevel,
     initialHistory,
+    teachingMode,
   );
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceCredits, setVoiceCredits] = useState<number | null>(null);
@@ -109,6 +121,13 @@ export default function ChatInterface({
   const [globalQuotaHit, setGlobalQuotaHit] = useState(false);
   const [resetInLabel, setResetInLabel] = useState<string>('');
   const [hangupConfirmOpen, setHangupConfirmOpen] = useState(false);
+  // Persist teachingMode on every change. Initial value is hydrated
+  // from localStorage in the useState lazy initializer above (just
+  // before useChat); this effect handles writes-back on toggle.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('teachingMode', String(teachingMode));
+  }, [teachingMode]);
   // Affinity details modal — opened by tapping the AffinityIndicator
   // strip OR by tapping the "voice budget used up" banner (the latter
   // gives users hitting the lifetime limit an immediate path to learn
@@ -766,6 +785,21 @@ export default function ChatInterface({
               if (voiceEnabled) stopTTS();
             }}
           />
+          {/* 📚 #03 Teaching mode toggle. When on, /api/chat sends
+              teaching_mode=true; server appends instructions and
+              biases Grace cameo toward science. State persisted in
+              localStorage; flipped right here in the header so users
+              can switch context mid-session. */}
+          <button
+            type="button"
+            className={`status-iconbtn teaching ${teachingMode ? 'is-active' : ''}`}
+            onClick={() => setTeachingMode((v) => !v)}
+            title={teachingMode ? t('teaching.toggleOff', lang) : t('teaching.toggleOn', lang)}
+            aria-label={teachingMode ? t('teaching.toggleOff', lang) : t('teaching.toggleOn', lang)}
+            aria-pressed={teachingMode}
+          >
+            <span aria-hidden="true" style={{ fontSize: '13px', lineHeight: 1 }}>📚</span>
+          </button>
           {messages.some((m) => m.role === 'user') && (
             <div className="export-wrap">
               <button
@@ -951,6 +985,18 @@ export default function ChatInterface({
                 {t('chat.voiceExhausted', lang, { time: resetInLabel })}
               </div>
             )}
+          {/* #03 Teaching-mode topic chips — only when the toggle is on.
+              Tapping fills the input box; user can edit before send.
+              Sits above the input so it's discoverable without
+              competing with chat content. */}
+          {teachingMode && (
+            <TeachingTopicChips
+              onPick={(prompt) => {
+                setInput((prev) => (prev.trim() ? prev : prompt));
+                textareaRef.current?.focus();
+              }}
+            />
+          )}
           <form
             className="input-area"
             onSubmit={handleSubmit}
@@ -963,7 +1009,7 @@ export default function ChatInterface({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t('chat.inputPlaceholder', lang)}
+              placeholder={teachingMode ? t('teaching.placeholder', lang) : t('chat.inputPlaceholder', lang)}
               disabled={isLoading}
               rows={3}
               autoFocus

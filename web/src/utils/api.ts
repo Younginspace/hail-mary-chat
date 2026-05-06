@@ -16,6 +16,10 @@ export interface ChatConfig {
   lang?: 'en' | 'zh' | 'ja';
   /** Signal that this is the last turn so server appends a farewell hint to the system prompt. */
   last_turn?: boolean;
+  /** #03 Teaching mode flag. When true, server appends teaching-mode
+   * instructions and biases Grace toward science topics. Persisted
+   * client-side in localStorage; flipped via the 📚 toggle. */
+  teaching_mode?: boolean;
 }
 
 // Payload shape of the server-emitted `gift_trigger` SSE event (P5
@@ -71,6 +75,7 @@ export async function streamChat(
           session_id: config?.session_id,
           lang: config?.lang,
           last_turn: config?.last_turn,
+          teaching_mode: config?.teaching_mode,
         }),
         signal,
       });
