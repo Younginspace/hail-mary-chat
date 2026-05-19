@@ -1417,8 +1417,19 @@ app.post("/api/chat", async (c) => {
       }
     }
 
-    // L1 soft cap: count consecutive most-recent assistant turns that
-    // contained a [GRACE] block. After 3 such turns, the next turn
+    // Count consecutive most-recent assistant turns containing a
+    // [GRACE] block. Computed once and reused by both the L1 cap and
+    // the teaching-mode re-check below, so promoting `dormant → invited`
+    // in teaching mode cannot silently bypass the cap.
+    let consecutiveGrace = 0;
+    for (let i = body.messages.length - 1; i >= 0; i--) {
+      const m = body.messages[i];
+      if (m.role !== "assistant") continue;
+      if (/\[GRACE\]/.test(m.content)) consecutiveGrace++;
+      else break;
+    }
+
+    // L1 soft cap: after 3 consecutive Grace turns, the next turn
     // overrides to 'wrap-up' — Rocky narrates Grace's exit so she
     // doesn't dominate the whole session for new users. The user can
     // still re-mention Grace LATER in the same session (after a few
@@ -1428,18 +1439,8 @@ app.post("/api/chat", async (c) => {
     // Human" or beyond, they've earned uncapped Grace time. (See the
     // affinity perks copy: "L2 · 跟 Grace 想聊多久聊多久".)
     const wouldBringGrace = graceCue === "invited" || graceCue === "available";
-    if (userLevel < 2 && wouldBringGrace) {
-      let consecutiveGrace = 0;
-      for (let i = body.messages.length - 1; i >= 0; i--) {
-        const m = body.messages[i];
-        if (m.role !== "assistant") continue;
-        if (/\[GRACE\]/.test(m.content)) {
-          consecutiveGrace++;
-        } else {
-          break;
-        }
-      }
-      if (consecutiveGrace >= 3) graceCue = "wrap-up";
+    if (userLevel < 2 && wouldBringGrace && consecutiveGrace >= 3) {
+      graceCue = "wrap-up";
     }
 
     // ── #03 Teaching mode adjustments ────────────────────────────
@@ -1447,28 +1448,38 @@ app.post("/api/chat", async (c) => {
     //     the dice roll said 'dormant'. Rationale: Grace is a science
     //     teacher in PHM canon — she's the natural co-host for these
     //     topics. The bias only triggers in teaching mode + when last
-    //     user message hits a science keyword.
+    //     user message hits a science keyword. The L1 3-Grace soft cap
+    //     STILL applies — promoting 'dormant' to 'invited' here can be
+    //     re-capped to 'wrap-up' below.
     // (b) Lv2+ teaching-mode users override the wrap-up soft cap.
     //     Per affinity perks copy ("跟 Grace 想聊多久聊多久"), L2+
     //     gets uncapped Grace; teaching mode is the canonical use case.
     if (body.teaching_mode) {
       const lastUserMsg = [...body.messages].reverse().find((m) => m.role === "user");
-      // High-precision science detection — bias is conservative on
-      // purpose. False positives would silently inject Grace into
-      // casual chat (e.g. "我没能量了" → 能量 → Grace shows up). We
-      // dropped a long list of borderline terms (太阳/地球/海洋/能量/
-      // 引力/质量/意识/大脑/动物/植物/atom/brain/gene/ocean/...) that
-      // collide with everyday speech. Specific compounds (引力波,
-      // 进化论, 心理学) are kept; bare ambiguous nouns are not.
-      // English alternatives use \b word boundaries to avoid
+      // High-precision science detection. Outside teaching mode this
+      // regex doesn't run at all, so we only need to defend against
+      // false positives WITHIN a teaching-mode session — a user who
+      // already opted in to "Grace welcome". Specific compounds
+      // (引力波, 进化论, 心理学) plus the chip-aligned terms (AI,
+      // 海洋, 黑洞, DNA, 量子, 进化) live here; bare ambiguous nouns
+      // (太阳/地球/能量/引力/质量/意识/大脑/动物/植物/brain/gene/atom)
+      // are out — they collide with everyday speech even in teaching
+      // mode. English alternatives use \b word boundaries to avoid
       // "general"→"gene", "anatomy"→"atom", "brainstorm"→"brain".
-      // If recall feels too low in real use, the fix is more
-      // specific compounds, not looser bases.
+      // KEEP THIS SYNCED WITH web/src/components/TeachingTopicChips.tsx
+      // — every chip's prompt copy must trip this regex.
       const SCIENCE_RE =
-        /(物理|化学|生物学|天文|宇宙|黑洞|DNA|基因组|进化论|演化|物种|分子|原子|量子|相对论|引力波|波长|细胞|病毒|微生物|化石|气候|地质|银河|恒星|行星|彗星|流星|火山|海啸|生态|心理学)|\b(physics|chemistry|biology|astronomy|cosmology|black ?hole|DNA|evolution|genetic|molecule|quantum|relativity|virus|climate|geology|fossil|species|microbe|wavelength|gravitational wave|galaxy|comet|meteor|volcano|tsunami|ecology|psychology|cognitive)\b/i;
+        /(物理|化学|生物学|天文|宇宙|黑洞|ブラックホール|DNA|基因组|进化论|進化論|進化|演化|物种|分子|原子|量子|相对论|引力波|波长|细胞|病毒|微生物|化石|气候|地质|银河|恒星|行星|彗星|流星|火山|海啸|海洋|生态|心理学|人工智能)|\b(physics|chemistry|biology|astronomy|cosmology|black ?hole|DNA|AI|artificial intelligence|evolution|genetic|molecule|quantum|relativity|virus|climate|geology|fossil|species|microbe|wavelength|gravitational wave|galaxy|comet|meteor|volcano|tsunami|ocean|ecology|psychology|cognitive)\b/i;
       const hitsScience = !!lastUserMsg && SCIENCE_RE.test(lastUserMsg.content);
       if (hitsScience && graceCue === "dormant") {
         graceCue = "invited";
+        // Re-apply L1 cap: teaching bias just promoted us above the
+        // 'dormant' floor, but a user who already has 3 consecutive
+        // Grace turns is supposed to get a wrap-up regardless of
+        // teaching-mode intent.
+        if (userLevel < 2 && consecutiveGrace >= 3) {
+          graceCue = "wrap-up";
+        }
       }
       if (userLevel >= 2 && graceCue === "wrap-up") {
         // L2+ teaching mode: undo the wrap-up the L1 cap would have set.

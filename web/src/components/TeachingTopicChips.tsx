@@ -57,7 +57,10 @@ const TEACHING_TOPICS: Topic[] = [
     prompt: {
       zh: '海洋为什么是蓝色的？',
       en: 'Why is the ocean blue?',
-      ja: '海はなぜ青いの？',
+      // ja prompt uses 海洋 (not bare 海) so it trips the science
+      // regex in server/src/index.ts. Bare 海 is too ambiguous to
+      // include in the regex without false-positiving 上海/海边/etc.
+      ja: '海洋はなぜ青いの？',
     },
   },
   {

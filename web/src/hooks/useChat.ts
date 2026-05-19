@@ -400,7 +400,7 @@ export function useChat(
         thisAbort.signal
       );
     },
-    [messages, isLoading, isEnded, userTurns, lang, sessionId, mode]
+    [messages, isLoading, isEnded, userTurns, lang, sessionId, mode, teachingMode]
   );
 
   const turnsLeft = Math.max(0, MAX_TURNS - userTurns);
