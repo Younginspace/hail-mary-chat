@@ -23,6 +23,7 @@ import {
 } from '../utils/messageCleanup';
 import { findDefaultAudioByTtsText } from '../utils/defaultDialogs';
 import { attachAudio, claimSlot, isOwner, releaseSlot } from '../utils/audioPlayback';
+import { COMPANION_ENABLED } from '../utils/features';
 import AffinityIndicator from './AffinityIndicator';
 import AffinityDetailsModal from './AffinityDetailsModal';
 import VoiceModeButton from './VoiceModeButton';
@@ -849,16 +850,19 @@ export default function ChatInterface({
               from hangup: keeps "the line" open via companion mode rather
               than ending the call entirely. Handler stops in-flight TTS
               + fires endSession (consolidation still runs) before
-              navigating. */}
-          <button
-            type="button"
-            className="status-iconbtn companion-jumpbtn"
-            onClick={handleStayOnLine}
-            title={t('companion.cta.chat', lang)}
-            aria-label={t('companion.cta.chat', lang)}
-          >
-            <span aria-hidden="true" style={{ fontSize: '13px', lineHeight: 1 }}>🛰</span>
-          </button>
+              navigating. Gated behind VITE_COMPANION_ENABLED until
+              real asset mp3s replace the silent placeholders. */}
+          {COMPANION_ENABLED && (
+            <button
+              type="button"
+              className="status-iconbtn companion-jumpbtn"
+              onClick={handleStayOnLine}
+              title={t('companion.cta.chat', lang)}
+              aria-label={t('companion.cta.chat', lang)}
+            >
+              <span aria-hidden="true" style={{ fontSize: '13px', lineHeight: 1 }}>🛰</span>
+            </button>
+          )}
           <button
             type="button"
             className="status-iconbtn hangup"

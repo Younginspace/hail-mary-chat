@@ -11,6 +11,7 @@ import { t } from '../i18n';
 import { unlockAudio } from '../utils/rockyAudio';
 import { startSession, fetchFavorites, type LevelUpPayload, type RecentHistoryMessage } from '../utils/sessionApi';
 import type { ChatMode } from '../utils/playLimit';
+import { COMPANION_ENABLED } from '../utils/features';
 
 // P5 F1c: Landing layout priority order
 //   - Hero "Rocky Chat" title + tagline
@@ -321,13 +322,15 @@ export default function StartScreen({ onConnected, onEcho, onFavorites, onCompan
               </button>
             </div>
 
-            <button
-              type="button"
-              className="hero-cta-tertiary"
-              onClick={onCompanion}
-            >
-              {t('companion.cta.home', lang)}
-            </button>
+            {COMPANION_ENABLED && (
+              <button
+                type="button"
+                className="hero-cta-tertiary"
+                onClick={onCompanion}
+              >
+                {t('companion.cta.home', lang)}
+              </button>
+            )}
 
             <div className="hero-release" aria-label={t('hero.releaseLabel', lang)}>
               <div className="hero-release-title">{t('hero.releaseLabel', lang)}</div>
