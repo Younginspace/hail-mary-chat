@@ -74,6 +74,16 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   const homeRef = useRef<HTMLDivElement>(null);
   const dialinRef = useRef<HTMLDivElement>(null);
   const connectingRef = useRef<HTMLDivElement>(null);
+  // Guards for the fast-path (returning users skip the 6.2s log). Without
+  // these, an impatient double-tap during the 220ms fade or the in-flight
+  // /api/session/start round-trip can fire a second POST and race CAS at
+  // the server — exactly the duplicate-row class of bug we just cleaned
+  // up. isStartingRef latches at entry; cancelledRef short-circuits the
+  // delayed finish() if the user navigates away (e.g. taps OPEN CHANNEL)
+  // before the fade completes.
+  const isStartingRef = useRef(false);
+  const cancelledRef = useRef(false);
+  useEffect(() => () => { cancelledRef.current = true; }, []);
 
   // Fade/slide transitions between phases. Respects prefers-reduced-motion
   // — we snap straight to the settled state rather than animating, so
@@ -114,19 +124,75 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
   }, [phase]);
 
   const beginConnection = useCallback(async () => {
+    // Double-submit guard. Once we've committed to a session, ignore
+    // re-entries until either the error path resets us or the component
+    // unmounts on success.
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
+
     unlockAudio();
     setStartError(null);
-    const result = await startSession(lang, 'text');
+    let result: Awaited<ReturnType<typeof startSession>>;
+    try {
+      result = await startSession(lang, 'text');
+    } catch (err) {
+      isStartingRef.current = false;
+      throw err;
+    }
     if (!result.ok) {
       setStartError(t('login.errorGeneric', lang));
       setPhase('home');
+      isStartingRef.current = false;
       return;
     }
+
+    // Returning users (those with prior consolidated sessions on file)
+    // skip the 6.2-second ERID-LINK CONNECTING theatrics. The connecting
+    // log was originally written to set the brand tone for first-time
+    // users — once you've made the call before, every re-run is just
+    // sitting through the intro again. Fast-path: fade out whatever
+    // panel is currently visible and hand straight to onConnected.
+    //
+    // First-time users (recent_history empty) keep the full theatrics —
+    // it only happens once per user, and it sets the sci-fi tone.
+    const isReturning = result.recent_history.length > 0;
+    if (isReturning) {
+      const prefersReduced =
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const finish = () => {
+        // If the user navigated away (e.g. tapped OPEN CHANNEL) while
+        // the fade was in flight, do not yank them back into chat.
+        if (cancelledRef.current) return;
+        onConnected('text', result.session_id, result.level_up, result.recent_history);
+      };
+      if (prefersReduced) {
+        finish();
+        return;
+      }
+      // Fade whichever panel is currently mounted. handleDialIn paths
+      // come from phase === 'home'; DialInScreen.onSuccess paths come
+      // from phase === 'dialin'.
+      const activeRef = dialinRef.current ?? homeRef.current;
+      if (activeRef) {
+        gsap.to(activeRef, {
+          opacity: 0,
+          duration: 0.22,
+          ease: 'power2.out',
+          onComplete: finish,
+        });
+      } else {
+        finish();
+      }
+      return;
+    }
+
+    // First-time path (full theatrics — the original 6.2-second flow).
     setPendingSessionId(result.session_id);
     setPendingLevelUp(result.level_up);
     setPendingHistory(result.recent_history);
     setPhase('connecting');
-  }, [lang]);
+  }, [lang, onConnected]);
 
   useEffect(() => {
     if (phase !== 'connecting') return;
