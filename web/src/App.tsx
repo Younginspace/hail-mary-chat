@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import ChatInterface from './components/ChatInterface';
+import CompanionScreen from './components/CompanionScreen';
 import EchoInterface from './components/EchoInterface';
 import FavoritesScreen from './components/FavoritesScreen';
 import StartScreen from './components/StartScreen';
@@ -9,7 +10,7 @@ import type { ChatMode } from './utils/playLimit';
 import type { LevelUpPayload, RecentHistoryMessage } from './utils/sessionApi';
 import './styles/terminal.css';
 
-type AppPhase = 'start' | 'chat' | 'echo' | 'favorites';
+type AppPhase = 'start' | 'chat' | 'echo' | 'favorites' | 'companion';
 
 export default function App() {
   const [phase, setPhase] = useState<AppPhase>('start');
@@ -56,6 +57,26 @@ export default function App() {
     else setPhase('start');
   }, [sessionId]);
 
+  // Companion mode entry points. From home: just swap phase. From chat:
+  // ChatInterface's handler already calls stopTTS() + endSession() before
+  // invoking this, so we just swap phase.
+  const handleStayConnected = useCallback(() => {
+    setPhase('companion');
+  }, []);
+
+  const handleStayOnLine = useCallback(() => {
+    setPhase('companion');
+  }, []);
+
+  // Exit from companion → back to home, reset session state so a fresh
+  // dial-in is needed for chat.
+  const handleCompanionDone = useCallback(() => {
+    setSessionId(null);
+    setPendingLevelUp(null);
+    setPendingHistory([]);
+    setPhase('start');
+  }, []);
+
   return (
     <LangProvider>
       {phase === 'start' && (
@@ -63,6 +84,7 @@ export default function App() {
           onConnected={handleConnected}
           onEcho={handleEcho}
           onFavorites={handleFavorites}
+          onCompanion={handleStayConnected}
         />
       )}
       {phase === 'chat' && sessionId && (
@@ -73,10 +95,12 @@ export default function App() {
           initialLevelUp={pendingLevelUp}
           onLevelUpDismiss={() => setPendingLevelUp(null)}
           initialHistory={pendingHistory}
+          onStayOnLine={handleStayOnLine}
         />
       )}
       {phase === 'echo' && <EchoInterface onBack={handleBackToStart} />}
       {phase === 'favorites' && <FavoritesScreen onBack={handleBackFromFavorites} />}
+      {phase === 'companion' && <CompanionScreen onDone={handleCompanionDone} />}
     </LangProvider>
   );
 }

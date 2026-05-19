@@ -44,9 +44,11 @@ interface StartScreenProps {
   ) => void;
   onEcho: () => void;
   onFavorites: () => void;
+  // 2026-05-19 companion mode v1: tertiary CTA below DIAL IN / OPEN CHANNEL.
+  onCompanion: () => void;
 }
 
-export default function StartScreen({ onConnected, onEcho, onFavorites }: StartScreenProps) {
+export default function StartScreen({ onConnected, onEcho, onFavorites, onCompanion }: StartScreenProps) {
   const { lang } = useLang();
   const { isAuthenticated, me, signOut } = useAuthSession();
   const [phase, setPhase] = useState<Phase>('home');
@@ -318,6 +320,14 @@ export default function StartScreen({ onConnected, onEcho, onFavorites }: StartS
                 <span className="hero-cta-sub">{t('hero.openChannelSub', lang)}</span>
               </button>
             </div>
+
+            <button
+              type="button"
+              className="hero-cta-tertiary"
+              onClick={onCompanion}
+            >
+              {t('companion.cta.home', lang)}
+            </button>
 
             <div className="hero-release" aria-label={t('hero.releaseLabel', lang)}>
               <div className="hero-release-title">{t('hero.releaseLabel', lang)}</div>

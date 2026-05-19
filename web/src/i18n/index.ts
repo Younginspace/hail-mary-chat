@@ -851,6 +851,23 @@ const translations = {
     en: 'Evolution',
     ja: '進化',
   },
+
+  // ===== Companion mode v1 (added 2026-05-19) =====
+  'companion.cta.home': { zh: '陪着我', en: 'STAY CONNECTED', ja: 'そばにいて' },
+  'companion.cta.chat': { zh: '挂线陪我', en: 'Stay on the line', ja: 'このまま居て' },
+  'companion.tapToStart': { zh: '点击开始', en: 'TAP TO START', ja: 'タップして開始' },
+  'companion.label.tuning': { zh: '接通中...', en: 'Tuning in...', ja: '接続中...' },
+  'companion.label.ready': { zh: 'Rocky 准备好了', en: "Rocky's ready", ja: 'Rocky 待機中' },
+  'companion.label.online': { zh: 'Rocky · 在', en: 'Rocky · here', ja: 'Rocky · ここに' },
+  'companion.label.fading': { zh: '正在结束...', en: 'Fading out...', ja: 'フェードアウト中...' },
+  'companion.label.error': { zh: '信号丢了', en: 'Signal lost', ja: '信号が途切れました' },
+  'companion.retry': { zh: '重试', en: 'Retry', ja: '再試行' },
+  'companion.timer.off': { zh: '不限时', en: 'Off', ja: 'タイマー無し' },
+  'companion.aria.root': { zh: '陪伴模式', en: 'Companion mode', ja: 'コンパニオンモード' },
+  'companion.aria.exit': { zh: '退出陪伴', en: 'Exit companion mode', ja: '終了' },
+  'companion.aria.dimOn': { zh: '切到暗模式', en: 'Switch to dim view', ja: 'ダークモード' },
+  'companion.aria.dimOff': { zh: '切回正常模式', en: 'Switch to normal view', ja: '通常モード' },
+  'companion.aria.timerPill': { zh: '睡眠定时器', en: 'Sleep timer', ja: 'スリープタイマー' },
 } as const;
 
 export type TranslationKey = keyof typeof translations;

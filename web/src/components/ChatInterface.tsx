@@ -66,6 +66,10 @@ interface ChatInterfaceProps {
   // useChat which prepends them above the current session's greeting
   // with a divider in between. Empty array for first-time users.
   initialHistory: RecentHistoryMessage[];
+  // 2026-05-19 companion mode v1: "Stay On Line" jump from chat into
+  // companion. Handler stops TTS + fires endSession before invoking
+  // this. App.tsx swaps phase to 'companion'.
+  onStayOnLine: () => void;
 }
 
 // Mobile-only view state. Desktop CSS shows both panes regardless.
@@ -80,6 +84,7 @@ export default function ChatInterface({
   initialLevelUp,
   onLevelUpDismiss,
   initialHistory,
+  onStayOnLine,
 }: ChatInterfaceProps) {
   const { lang } = useLang();
   // useAuthSession lifted above useChat so we can feed affinity_level
@@ -586,6 +591,21 @@ export default function ChatInterface({
     onBack();
   }, [stopTTS, sessionId, onBack]);
 
+  // 2026-05-19 companion mode v1: "Stay On Line" — chat → companion
+  // handoff. Stop TTS first (defensive — useRockyTTS unmount cleanup
+  // also sets cancelledRef, but explicit stop is belt-and-suspenders),
+  // fire endSession (fire-and-forget per current API contract), then
+  // hand off to App.tsx to swap phase.
+  const handleStayOnLine = useCallback(() => {
+    stopTTS();
+    try {
+      endSession(sessionId);
+    } catch (err) {
+      console.warn('endSession on stay-on-line failed', err);
+    }
+    onStayOnLine();
+  }, [stopTTS, sessionId, onStayOnLine]);
+
   // Enter submits; Shift+Enter inserts a newline (Slack-style).
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
@@ -825,6 +845,20 @@ export default function ChatInterface({
               )}
             </div>
           )}
+          {/* 🛰 Companion mode v1 jump button (added 2026-05-19). Distinct
+              from hangup: keeps "the line" open via companion mode rather
+              than ending the call entirely. Handler stops in-flight TTS
+              + fires endSession (consolidation still runs) before
+              navigating. */}
+          <button
+            type="button"
+            className="status-iconbtn companion-jumpbtn"
+            onClick={handleStayOnLine}
+            title={t('companion.cta.chat', lang)}
+            aria-label={t('companion.cta.chat', lang)}
+          >
+            <span aria-hidden="true" style={{ fontSize: '13px', lineHeight: 1 }}>🛰</span>
+          </button>
           <button
             type="button"
             className="status-iconbtn hangup"
