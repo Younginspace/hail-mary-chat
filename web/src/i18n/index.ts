@@ -797,6 +797,60 @@ const translations = {
     en: 'Download',
     ja: 'ダウンロード',
   },
+  // ===== Teaching mode (#03) =====
+  // Toggle button in chat header switches Rocky/Grace into a deeper
+  // "tutor" mode for science / AI / engineering questions. Free at
+  // all levels; Lv2+ users get uncapped Grace screen time in this mode.
+  'teaching.toggleOn': {
+    zh: '开启教学模式',
+    en: 'Turn on teaching mode',
+    ja: '教えてモードをオン',
+  },
+  'teaching.toggleOff': {
+    zh: '关闭教学模式',
+    en: 'Turn off teaching mode',
+    ja: '教えてモードをオフ',
+  },
+  'teaching.placeholder': {
+    zh: '问 Rocky / Grace 一个科学问题...',
+    en: 'Ask Rocky / Grace a science question...',
+    ja: 'Rocky / Graceに科学の質問を...',
+  },
+  'teaching.topicsLabel': {
+    zh: '推荐话题',
+    en: 'Suggested topics',
+    ja: 'おすすめトピック',
+  },
+  'teaching.topic.ai': {
+    zh: 'AI',
+    en: 'AI',
+    ja: 'AI',
+  },
+  'teaching.topic.blackhole': {
+    zh: '黑洞',
+    en: 'Black holes',
+    ja: 'ブラックホール',
+  },
+  'teaching.topic.dna': {
+    zh: 'DNA',
+    en: 'DNA',
+    ja: 'DNA',
+  },
+  'teaching.topic.ocean': {
+    zh: '海洋',
+    en: 'The ocean',
+    ja: '海',
+  },
+  'teaching.topic.quantum': {
+    zh: '量子力学',
+    en: 'Quantum',
+    ja: '量子',
+  },
+  'teaching.topic.evolution': {
+    zh: '进化论',
+    en: 'Evolution',
+    ja: '進化',
+  },
 } as const;
 
 export type TranslationKey = keyof typeof translations;
