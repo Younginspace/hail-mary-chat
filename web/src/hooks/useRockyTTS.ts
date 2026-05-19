@@ -390,6 +390,14 @@ export function useRockyTTS(skipTTS = false): UseRockyTTSReturn {
 
   useEffect(() => {
     return () => {
+      // Set cancelledRef BEFORE other cleanup so any in-flight speak()
+      // Promise chain that's awaiting the next playInterruptible / fetchTTS
+      // step sees the cancellation gate on its next check. Without this,
+      // unmounting mid-flight (e.g., chat → companion handoff) could leak
+      // a queued TTS chunk into a new Audio element that plays AFTER
+      // navigation. See companion mode v1 cross-review consensus
+      // (docs/superpowers/specs/companion-review/CONSENSUS.md).
+      cancelledRef.current = true;
       abortCtrlRef.current?.abort();
       stopSharedAudio();
       if (ttsAudioRef.current) {
