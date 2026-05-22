@@ -658,6 +658,41 @@ const translations = {
     en: 'Relay rejected — check callsign and passphrase',
     ja: 'リレー拒否、コールサインとパスを確認',
   },
+  // Adoption failure messages (added 2026-05-22 after the orphan-auth-user
+  // incident). Stable machine codes match server's adoption_failures.error_code
+  // values; UI maps via adoptionErrorMessage() helper. Each one tells the user
+  // exactly what went wrong so they don't switch emails / browsers in a panic
+  // and create more orphan accounts.
+  'login.adopt.notAuthenticated': {
+    zh: '登录态丢失，请重新提交',
+    en: "Session didn't stick — please try again",
+    ja: 'セッション切れ、もう一度お試しください',
+  },
+  'login.adopt.rateLimited': {
+    zh: '当前网络注册过频繁，请几分钟后再试',
+    en: 'Too many signups from this network — please retry in a few minutes',
+    ja: 'このネットワークからの登録が多すぎます、数分後にお試しを',
+  },
+  'login.adopt.notSupported': {
+    zh: '暂不支持此邮箱地址',
+    en: 'This email address is not supported',
+    ja: 'このメールアドレスは現在サポート外です',
+  },
+  'login.adopt.invalidCallsign': {
+    zh: '呼号格式不对（3-32 字符，仅字母/数字/空格/_-）',
+    en: 'Invalid callsign (3-32 chars, letters/numbers/spaces/_-)',
+    ja: 'コールサイン形式エラー（3-32文字、英数字/空白/_-のみ）',
+  },
+  'login.adopt.network': {
+    zh: '网络异常，请检查连接后重试',
+    en: 'Network issue — check your connection and retry',
+    ja: '通信エラー、接続を確認してお試しを',
+  },
+  'login.adopt.server': {
+    zh: '服务暂时异常，请稍后重试',
+    en: 'Server temporarily unavailable — please retry shortly',
+    ja: 'サーバー一時不可、しばらくしてからお試しを',
+  },
   'login.welcome': {
     zh: '通讯畅通 · 呼号 {callsign}',
     en: 'Link stable · Callsign {callsign}',

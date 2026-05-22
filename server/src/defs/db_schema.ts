@@ -392,5 +392,40 @@ export const register_rate_limit = sqliteTable(
   (t) => [primaryKey({ columns: [t.ip, t.hour_bucket] })]
 );
 
+// Telemetry for /api/adopt-device failures. Added 2026-05-22 after the
+// "通讯节点拒绝" incident where 10 users (2.7%) ended up as orphan auth
+// accounts: auth.signUp succeeded, adoptDevice silently returned null,
+// users tried different emails/browsers and accumulated more orphans.
+//
+// Every non-2xx return from adopt-device inserts a row here. Operations
+// can grep recent rows to spot failure patterns (specific IP / specific
+// error_code / specific auth_user_id retrying). Once the new client
+// surfaces specific error messages to users, this table is the only way
+// to see WHICH server-side reason was returned — the client only sees
+// "邮箱已注册" / "服务异常" etc.
+export const adoption_failures = sqliteTable(
+  "adoption_failures",
+  {
+    id: text("id").primaryKey(),
+    // Nullable — 401 (not authenticated) means we don't have an auth user yet.
+    auth_user_id: text("auth_user_id"),
+    // From CF-Connecting-IP. 'unknown' if absent.
+    ip: text("ip").notNull(),
+    // Stable machine codes: 'not_authenticated' | 'missing_device_id' |
+    // 'invalid_callsign' | 'callsign_taken' | 'not_supported' (disposable
+    // email) | 'rate_limited' | 'internal_error'.
+    error_code: text("error_code").notNull(),
+    // Free-form context: callsign value, hour bucket count, exception
+    // message etc. Capped at the route to ~500 chars.
+    detail: text("detail"),
+    created_at: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_adoption_failures_ts").on(t.created_at),
+    index("idx_adoption_failures_auth_user").on(t.auth_user_id),
+    index("idx_adoption_failures_ip_ts").on(t.ip, t.created_at),
+  ]
+);
+
 // Keep the sql import reachable so future migrations adding defaults type-check.
 export { sql };

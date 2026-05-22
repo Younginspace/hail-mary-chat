@@ -32,6 +32,7 @@ import {
   rapport,
   rapport_thresholds,
   register_rate_limit,
+  adoption_failures,
   sessions,
   users,
   voice_credit_ledger,
@@ -613,12 +614,51 @@ app.get("/api/public/check-callsign", async (c) => {
 //  Device adoption — auth required
 // ═══════════════════════════════════════════════════════════════════
 
+// Telemetry helper for adopt-device failures. Inserts a row into
+// adoption_failures so operations can see the actual reason a user got
+// stuck. Fire-and-forget — failures here must NEVER break the route.
+function getRequestIp(c: { req: { header: (k: string) => string | undefined } }): string {
+  return (
+    c.req.header("cf-connecting-ip")?.trim() ||
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown"
+  );
+}
+
+function logAdoptionFailure(
+  c: { req: { header: (k: string) => string | undefined } },
+  errorCode: string,
+  authUserId: string | null,
+  detail: string | null = null
+) {
+  ctx.runInBackground(
+    (async () => {
+      try {
+        await db.insert(adoption_failures).values({
+          id: crypto.randomUUID(),
+          auth_user_id: authUserId,
+          ip: getRequestIp(c),
+          error_code: errorCode,
+          detail: detail ? detail.slice(0, 500) : null,
+          created_at: Date.now(),
+        });
+      } catch (err) {
+        console.warn("logAdoptionFailure insert failed", err);
+      }
+    })()
+  );
+}
+
 app.post("/api/adopt-device", async (c) => {
   if (!auth.isAuthenticated()) {
-    return c.json({ error: "not authenticated" }, 401);
+    logAdoptionFailure(c, "not_authenticated", null);
+    return c.json({ error: "not_authenticated" }, 401);
   }
   const device_id = getDeviceId(c);
-  if (!device_id) return c.json({ error: "missing X-Device-Id" }, 400);
+  if (!device_id) {
+    logAdoptionFailure(c, "missing_device_id", auth.user?.id ?? null);
+    return c.json({ error: "missing_device_id" }, 400);
+  }
 
   const body = await c.req
     .json<{ callsign?: string }>()
@@ -633,15 +673,18 @@ app.post("/api/adopt-device", async (c) => {
       : null;
 
   if (requestedCallsign && !isValidCallsign(requestedCallsign)) {
+    logAdoptionFailure(c, "invalid_callsign", authUser.id, requestedCallsign);
     return c.json({ error: "invalid_callsign", detail: "3-32 chars, letters/numbers/spaces" }, 400);
   }
   if (requestedCallsign && (await isCallsignTaken(requestedCallsign, authUser.id))) {
+    logAdoptionFailure(c, "callsign_taken", authUser.id, requestedCallsign);
     return c.json({ error: "callsign_taken", callsign: requestedCallsign }, 409);
   }
 
   // ── Disposable-email blacklist. Silent reject — disposable signups
   // should see a generic rejection so scripts can't easily iterate.
   if (isDisposableEmail(authUser.email)) {
+    logAdoptionFailure(c, "not_supported", authUser.id, authUser.email ?? null);
     return c.json({ error: "not_supported" }, 403);
   }
 
@@ -695,15 +738,29 @@ app.post("/api/adopt-device", async (c) => {
   // BOT DEFENSE: we're about to create a new users row. Rate-limit by
   // CF-Connecting-IP (falls back to X-Forwarded-For's first entry, then
   // 'unknown' as a shared bucket). 10/hour is gentle for humans, hard
-  // stop for bot farms. Applies to both the fresh-insert branch and
-  // the cross-account synthetic-device-id branch below. ──
-  const ip =
-    c.req.header("cf-connecting-ip")?.trim() ||
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown";
-  const slotOk = await tryConsumeRegisterSlot(ip);
-  if (!slotOk) {
-    return c.json({ error: "rate_limited", detail: "too many accounts from this source" }, 429);
+  // stop for bot farms.
+  //
+  // RETRY EXEMPTION (added 2026-05-22): if THIS auth_user_id has any
+  // prior row in adoption_failures, treat this as a retry rather than
+  // a fresh signup. Skip the rate limit. Reasoning: without this, the
+  // very first failure (e.g. shared IP hit cap because of bot traffic)
+  // permanently locked legit users out — they'd see "通讯节点拒绝"
+  // forever, switch emails, accumulate more orphan auth accounts.
+  // Better-auth's signUp endpoint has its own rate limit, so skipping
+  // this 2nd-layer cap on retries doesn't open the bot vector wider. ──
+  const ip = getRequestIp(c);
+  const priorFailureRows = await db
+    .select({ id: adoption_failures.id })
+    .from(adoption_failures)
+    .where(eq(adoption_failures.auth_user_id, authUser.id))
+    .limit(1);
+  const isRetry = priorFailureRows.length > 0;
+  if (!isRetry) {
+    const slotOk = await tryConsumeRegisterSlot(ip);
+    if (!slotOk) {
+      logAdoptionFailure(c, "rate_limited", authUser.id, `ip=${ip}`);
+      return c.json({ error: "rate_limited", detail: "too many accounts from this source" }, 429);
+    }
   }
 
   const existing = await db

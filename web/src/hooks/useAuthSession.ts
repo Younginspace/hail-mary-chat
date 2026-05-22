@@ -27,7 +27,17 @@ export interface AdoptedMe {
   voice_credits?: number;
 }
 
-async function adoptDevice(callsign?: string): Promise<AdoptedMe | null> {
+// Discriminated result. Caller can react to adoption-specific failures
+// (e.g. surface a real message to the user, retry, etc.) rather than
+// silently treating any non-2xx as a no-op like the old `null` return.
+// Added 2026-05-22 after the 2.7% orphan-auth-user incident — the old
+// silent return left users stuck in a half-state (auth account exists
+// in es_system__auth_user, no users row in our app DB).
+export type AdoptResult =
+  | { ok: true; me: AdoptedMe }
+  | { ok: false; status: number; code: string; detail?: string };
+
+async function adoptDevice(callsign?: string): Promise<AdoptResult> {
   try {
     const res = await esClient.api.fetch('/api/adopt-device', {
       method: 'POST',
@@ -37,10 +47,29 @@ async function adoptDevice(callsign?: string): Promise<AdoptedMe | null> {
       },
       body: JSON.stringify({ callsign }),
     });
-    if (!res.ok) return null;
-    return (await res.json()) as AdoptedMe;
-  } catch {
-    return null;
+    if (!res.ok) {
+      let body: { error?: string; detail?: string } = {};
+      try {
+        body = (await res.json()) as { error?: string; detail?: string };
+      } catch {
+        // body not JSON — keep empty
+      }
+      return {
+        ok: false,
+        status: res.status,
+        code: body.error ?? 'unknown',
+        detail: body.detail,
+      };
+    }
+    const me = (await res.json()) as AdoptedMe;
+    return { ok: true, me };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      code: 'network_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -76,9 +105,9 @@ export function useAuthSession() {
         // gated on `ready`/`isAuthenticated` can't fire chat before the
         // server has our users row.
         setAdopted(false);
-        const adopted = await adoptDevice();
+        const result = await adoptDevice();
         if (cancelled) return;
-        if (adopted) setMe(adopted);
+        if (result.ok) setMe(result.me);
         else setMe(await fetchMe());
         if (cancelled) return;
         setSession(next);
@@ -97,19 +126,36 @@ export function useAuthSession() {
     };
   }, []);
 
+  // Build a better-auth-shaped synthetic error from an AdoptResult so
+  // signIn/signUp callers (LoginModal, DialInScreen) can treat adoption
+  // failures the same way as auth-layer failures — they already render
+  // result.error.message. Stable machine codes mirror the server's
+  // adoption_failures.error_code values.
+  const adoptionError = (r: { code: string; status: number; detail?: string }) => ({
+    error: {
+      message: `adoption_failed:${r.code}`,
+      status: r.status,
+      code: r.code,
+    },
+  });
+
   const signInEmail = useCallback(async (email: string, password: string) => {
     const res = await esClient.auth.signIn.email({ email, password });
-    if (!res.error) {
-      rememberEmail(email);
-      // Synchronously adopt so the caller can show success UI with a real
-      // callsign rather than waiting for onSessionChange to race.
-      const adopted = await adoptDevice();
-      if (adopted) {
-        setMe(adopted);
-        setAdopted(true);
-      }
+    if (res.error) return res;
+    rememberEmail(email);
+    // Synchronously adopt so the caller can show success UI with a real
+    // callsign rather than waiting for onSessionChange to race.
+    const result = await adoptDevice();
+    if (result.ok) {
+      setMe(result.me);
+      setAdopted(true);
+      return res;
     }
-    return res;
+    // Adoption failed — surface to caller as if it were an auth error so
+    // they show a real message instead of silently treating signin as
+    // success.
+    console.warn('adoptDevice after signIn failed', result.code, result.status);
+    return adoptionError(result);
   }, []);
 
   const signUpEmail = useCallback(
@@ -130,12 +176,19 @@ export function useAuthSession() {
         console.warn('auto-signIn after signUp failed', signInRes.error);
         return signInRes;
       }
-      const adopted = await adoptDevice(callsign);
-      if (adopted) {
-        setMe(adopted);
+      const result = await adoptDevice(callsign);
+      if (result.ok) {
+        setMe(result.me);
         setAdopted(true);
+        return res;
       }
-      return res;
+      // Adoption failed AFTER auth.signUp + signIn succeeded. The auth
+      // account exists (this is precisely the orphan case the 2026-05-22
+      // incident report covers). Caller will display a real message;
+      // server has telemetry to track the failure pattern; the retry path
+      // is rate-limit-exempt via adoption_failures lookup.
+      console.warn('adoptDevice after signUp failed', result.code, result.status);
+      return adoptionError(result);
     },
     []
   );
