@@ -152,40 +152,101 @@ function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
-function stripThink(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<think>[\s\S]*$/, "").trim();
+// Result of parsing a raw model response. When `json` is null, `raw`
+// and `phase` give the diagnostic context needed to figure out WHY
+// the extractor's output couldn't be salvaged. consolidateSession
+// stuffs this into the thrown Error message so it lands in
+// `consolidation_jobs.last_error` and we can query failure modes
+// without re-running the model.
+type ParsePhase =
+  | "ok"
+  | "unclosed_think_truncated"  // <think> opened but never closed — output was max_tokens-truncated mid-reasoning
+  | "empty_after_strip"          // nothing usable left after stripping think+fences
+  | "parse_failed";              // candidate JSON existed but failed to parse
+
+interface ParseResult {
+  json: ExtractionResult | null;
+  raw: string;     // raw model output (truncated to 1000 chars for telemetry)
+  phase: ParsePhase;
 }
 
-function tryParseJson(text: string): ExtractionResult | null {
-  const cleaned = stripThink(text).trim();
-  // Strip markdown fences if the model wraps the JSON.
-  const noFence = cleaned
+// Robust extractor for model output that may include <think>...</think>
+// reasoning blocks (MiniMax-M2.7 et al.) and/or markdown code fences.
+// Multi-tier salvage:
+//   1. Remove complete <think>...</think> blocks
+//   2. If an unclosed <think> remains, the response was truncated
+//      mid-reasoning — bail with the raw output for telemetry (caller
+//      sees phase=unclosed_think_truncated, can tune max_tokens up)
+//   3. Strip markdown fences
+//   4. Direct parse → first-balanced-brace slice parse
+function parseExtractorOutput(text: string): ParseResult {
+  const trimmedRaw = text.trim();
+  const rawForTelemetry = trimmedRaw.slice(0, 1000);
+
+  // Phase 1: drop fully-closed think blocks
+  const noClosedThink = trimmedRaw
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .trim();
+
+  // Phase 2: unclosed <think> means truncation cut off the reasoning;
+  // anything we'd salvage from inside think is the model's scratchpad,
+  // not its answer. Surface as a distinct telemetry phase so we can
+  // tell tuning issues apart from prompt issues.
+  if (noClosedThink.includes("<think>")) {
+    return { json: null, raw: rawForTelemetry, phase: "unclosed_think_truncated" };
+  }
+
+  // Phase 3: strip markdown fences
+  const noFence = noClosedThink
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-  try {
-    return JSON.parse(noFence) as ExtractionResult;
-  } catch {
-    // Best-effort: find the first { ... } block.
-    const start = noFence.indexOf("{");
-    const end = noFence.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(noFence.slice(start, end + 1)) as ExtractionResult;
-      } catch {
-        return null;
-      }
-    }
-    return null;
+
+  if (!noFence) {
+    return { json: null, raw: rawForTelemetry, phase: "empty_after_strip" };
   }
+
+  // Phase 4a: direct parse
+  try {
+    return { json: JSON.parse(noFence) as ExtractionResult, raw: noFence.slice(0, 1000), phase: "ok" };
+  } catch {
+    // fall through
+  }
+  // Phase 4b: extract first balanced { ... } slice (handles model adding
+  // prose before/after JSON, common when fence stripping missed).
+  const start = noFence.indexOf("{");
+  const end = noFence.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return {
+        json: JSON.parse(noFence.slice(start, end + 1)) as ExtractionResult,
+        raw: noFence.slice(0, 1000),
+        phase: "ok",
+      };
+    } catch {
+      // fall through
+    }
+  }
+
+  return { json: null, raw: noFence.slice(0, 1000), phase: "parse_failed" };
 }
 
 const RETRY_DELAYS_MS = [1000, 3000, 9000]; // 3 retries on transient upstream errors
 
+interface ExtractorOutcome {
+  result: ExtractionResult | null;
+  // When result is null these give the caller telemetry to embed in
+  // consolidation_jobs.last_error so we can grep failure modes by
+  // phase and inspect the raw model output without re-running.
+  phase?: ParsePhase | "fetch_failed" | "http_error" | "no_content" | "no_api_key";
+  rawPrefix?: string;
+  detail?: string;
+}
+
 async function callExtractor(
   transcript: string,
   existingMemories: Array<{ id: string; content: string; kind: string }>,
-): Promise<ExtractionResult | null> {
+): Promise<ExtractorOutcome> {
   const apiUrl = vars.get("MINIMAX_API_URL") ?? DEFAULT_API_URL;
   const model = vars.get("MINIMAX_MODEL") ?? DEFAULT_MODEL;
   // Memory consolidation is an LLM call, not a clone op — use the
@@ -193,7 +254,7 @@ async function callExtractor(
   const apiKey = secret.get("MINIMAX_CODING_PLAN_KEY");
   if (!apiKey) {
     console.error("consolidate: MINIMAX_CODING_PLAN_KEY missing");
-    return null;
+    return { result: null, phase: "no_api_key" };
   }
 
   // Prepend existing memories to the transcript so the LLM can dedup and
@@ -221,6 +282,7 @@ async function callExtractor(
     max_tokens: EXTRACTION_MAX_TOKENS,
   });
 
+  let lastFetchErr: string | undefined;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     let res: Response;
     try {
@@ -233,12 +295,13 @@ async function callExtractor(
         body,
       });
     } catch (err) {
+      lastFetchErr = err instanceof Error ? err.message : String(err);
       console.error(`consolidate: upstream fetch failed (attempt ${attempt + 1})`, err);
       if (attempt < RETRY_DELAYS_MS.length) {
         await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
         continue;
       }
-      return null;
+      return { result: null, phase: "fetch_failed", detail: lastFetchErr };
     }
 
     // MiniMax 529 / 503 / 502 are transient overload signals — retry.
@@ -253,7 +316,7 @@ async function callExtractor(
         await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
         continue;
       }
-      return null;
+      return { result: null, phase: "http_error", detail: `status=${res.status}` };
     }
 
     const json = (await res.json().catch(() => null)) as
@@ -262,11 +325,18 @@ async function callExtractor(
     const raw = json?.choices?.[0]?.message?.content;
     if (!raw) {
       console.error("consolidate: no content in extractor response");
-      return null;
+      return { result: null, phase: "no_content" };
     }
-    return tryParseJson(raw);
+    const parsed = parseExtractorOutput(raw);
+    if (!parsed.json) {
+      console.error(
+        `consolidate: parse failed phase=${parsed.phase} raw_prefix="${parsed.raw.slice(0, 200).replace(/\s+/g, " ")}"`
+      );
+      return { result: null, phase: parsed.phase, rawPrefix: parsed.raw };
+    }
+    return { result: parsed.json };
   }
-  return null;
+  return { result: null, phase: "fetch_failed", detail: lastFetchErr ?? "retry budget exhausted" };
 }
 
 export async function consolidateSession(session_id: string): Promise<void> {
@@ -325,17 +395,28 @@ export async function consolidateSession(session_id: string): Promise<void> {
     .limit(50); // pass up to 50 existing memories for context
 
   // 3. Extract.
-  const result = await callExtractor(transcript, existingMems);
-  if (!result) {
+  const outcome = await callExtractor(transcript, existingMems);
+  if (!outcome.result) {
     // Throw — not a silent return — so runConsolidationJob marks this
     // job as 'pending' (or 'failed' on terminal exhaustion) and the
-    // sweeper retries it later. Pre-fix this swallowed extractor
-    // failures: 277 jobs were marked 'done' but only 58 sessions
-    // actually had a summary, meaning ~80% of "successful" jobs
-    // silently produced nothing. The thrown path triggers the same
-    // attempt-counter logic that real exceptions already use.
-    throw new Error(`extractor returned no usable result (transient)`);
+    // sweeper retries it later. The thrown error message now carries
+    // PHASE + raw output prefix so consolidation_jobs.last_error tells
+    // us WHY without re-running the model:
+    //   - phase=unclosed_think_truncated → max_tokens too low
+    //   - phase=parse_failed             → model produced bad JSON
+    //   - phase=empty_after_strip        → nothing usable
+    //   - phase=http_error / fetch_failed → upstream issue
+    // Bumped max_tokens 600 → 2000 on 2026-05-25 covered most of the
+    // observed "transient" failures; remaining ones will surface via
+    // these phases.
+    const phase = outcome.phase ?? "unknown";
+    const raw = outcome.rawPrefix ?? outcome.detail ?? "";
+    const safeRaw = raw.slice(0, 240).replace(/\s+/g, " ");
+    throw new Error(
+      `extractor returned no usable result (phase=${phase}; raw="${safeRaw}")`
+    );
   }
+  const result = outcome.result;
 
   const now = Date.now();
   const summary = typeof result.summary === "string" ? result.summary.slice(0, 1000) : null;
