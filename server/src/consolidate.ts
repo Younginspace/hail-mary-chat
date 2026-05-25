@@ -33,9 +33,22 @@ const MAX_CONSOLIDATION_ATTEMPTS = 5;
 const DEFAULT_API_URL = "https://api.minimax.chat";
 const DEFAULT_MODEL = "MiniMax-M2.7";
 const MIN_TURNS = 1;
+// EXTRACTION_MAX_TOKENS sets MiniMax's output cap. Bumped from 600 to
+// 2000 on 2026-05-25 after the Aroganza rapport-stuck incident: 39% of
+// all consolidation jobs (425 of 1089) had been failing with "no
+// usable result", with a clear bias toward long sessions (failed avg
+// = 6.2 turns vs done avg = 2). Root cause: MiniMax-M2.7 is a
+// reasoning model that emits <think> blocks BEFORE its actual JSON
+// output. On a long transcript the think block alone can run several
+// hundred tokens; with the 600 cap the model often hit max_tokens
+// mid-think (unclosed </think>) and stripThink() then erased the
+// entire response, leaving tryParseJson() with an empty string. 2000
+// gives enough room for a verbose reason chain PLUS the structured
+// JSON output. Cost impact ≈ +$0.003 per extraction × current rate
+// (~30 sessions/day) ≈ +$3/month — negligible.
 // Clamp token cost per consolidation.
 const MAX_INPUT_MESSAGES = 100;
-const EXTRACTION_MAX_TOKENS = 600;
+const EXTRACTION_MAX_TOKENS = 2000;
 
 // ── Forward-only sweep gate ────────────────────────────────────────
 // The stale-session sweep was added on 2026-04-27. Existing orphan
