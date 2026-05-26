@@ -7,10 +7,76 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#050a12" />
+    <!-- Aggressive cache-busting via meta — added 2026-05-26 after Android
+         user got pinned on the old "通讯节点拒绝" client. Chinese Android
+         browsers (Quark/UC/Baidu) often ignore HTTP must-revalidate on
+         response headers and serve stale HTML for days. Meta tags are
+         honored by more browsers than HTTP headers in that class. The JS
+         bundles are content-hashed by Vite so they cache fine; only the
+         entry HTML needs forced revalidation. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Call Rocky</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Stale-bundle auto-recovery — added 2026-05-26.
+      //
+      // Chinese Android browsers (Quark / UC / Baidu / WeChat WebView /
+      // 手机自带浏览器) routinely ignore both Cache-Control: must-revalidate
+      // AND the cache-bust meta tags. When we deploy new client code, they
+      // keep serving the stale index.html for hours/days, which still
+      // references the OLD index-XXXX.js bundle. The user is then pinned on
+      // a pre-fix client and we can't diagnose their problem because their
+      // requests don't even hit our new server code paths.
+      //
+      // This runs ~2s after first paint:
+      //   1. Fetches the FRESH index.html with cache: 'no-store' (a fetch
+      //      contract that bypasses HTTP cache even on phones that ignore
+      //      response headers)
+      //   2. Extracts the main JS bundle filename from the fresh HTML
+      //   3. Compares against the bundle currently loaded in <script> tags
+      //   4. If different → location.reload() to pick up the new bundle
+      //
+      // Safe to be wrong: if the fetch itself returns stale (shouldn't, with
+      // no-store, but Chinese ISPs sometimes inject) the comparison would
+      // false-match and we don't reload. Worst case: same as current behavior.
+      (function () {
+        setTimeout(function () {
+          try {
+            fetch('/?cb=' + Date.now(), {
+              cache: 'no-store',
+              credentials: 'omit',
+              headers: { 'Cache-Control': 'no-cache' },
+            })
+              .then(function (r) {
+                if (!r.ok) return null;
+                return r.text();
+              })
+              .then(function (html) {
+                if (!html) return;
+                var m = html.match(/\/assets\/(index-[A-Za-z0-9_-]+\.js)/);
+                if (!m) return;
+                var fresh = m[1];
+                var loaded = Array.prototype.map.call(
+                  document.querySelectorAll('script[src]'),
+                  function (s) { return s.getAttribute('src') || ''; }
+                );
+                var onFresh = loaded.some(function (src) { return src.indexOf(fresh) !== -1; });
+                if (!onFresh) {
+                  console.warn('[stale-bundle] forcing reload: fresh=' + fresh);
+                  // Tiny defer so console.warn flushes; some Android browsers
+                  // throw away pending console output on reload.
+                  setTimeout(function () { window.location.reload(); }, 100);
+                }
+              })
+              .catch(function () {});
+          } catch (e) {}
+        }, 2000);
+      })();
+    </script>
   </body>
 </html>
