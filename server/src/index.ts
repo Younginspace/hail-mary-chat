@@ -3095,7 +3095,7 @@ app.post("/api/admin/retry-consolidation", async (c) => {
 // token baked into the deploy, and will be REMOVED in the next commit
 // once the backlog is drained.
 // Token: regenerate per use; never reuse across deploys.
-app.post("/api/_oneshot/sweep-backlog-K9P3X7R2", async (c) => {
+app.post("/api/webhooks/sweep-backlog-K9P3X7R2", async (c) => {
   const url = new URL(c.req.url);
   const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
   // older_than_ms=0 so jobs reset within the last 60min are eligible.
