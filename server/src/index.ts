@@ -3086,6 +3086,23 @@ app.post("/api/admin/retry-consolidation", async (c) => {
   return c.json({ ok: true, ...result });
 });
 
+// ─── TEMP ONE-SHOT 2026-05-26 ─────────────────────────────────────
+// Bulk catch-up after the EXTRACTION_MAX_TOKENS 600→2000 fix left ~426
+// previously-stuck consolidation jobs in 'pending' status. The
+// existing /api/admin/retry-consolidation route needs an ADMIN_TOKEN
+// (browser-only secret, agent can't access) and the natural sweep at
+// DAU≈8 takes ~30 days to clear. This route is protected by a one-shot
+// token baked into the deploy, and will be REMOVED in the next commit
+// once the backlog is drained.
+// Token: regenerate per use; never reuse across deploys.
+app.post("/api/_oneshot/sweep-backlog-K9P3X7R2", async (c) => {
+  const url = new URL(c.req.url);
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
+  // older_than_ms=0 so jobs reset within the last 60min are eligible.
+  const result = await retryStuckConsolidationJobs(0, limit);
+  return c.json({ ok: true, ...result });
+});
+
 // Dead-letter inspection — list failed consolidation jobs.
 app.get("/api/admin/consolidation-failed", async (c) => {
   if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403);
