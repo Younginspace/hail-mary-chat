@@ -240,6 +240,29 @@ async function tryConsumeChatSlot(user_id: string): Promise<boolean> {
   return ret.length > 0;
 }
 
+// Per-user daily ASR slot. Reuses daily_api_usage (api='asr', scope=user_id)
+// instead of a new table. Same CAS pattern as register: insert-or-bump
+// guarded by setWhere so two concurrent /api/asr calls can't both sneak
+// past the ceiling. Cap is also defended at the global level: a single
+// user maxing out only drains 1/N of the shared DashScope free quota
+// (36000 sec/month ≈ 7200 short clips total), so the per-user fence is
+// the primary brake.
+const ASR_DAILY_PER_USER_CAP = 50;
+async function tryConsumeAsrSlot(user_id: string): Promise<boolean> {
+  const now = Date.now();
+  const today = utc8DateString(now);
+  const ret = await db
+    .insert(daily_api_usage)
+    .values({ date: today, api: "asr", scope: user_id, count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} < ${ASR_DAILY_PER_USER_CAP}`,
+    })
+    .returning({ count: daily_api_usage.count });
+  return ret.length > 0;
+}
+
 // If this user signed up ≥ IDLE_ZERO_DAYS ago and still has 0 sessions,
 // zero their voice_credits (if any). Fires lazily from /api/me so we
 // don't need a cron. Idempotent.
@@ -1953,17 +1976,62 @@ function buildGiftStrippingTransform(
 //  iFlytek for ¥0.288/hour pricing (vs ¥1.7+/hour) and clean Bearer
 //  auth. 36k seconds/month free quota covers ≤500 active users free.
 //  Same DASHSCOPE_API_KEY is reused by /api/chat-with-image (#06).
+//
+//  Privacy / retention: audio is uploaded to R2 with a 10-minute
+//  presigned GET URL (only DashScope can fetch it, single-use in
+//  practice) and DELETED on every exit path via ctx.runInBackground
+//  (success / error / timeout / submit-failed). No audio is persisted;
+//  no transcripts are logged; the API key is never sent to the client
+//  and never appears in error responses. Per-user daily cap is
+//  ASR_DAILY_PER_USER_CAP transcriptions.
 // ═══════════════════════════════════════════════════════════════════
 
 const ASR_DEFAULT_API_URL = "https://dashscope.aliyuncs.com";
 const ASR_MODEL = "paraformer-v2";
 const ASR_MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5 MB ≈ 5+ min of opus
+// Reject the request before we even parse the body if Content-Length
+// already exceeds what 5 MB of audio could plausibly base64-encode into
+// (5 MB × 4/3 + a few KB of JSON wrap). Catches the 100 MB-payload-OOM
+// scenario where atob would explode after c.req.json() materialized
+// the whole string in memory.
+const ASR_MAX_REQUEST_BODY_BYTES = 7_500_000; // 5 MB × ~1.34 base64 + wrap
 const ASR_POLL_INTERVAL_MS = 250;
 const ASR_POLL_MAX_ATTEMPTS = 30; // 30 × 250ms = 7.5 s timeout
+// Allowlist of hosts the transcription_url is allowed to point at.
+// DashScope's signed result URL is supposed to live on aliyuncs.com;
+// anything else means either a vendor-side bug or a compromised key
+// pointing us at attacker-controlled SSRF target. Either way: bail.
+const ASR_TRANSCRIPT_URL_ALLOWED_HOSTS = [
+  "dashscope-result.oss-cn-beijing.aliyuncs.com",
+  "dashscope-result.oss-ap-southeast-1.aliyuncs.com",
+];
+const ASR_TRANSCRIPT_URL_ALLOWED_SUFFIX = ".aliyuncs.com"; // broader fallback
+const ASR_TRANSCRIPT_MAX_BYTES = 1_000_000; // 1 MB cap on the result JSON
+const ASR_TRANSCRIPT_FETCH_TIMEOUT_MS = 5000;
 
 app.post("/api/asr", async (c) => {
   const user = await getAuthedUser();
   if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  // B1: Per-user daily ASR cap. Defend the shared DASHSCOPE_API_KEY
+  // quota (36000 sec/month free, ≈ 7200 short clips total) from any
+  // single account draining it. Atomic CAS — see tryConsumeAsrSlot.
+  const slotOk = await tryConsumeAsrSlot(user.user_id);
+  if (!slotOk) {
+    return c.json({ error: "asr_daily_cap_reached", cap: ASR_DAILY_PER_USER_CAP }, 429);
+  }
+
+  // B3: Size pre-check before we hand the body to JSON.parse. Without
+  // this, a 100 MB base64 payload would fully materialize in memory
+  // (atob would still be the OOM trigger, but c.req.json() also does a
+  // string copy) before line ~1823's binary.length check ever ran.
+  const contentLength = Number(c.req.header("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > ASR_MAX_REQUEST_BODY_BYTES) {
+    return c.json(
+      { error: "audio_too_large", maxBytes: ASR_MAX_AUDIO_BYTES },
+      413
+    );
+  }
 
   const apiKey = secret.get("DASHSCOPE_API_KEY");
   if (!apiKey) {
@@ -2138,15 +2206,60 @@ app.post("/api/asr", async (c) => {
         cleanup();
         return c.json({ error: "asr_no_transcript_url" }, 502);
       }
+      // B2: SSRF + DoS guard on the external transcript URL. DashScope's
+      // signed result URL is supposed to live on aliyuncs.com. Reject
+      // anything else — if a compromised or mis-configured upstream ever
+      // hands us an attacker URL, we don't want the Worker to follow it
+      // anywhere. Also enforce a hard size cap (1 MB is generous for
+      // transcript JSON; real responses are <10 KB) and a 5s timeout
+      // (Worker subrequest budget catches runaway calls eventually, but
+      // we want to fail fast and predictably).
+      let parsedTranscriptUrl: URL;
+      try {
+        parsedTranscriptUrl = new URL(transcriptionUrl);
+      } catch {
+        console.error("ASR transcription_url not a valid URL:", transcriptionUrl);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_invalid" }, 502);
+      }
+      const host = parsedTranscriptUrl.hostname.toLowerCase();
+      const protocol = parsedTranscriptUrl.protocol;
+      const hostOk =
+        protocol === "https:" &&
+        (ASR_TRANSCRIPT_URL_ALLOWED_HOSTS.includes(host) ||
+          host.endsWith(ASR_TRANSCRIPT_URL_ALLOWED_SUFFIX));
+      if (!hostOk) {
+        console.error("ASR transcription_url host not allowed:", host);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_invalid" }, 502);
+      }
       let transcript = "";
       try {
-        const tRes = await fetch(transcriptionUrl);
+        const tRes = await fetch(parsedTranscriptUrl.toString(), {
+          signal: AbortSignal.timeout(ASR_TRANSCRIPT_FETCH_TIMEOUT_MS),
+        });
         if (!tRes.ok) {
           console.error(`ASR transcription_url ${tRes.status}:`, await tRes.text().catch(() => ""));
           cleanup();
           return c.json({ error: "asr_transcript_url_failed", status: tRes.status }, 502);
         }
-        const tJson = (await tRes.json()) as { transcripts?: Array<{ text?: string }> };
+        // Read as text first so we can cap the body size before paying
+        // JSON.parse cost. tRes.json() would happily inhale a billion
+        // rows. Content-Length is advisory only (the server can lie or
+        // omit it), so we double-check the actual payload length.
+        const advertised = Number(tRes.headers.get("content-length"));
+        if (Number.isFinite(advertised) && advertised > ASR_TRANSCRIPT_MAX_BYTES) {
+          console.error(`ASR transcription_url body too large: ${advertised}`);
+          cleanup();
+          return c.json({ error: "asr_transcript_url_too_large" }, 502);
+        }
+        const tText = await tRes.text();
+        if (tText.length > ASR_TRANSCRIPT_MAX_BYTES) {
+          console.error(`ASR transcription_url body too large (actual): ${tText.length}`);
+          cleanup();
+          return c.json({ error: "asr_transcript_url_too_large" }, 502);
+        }
+        const tJson = JSON.parse(tText) as { transcripts?: Array<{ text?: string }> };
         transcript = (tJson.transcripts?.[0]?.text ?? "").trim();
       } catch (err) {
         console.error("ASR transcription_url fetch threw:", err);
