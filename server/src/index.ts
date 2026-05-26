@@ -3098,9 +3098,25 @@ app.post("/api/admin/retry-consolidation", async (c) => {
 app.post("/api/webhooks/sweep-backlog-K9P3X7R2", async (c) => {
   const url = new URL(c.req.url);
   const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 25)));
-  // older_than_ms=0 so jobs reset within the last 60min are eligible.
-  const result = await retryStuckConsolidationJobs(0, limit);
-  return c.json({ ok: true, ...result });
+  // Fan-out: pick N pending jobs, fire each in background.
+  // Sequential sweep was hitting CF Worker request-time cap; this returns
+  // in <500ms and lets the background pool chew through up to ~30 jobs
+  // concurrently per call.
+  const rows = await db
+    .select({ session_id: consolidation_jobs.session_id })
+    .from(consolidation_jobs)
+    .where(
+      and(
+        eq(consolidation_jobs.status, "pending"),
+        sql`${consolidation_jobs.attempts} < 5`
+      )
+    )
+    .orderBy(consolidation_jobs.updated_at)
+    .limit(limit);
+  for (const r of rows) {
+    ctx.runInBackground(runConsolidationJob(r.session_id));
+  }
+  return c.json({ ok: true, queued: rows.length });
 });
 
 // Dead-letter inspection — list failed consolidation jobs.
