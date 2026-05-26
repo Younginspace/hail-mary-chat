@@ -48,7 +48,14 @@ const MIN_TURNS = 1;
 // (~30 sessions/day) ≈ +$3/month — negligible.
 // Clamp token cost per consolidation.
 const MAX_INPUT_MESSAGES = 100;
-const EXTRACTION_MAX_TOKENS = 2000;
+// 2026-05-26: bumped 2000 → 3000 after the post-fix drain surfaced a
+// second truncation mode: <think> closes fine, but the JSON OUTPUT itself
+// runs over 2000 tokens for long sessions (M2.7 writes 8 verbose facts +
+// long summary), getting cut mid-string. Telemetry showed phase=parse_failed
+// with raw bodies like `{"summary":"...and exte` — clearly mid-token output
+// truncation, distinct from the earlier <think>-truncation mode. 3000 gives
+// generous headroom; cost ≈ +$0.002/extraction over 2000, still negligible.
+const EXTRACTION_MAX_TOKENS = 3000;
 
 // ── Forward-only sweep gate ────────────────────────────────────────
 // The stale-session sweep was added on 2026-04-27. Existing orphan
