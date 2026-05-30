@@ -35,9 +35,9 @@ export interface AdoptedMe {
 // in es_system__auth_user, no users row in our app DB).
 export type AdoptResult =
   | { ok: true; me: AdoptedMe }
-  | { ok: false; status: number; code: string; detail?: string };
+  | { ok: false; status: number; code: string; detail?: string; ref?: string };
 
-async function adoptDevice(callsign?: string): Promise<AdoptResult> {
+async function adoptDevice(callsign?: string, _attempt = 0): Promise<AdoptResult> {
   try {
     const res = await esClient.api.fetch('/api/adopt-device', {
       method: 'POST',
@@ -48,17 +48,56 @@ async function adoptDevice(callsign?: string): Promise<AdoptResult> {
       body: JSON.stringify({ callsign }),
     });
     if (!res.ok) {
-      let body: { error?: string; detail?: string } = {};
+      // Read the body as TEXT first, then try JSON. The whole point of the
+      // 2026-05-30 stuck-login investigation: when the failure is a
+      // framework-level 401 or a Hono default 500, the body is NOT our
+      // {error} JSON — it's plain text the old `await res.json()` silently
+      // discarded, collapsing every distinct failure into code='unknown'
+      // → the generic "通讯节点拒绝". Capturing the raw text + status +
+      // content-type is the source of truth the server logs can't provide
+      // for framework-level failures (which never reach our handler).
+      let rawText = '';
       try {
-        body = (await res.json()) as { error?: string; detail?: string };
+        rawText = await res.text();
       } catch {
-        // body not JSON — keep empty
+        /* body unreadable — keep empty */
       }
+      let body: { error?: string; detail?: string; ref?: string } = {};
+      try {
+        body = JSON.parse(rawText) as { error?: string; detail?: string; ref?: string };
+      } catch {
+        /* non-JSON body (framework 401 / Hono default 500) */
+      }
+
+      // Cookie-commit timing mitigation. On WebKit (iOS Safari / DuckDuckGo
+      // / Huawei ArkWeb — exactly the browsers our stuck users are on) the
+      // session cookie just set by signIn is sometimes NOT yet attached to
+      // this immediate follow-up request, yielding a framework-level 401
+      // before our handler runs. Retry ONCE after a short delay. If the
+      // cookie genuinely never sticks this just costs 400ms before we
+      // surface the (now-diagnosable) error; if it's a race, it heals it.
+      if (res.status === 401 && _attempt === 0) {
+        await new Promise((r) => setTimeout(r, 400));
+        return adoptDevice(callsign, 1);
+      }
+
+      // Full diagnostic to the console regardless of what we render. The
+      // ref (if present) ties to the server's [onError] log line.
+      console.error('[adopt-device] failed', {
+        status: res.status,
+        statusText: res.statusText,
+        ref: body.ref ?? null,
+        contentType: res.headers.get('content-type'),
+        bodyPrefix: rawText.slice(0, 300),
+        attempt: _attempt,
+      });
+
       return {
         ok: false,
         status: res.status,
         code: body.error ?? 'unknown',
         detail: body.detail,
+        ref: body.ref,
       };
     }
     const me = (await res.json()) as AdoptedMe;
@@ -131,11 +170,16 @@ export function useAuthSession() {
   // failures the same way as auth-layer failures — they already render
   // result.error.message. Stable machine codes mirror the server's
   // adoption_failures.error_code values.
-  const adoptionError = (r: { code: string; status: number; detail?: string }) => ({
+  const adoptionError = (r: { code: string; status: number; detail?: string; ref?: string }) => ({
     error: {
       message: `adoption_failed:${r.code}`,
       status: r.status,
       code: r.code,
+      // Carried through so LoginModal / DialInScreen can render a short,
+      // safe diagnostic tag (ERR-<ref> from the server, or HTTP-<status>
+      // for framework-level failures) the user can screenshot for us.
+      ref: r.ref,
+      detail: r.detail,
     },
   });
 

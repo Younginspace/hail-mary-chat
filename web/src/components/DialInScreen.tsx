@@ -5,7 +5,7 @@ import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
 import { checkCallsign } from '../utils/sessionApi';
 import { loadRememberedEmail } from '../utils/rememberedEmail';
-import { adoptionErrorMessage } from '../utils/adoptionError';
+import { adoptionErrorMessage, adoptionDiagTag } from '../utils/adoptionError';
 
 type Mode = 'signUp' | 'signIn';
 type CallsignStatus = 'idle' | 'checking' | 'available' | 'taken' | 'invalid';
@@ -82,7 +82,9 @@ export default function DialInScreen({ onBack, onSuccess }: DialInScreenProps) {
         setError(t('dialin.callsignTaken', lang));
       } else {
         const adoptMsg = adoptionErrorMessage(result.error.message, lang);
-        setError(adoptMsg ?? result.error.message ?? t('login.errorGeneric', lang));
+        const base = adoptMsg ?? result.error.message ?? t('login.errorGeneric', lang);
+        const tag = adoptionDiagTag(result.error);
+        setError(tag ? `${base}（${tag}）` : base);
       }
       return;
     }

@@ -650,6 +650,16 @@ function logAdoptionFailure(
 }
 
 app.post("/api/adopt-device", async (c) => {
+  // Diagnostic entry log (added 2026-05-30, chasing the Serena/Lucca/19084
+  // stuck-login bug). Tells us whether the request even REACHED our handler
+  // and its auth/device state at entry — the single fact static analysis
+  // couldn't determine. If a stuck user retries and we see NO such log line
+  // at their timestamp, the failure is framework-level (auth gate before us)
+  // and the client-side capture is the source of truth.
+  console.log(
+    `[adopt] entry authed=${auth.isAuthenticated()} hasDevice=${!!getDeviceId(c)} ` +
+      `ip=${getRequestIp(c)} ua=${(c.req.header("user-agent") ?? "").slice(0, 70)}`
+  );
   if (!auth.isAuthenticated()) {
     logAdoptionFailure(c, "not_authenticated", null);
     return c.json({ error: "not_authenticated" }, 401);
@@ -3859,6 +3869,39 @@ app.post("/api/admin/recover-grace-favorites-by-message", async (c) => {
     flipped: flipped.slice(0, 50),
     errors,
   });
+});
+
+// ── Global error boundary (added 2026-05-30). Without this, ANY uncaught
+// throw in a route becomes Hono's default 500 with a plain-text
+// "Internal Server Error" body. The client's adoptDevice() then can't
+// parse {error} out of it, falls through to code='unknown', and the user
+// sees the generic "通讯节点拒绝" — indistinguishable from a wrong password.
+//
+// This converts uncaught throws into a STRUCTURED JSON 500 carrying a
+// short `ref` that correlates to the logged stack trace. Effects:
+//   • adopt-device throws now return {error:'internal_error', ref} →
+//     client maps to "服务暂时异常" (NOT the generic) + shows ERR-<ref>.
+//   • The same <ref> is in the server log line with the full stack, so a
+//     user's screenshot → one grep → the exact failing line.
+// NOTE: framework-level failures (auth gate / 500 BEFORE our routes run)
+// are NOT caught here — that's why the client also captures raw
+// status/body. If onError never fires but the client still sees a 401,
+// the failure is upstream of our app.
+app.onError((err, c) => {
+  const ref = crypto.randomUUID().slice(0, 8);
+  console.error(
+    `[onError] ref=${ref} ${c.req.method} ${c.req.path} ` +
+      `ua=${(c.req.header("user-agent") ?? "").slice(0, 80)} ` +
+      `err=${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+  );
+  return c.json(
+    {
+      error: "internal_error",
+      ref,
+      detail: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+    },
+    500
+  );
 });
 
 export default app;

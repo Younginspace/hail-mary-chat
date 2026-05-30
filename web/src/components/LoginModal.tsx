@@ -11,7 +11,7 @@ import type { FormEvent } from 'react';
 import { useAuthSession } from '../hooks/useAuthSession';
 import { useLang } from '../i18n/LangContext';
 import { t } from '../i18n';
-import { adoptionErrorMessage } from '../utils/adoptionError';
+import { adoptionErrorMessage, adoptionDiagTag } from '../utils/adoptionError';
 
 interface LoginModalProps {
   open: boolean;
@@ -104,7 +104,9 @@ export default function LoginModal({ open, onClose, onSuccess }: LoginModalProps
 
     if (result?.error) {
       const adoptMsg = adoptionErrorMessage(result.error.message, lang);
-      setError(adoptMsg ?? result.error.message ?? t('login.errorGeneric', lang));
+      const base = adoptMsg ?? result.error.message ?? t('login.errorGeneric', lang);
+      const tag = adoptionDiagTag(result.error);
+      setError(tag ? `${base}（${tag}）` : base);
       return;
     }
     onSuccess?.();

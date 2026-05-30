@@ -43,3 +43,23 @@ export function adoptionErrorMessage(
   const key = CODE_TO_KEY[code] ?? 'login.errorGeneric';
   return t(key, lang);
 }
+
+// Build a short, safe diagnostic tag to append to an adoption-failure
+// message so a stuck user can screenshot a code we can grep in server
+// logs. Added 2026-05-30 for the Serena/Lucca/19084 stuck-login bug:
+//   • `ERR-<ref>`  — server's app.onError fired (in-handler throw); the
+//                    same ref is in the [onError] log line with the stack.
+//   • `HTTP-<n>`   — no server ref (framework-level 401/500 before our
+//                    handler ran); the status itself is the clue.
+// Returns '' for non-adoption errors (e.g. better-auth wrong-password) so
+// we don't bolt confusing codes onto normal validation messages.
+export function adoptionDiagTag(
+  error: { message?: string; ref?: string; status?: number } | null | undefined
+): string {
+  if (!error || typeof error.message !== 'string' || !error.message.startsWith(PREFIX)) {
+    return '';
+  }
+  if (error.ref) return `ERR-${error.ref}`;
+  if (typeof error.status === 'number' && error.status > 0) return `HTTP-${error.status}`;
+  return '';
+}
