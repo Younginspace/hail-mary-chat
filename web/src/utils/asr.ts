@@ -55,14 +55,27 @@ export async function transcribeAudio(
 
   let res: Response;
   try {
+    // Client-side hard timeout. The server self-bounds the DashScope poll at
+    // ~7.5s → 504, but if the Worker stalls or the connection hangs there's
+    // nothing to release the button (it's disabled during transcribe). 15s
+    // is comfortably above the server ceiling + network slack; past it we
+    // give up and surface a timeout so the UI never wedges.
     res = await fetch(`${API_BASE}/api/asr`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ audioBase64, mimeType, lang }),
+      signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    return { ok: false, error: 'network', detail: String(err) };
+    // AbortSignal.timeout fires a TimeoutError (a DOMException). Map it to the
+    // transcribe-timeout copy; everything else is a network failure.
+    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+    return {
+      ok: false,
+      error: isTimeout ? 'asr_timeout' : 'network',
+      detail: String(err),
+    };
   }
 
   if (!res.ok) {

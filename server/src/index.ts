@@ -1995,6 +1995,13 @@ const ASR_MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5 MB ≈ 5+ min of opus
 // scenario where atob would explode after c.req.json() materialized
 // the whole string in memory.
 const ASR_MAX_REQUEST_BODY_BYTES = 7_500_000; // 5 MB × ~1.34 base64 + wrap
+// Global daily ASR ceiling — operator-side money-stop, mirroring the TTS
+// __global__ cap. The per-user cap (50/day) alone doesn't bound TOTAL
+// vendor spend: ~145 daily-maxed users would exhaust the 36000-sec/month
+// free quota, after which DashScope bills per-second with no ceiling. This
+// is a hard circuit-breaker no normal day of legit traffic reaches. On hit
+// we refund the per-user slot (the user didn't cause the global limit).
+const ASR_DAILY_GLOBAL_CAP = 3000;
 const ASR_POLL_INTERVAL_MS = 250;
 const ASR_POLL_MAX_ATTEMPTS = 30; // 30 × 250ms = 7.5 s timeout
 // Allowlist of hosts the transcription_url is allowed to point at.
@@ -2019,6 +2026,38 @@ app.post("/api/asr", async (c) => {
   const slotOk = await tryConsumeAsrSlot(user.user_id);
   if (!slotOk) {
     return c.json({ error: "asr_daily_cap_reached", cap: ASR_DAILY_PER_USER_CAP }, 429);
+  }
+
+  // Global daily ceiling (CAS) — hard money-stop across ALL users, mirroring
+  // /api/tts. On hit, refund the per-user slot just consumed (the user isn't
+  // at fault for our operator-side limit) and 429.
+  {
+    const nowMs = Date.now();
+    const today = utc8DateString(nowMs);
+    const globalUsage = await db
+      .insert(daily_api_usage)
+      .values({ date: today, api: "asr", scope: "__global__", count: 1, updated_at: nowMs })
+      .onConflictDoUpdate({
+        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+        set: { count: sql`${daily_api_usage.count} + 1`, updated_at: nowMs },
+        setWhere: sql`${daily_api_usage.count} < ${ASR_DAILY_GLOBAL_CAP}`,
+      })
+      .returning({ count: daily_api_usage.count });
+    if (globalUsage.length === 0) {
+      // Refund the per-user slot so a global-cap day doesn't eat the user's
+      // personal quota. count was just incremented to ≥1 by tryConsumeAsrSlot.
+      await db
+        .update(daily_api_usage)
+        .set({ count: sql`${daily_api_usage.count} - 1`, updated_at: nowMs })
+        .where(
+          and(
+            eq(daily_api_usage.date, today),
+            eq(daily_api_usage.api, "asr"),
+            eq(daily_api_usage.scope, user.user_id)
+          )
+        );
+      return c.json({ error: "global_quota_exceeded" }, 429);
+    }
   }
 
   // B3: Size pre-check before we hand the body to JSON.parse. Without
