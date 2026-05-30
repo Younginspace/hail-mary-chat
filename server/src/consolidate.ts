@@ -682,47 +682,29 @@ async function checkLevelUp(user_id: string, session_id: string): Promise<void> 
 export async function runConsolidationJob(session_id: string): Promise<void> {
   const now = Date.now();
 
-  // Concurrency gate (probabilistic, not atomic — see below).
-  // Three call paths converge here for the same session_id: explicit
-  // /session/end, sweep, and retryStuck. Without ANY gate, a transient
-  // extractor outage burns through MAX_CONSOLIDATION_ATTEMPTS in
-  // seconds because each concurrent invocation increments attempts
-  // independently. Skip if:
-  //   - already 'done' — idempotent no-op
-  //   - 'running' for less than CONCURRENT_JOB_LOCKOUT_MS — assume
-  //     another invocation is in flight; let it finish + write the
-  //     terminal status. Stuck-running rows older than the lockout
-  //     are picked up by retryStuckConsolidationJobs (which now uses
-  //     the same constant so the windows abut, no dead-zone).
+  // Atomic claim-the-lock gate. Three call paths converge here for the
+  // same session_id: explicit /session/end, sweep, and retryStuck.
+  // Without an ATOMIC gate, a transient extractor outage (or two truly
+  // simultaneous first-time invocations) burns through
+  // MAX_CONSOLIDATION_ATTEMPTS in seconds because each invocation
+  // increments attempts independently.
   //
-  // Honest note: the read↔upsert window is not atomic. Two truly-
-  // simultaneous first-time invocations (no row yet) can both pass
-  // this guard and both increment attempts. After PR #27's CAS on
-  // /session/end and on the sweeps, the practical window is narrow
-  // (only retryStuck vs sweep, vs first-call /session/end can hit
-  // it) but non-zero. The MAX 3 → 5 bump is the explicit safety net
-  // for that residual race.
-  const existing = await db
-    .select({
-      status: consolidation_jobs.status,
-      updated_at: consolidation_jobs.updated_at,
-    })
-    .from(consolidation_jobs)
-    .where(eq(consolidation_jobs.session_id, session_id))
-    .limit(1);
-  if (existing.length > 0) {
-    const row = existing[0];
-    if (row.status === "done") return;
-    if (row.status === "running" && now - row.updated_at < CONCURRENT_JOB_LOCKOUT_MS) {
-      console.info(`runConsolidationJob: skipping ${session_id} — concurrent invocation in flight (updated ${now - row.updated_at}ms ago)`);
-      return;
-    }
-  }
-
-  // Upsert: if a prior attempt failed and this is a retry, bump attempts.
-  // ON CONFLICT path captures both "first time" and "retry after prior
-  // attempt" cases without a separate read-then-write.
-  await db
+  // 2026-05-30 — replaced the old read-then-upsert (whose read↔write
+  // window was explicitly non-atomic, papered over with a MAX-attempts
+  // bump) with a SINGLE atomic upsert. The setWhere makes the UPDATE
+  // fire ONLY when we're allowed to claim the lock; .returning() is
+  // non-empty IFF this invocation won the claim. Semantics exactly match
+  // the old guard:
+  //   • no row yet            → INSERT wins         → claim, proceed
+  //   • 'pending' / 'failed'  → setWhere true        → claim (retry), proceed
+  //   • 'running' but stale   → setWhere true        → reclaim orphan, proceed
+  //   • 'running' & fresh     → setWhere false       → no update, SKIP
+  //   • 'done'                → setWhere false       → no update, SKIP
+  // Two concurrent first-time calls now race on the INSERT/UPDATE itself;
+  // exactly one gets a non-empty .returning(), the other skips. No more
+  // double-increment, so MAX_CONSOLIDATION_ATTEMPTS measures real failures.
+  const lockoutCutoff = now - CONCURRENT_JOB_LOCKOUT_MS;
+  const claimed = await db
     .insert(consolidation_jobs)
     .values({
       session_id,
@@ -739,7 +721,15 @@ export async function runConsolidationJob(session_id: string): Promise<void> {
         attempts: sql`${consolidation_jobs.attempts} + 1`,
         updated_at: now,
       },
-    });
+      setWhere: sql`(${consolidation_jobs.status} NOT IN ('running', 'done')) OR (${consolidation_jobs.status} = 'running' AND ${consolidation_jobs.updated_at} < ${lockoutCutoff})`,
+    })
+    .returning({ status: consolidation_jobs.status });
+  if (claimed.length === 0) {
+    // Someone else holds a fresh 'running' lock, or the job is already
+    // 'done'. Either way this invocation does nothing.
+    console.info(`runConsolidationJob: skipping ${session_id} — already done or concurrent invocation in flight`);
+    return;
+  }
 
   try {
     await consolidateSession(session_id);
