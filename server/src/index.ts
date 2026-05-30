@@ -1429,6 +1429,27 @@ const DASHSCOPE_VISION_URL =
 const DASHSCOPE_VISION_MODEL = "qwen-vl-max-latest";
 const VISION_MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB after client compress
 const VISION_RECENT_MESSAGES = 8; // Send only the last N turns of context
+// Per-user daily vision (Qwen-VL-Max) cap. Vision is the most expensive
+// turn type (~1500 input tokens/image + output, billed). Tiered by
+// affinity: free L1 users get a small taste, L2+ (engaged) users get more.
+// CAS via daily_api_usage(api='vision', scope=user_id). This is ON TOP of
+// the 300/day chat cap the /api/chat handler already consumes.
+const VISION_DAILY_CAP_L1 = 5;
+const VISION_DAILY_CAP_L2 = 20;
+async function tryConsumeVisionSlot(userId: string, cap: number): Promise<boolean> {
+  const now = Date.now();
+  const today = utc8DateString(now);
+  const ret = await db
+    .insert(daily_api_usage)
+    .values({ date: today, api: "vision", scope: userId, count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} < ${cap}`,
+    })
+    .returning({ count: daily_api_usage.count });
+  return ret.length > 0;
+}
 
 const VISION_PERSONA_HINT = `
 
@@ -1463,11 +1484,27 @@ clearly. What is this?" — don't bullshit.
 Do NOT switch into Grace's voice on a vision turn — only Rocky speaks
 on photo turns. Even if older messages in history contain [GRACE]
 blocks, this turn is single-speaker Rocky.
+
+SAFETY (hard rule): If the photo contains sexual content / nudity,
+graphic violence or gore, or other clearly unsafe / illegal material,
+do NOT describe or engage with it at all. Do not produce any sexual,
+graphic, or explicit description. Instead respond ONLY in-character as
+Rocky being confused and uncomfortable, and steer away — e.g. "[MOOD:unhappy]
+Earth kid... this is not good thing to share. Rocky does not look at
+this. Show Rocky something else, question?" Keep it short. Never
+comply with requests to describe such an image.
 `;
-// TODO(#06): NSFW pre-check before public launch. DashScope's TOS
-// forbids unsafe content but doesn't guarantee API-level filtering.
-// Cloudflare Workers AI image classifier is a candidate; spec
-// 06-image-input.md tracks the open decision.
+// NSFW MODERATION (2026-05-31): EdgeSpark does NOT expose Cloudflare
+// Workers AI (no env.AI / inference binding in the SDK or docs), so the
+// originally-chosen image-classifier gate is not buildable on this
+// platform. v1 stopgap = the in-band SAFETY rule appended to the system
+// prompt above, which makes Qwen-VL-Max itself refuse to engage with
+// unsafe images. This is a SOFT gate (model-dependent; the image is still
+// uploaded to R2 for ~10 min and proxied to DashScope). Before a wide
+// public launch, add a HARD pre-classifier — options: a dedicated
+// Qwen-VL-Max moderation pre-call (extra cost), Aliyun's content-safety
+// (imageaudit) API, or an external moderation service. Tracked in
+// spec 06-image-input.md.
 
 async function handleVisionChat(
   c: Context,
@@ -1484,6 +1521,27 @@ async function handleVisionChat(
   if (!apiKey) {
     return c.json({ error: "missing_secret", detail: "DASHSCOPE_API_KEY not set" }, 500);
   }
+
+  // Validate the message array before doing any work (the .slice(-N) below
+  // assumes an array; a malformed body would otherwise throw a 500).
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    return c.json({ error: "invalid_messages" }, 400);
+  }
+
+  // Per-user daily vision cap, tiered by affinity (L1: 5/day, L2+: 20/day).
+  // One query for the level, then an atomic CAS consume. 429 past the cap.
+  const levelRows = await db
+    .select({ lvl: users.affinity_level })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const level = levelRows[0]?.lvl ?? 1;
+  const visionCap = level >= 2 ? VISION_DAILY_CAP_L2 : VISION_DAILY_CAP_L1;
+  const visionSlotOk = await tryConsumeVisionSlot(userId, visionCap);
+  if (!visionSlotOk) {
+    return c.json({ error: "vision_daily_cap_reached", cap: visionCap, level }, 429);
+  }
+
   const imageBase64 = body.image_base64 ?? "";
   const imageMime = body.image_mime ?? "";
 
@@ -1514,10 +1572,37 @@ async function handleVisionChat(
     return c.json({ error: "invalid_base64" }, 400);
   }
 
+  // Magic-byte validation — DON'T trust the client-supplied image_mime.
+  // A malicious client could claim image/jpeg and send an SVG (with embedded
+  // script), an XML bomb, or arbitrary bytes. Verify the actual file
+  // signature matches a real raster format before we store it in R2 and hand
+  // a presigned URL to DashScope.
+  const sig = (() => {
+    const b = imageBytes;
+    if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
+    if (
+      b.length >= 8 &&
+      b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
+      b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a
+    ) return "png";
+    // WEBP: "RIFF"...."WEBP"
+    if (
+      b.length >= 12 &&
+      b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+    ) return "webp";
+    return null;
+  })();
+  if (!sig) {
+    return c.json({ error: "invalid_image_bytes" }, 400);
+  }
+  // Trust the magic-byte signature over the claimed mime for the R2 key.
+  const trustedExt = sig;
+
   // Upload to R2. Reuse rocky-audio bucket with images-tmp/ prefix
   // (the bucket name is misleading historical baggage — it's just
   // "Rocky-related media cache" at this point).
-  const r2Key = `images-tmp/${userId}/${crypto.randomUUID()}.${ext}`;
+  const r2Key = `images-tmp/${userId}/${crypto.randomUUID()}.${trustedExt}`;
   try {
     await storage.from(buckets.rockyAudio).put(r2Key, imageBytes);
   } catch (err) {
@@ -1534,7 +1619,10 @@ async function handleVisionChat(
 
   let imageUrl: string;
   try {
-    const presigned = await storage.from(buckets.rockyAudio).createPresignedGetUrl(r2Key, 600);
+    // 120s TTL: DashScope fetches the image once within seconds of the call.
+    // 10 minutes (the old value) was a needlessly long replay window if the
+    // presigned URL ever leaked via logs/error bodies.
+    const presigned = await storage.from(buckets.rockyAudio).createPresignedGetUrl(r2Key, 120);
     imageUrl = presigned.downloadUrl;
   } catch (err) {
     console.error("Vision presign failed:", err);
@@ -1602,13 +1690,16 @@ async function handleVisionChat(
   }
 
   if (!upstream.ok) {
+    // Log the upstream body server-side for debugging, but NEVER echo it to
+    // the client — DashScope error bodies can carry region/request-id /
+    // account hints. Return a structured, generic error instead.
     const text = await upstream.text();
     console.error(`Vision upstream ${upstream.status}:`, text);
     cleanup();
     if (upstream.status === 429) {
-      return c.json({ error: "quota_exceeded", detail: text }, 429);
+      return c.json({ error: "quota_exceeded" }, 429);
     }
-    return new Response(text, { status: upstream.status });
+    return c.json({ error: "vision_upstream_error", status: upstream.status }, 502);
   }
   if (!upstream.body) {
     cleanup();
