@@ -668,6 +668,15 @@ const translations = {
     en: "Session didn't stick — please try again",
     ja: 'セッション切れ、もう一度お試しください',
   },
+  // Shown when the session cookie is persistently not delivered (survived
+  // the auto-retry). Almost always an in-app browser (微信/QQ/抖音 内置浏览器)
+  // or a browser with cookies / cross-site-tracking locked down. Give the
+  // user a concrete way out rather than an endless "try again".
+  'login.adopt.cookieBlocked': {
+    zh: '当前浏览器拦截了登录所需的 Cookie。请点右上角「···」选「在浏览器中打开」，或直接用系统自带 Safari/Chrome 访问；若已在浏览器中，请关闭「阻止跨网站跟踪」后重试。',
+    en: 'This browser is blocking the login cookie. Open the page in your system browser (Safari/Chrome) instead of an in-app browser, or turn off "Prevent Cross-Site Tracking", then try again.',
+    ja: 'このブラウザがログイン用Cookieをブロックしています。アプリ内ブラウザではなくSafari/Chromeで開くか、「サイト越えトラッキングを防ぐ」をオフにして再試行してください。',
+  },
   'login.adopt.rateLimited': {
     zh: '当前网络注册过频繁，请几分钟后再试',
     en: 'Too many signups from this network — please retry in a few minutes',

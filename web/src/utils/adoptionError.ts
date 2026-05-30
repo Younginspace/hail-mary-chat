@@ -26,6 +26,11 @@ const CODE_TO_KEY: Record<string, TranslationKey> = {
   // the generic "通讯节点拒绝". Map it to the same "session didn't stick,
   // retry" message so it reads correctly even if the 401-retry doesn't heal.
   UNAUTHENTICATED: 'login.adopt.notAuthenticated',
+  // Persistent 401 that survived the cookie-commit retry → the session
+  // cookie is genuinely not being delivered (cookies blocked, or an
+  // in-app/embedded browser that drops Set-Cookie from fetch). Actionable
+  // guidance, not the generic "try again".
+  cookie_blocked: 'login.adopt.cookieBlocked',
   missing_device_id: 'login.adopt.server',
   invalid_callsign: 'login.adopt.invalidCallsign',
   callsign_taken: 'dialin.callsignTaken',

@@ -91,16 +91,26 @@ async function adoptDevice(callsign?: string, _attempt = 0): Promise<AdoptResult
         /* non-JSON body (framework 401 / Hono default 500) */
       }
 
-      // Cookie-commit timing mitigation. On WebKit (iOS Safari / DuckDuckGo
-      // / Huawei ArkWeb — exactly the browsers our stuck users are on) the
-      // session cookie just set by signIn is sometimes NOT yet attached to
-      // this immediate follow-up request, yielding a framework-level 401
-      // before our handler runs. Retry ONCE after a short delay. If the
-      // cookie genuinely never sticks this just costs 400ms before we
-      // surface the (now-diagnosable) error; if it's a race, it heals it.
-      if (res.status === 401 && _attempt === 0) {
-        await new Promise((r) => setTimeout(r, 400));
-        return adoptDevice(callsign, 1);
+      // 401 handling. The platform auth gate 401s /api/* (body
+      // {"error":"UNAUTHENTICATED"}) when the session cookie isn't attached.
+      if (res.status === 401) {
+        // First 401 → cookie-commit timing race (WebKit sometimes hasn't
+        // attached the just-set cookie to this immediate follow-up). Retry
+        // once after a short delay; heals the race for free.
+        if (_attempt === 0) {
+          await new Promise((r) => setTimeout(r, 400));
+          return adoptDevice(callsign, 1);
+        }
+        // Retry ALSO 401'd. Confirmed 2026-05-31: this is NOT a timing race
+        // — the session cookie is simply not being delivered on the
+        // follow-up request at all (curl with the same cookie succeeds, so
+        // the server is fine). Persistent cause on the affected WebKit
+        // clients: cookies blocked, or an in-app/embedded browser
+        // (WeChat/QQ/etc.) that doesn't persist a Set-Cookie issued from a
+        // fetch() response. Surface a DISTINCT, actionable code instead of
+        // the generic "session didn't stick" so the user gets a way out.
+        console.error('[adopt-device] persistent 401 after retry — session cookie not delivered');
+        return { ok: false, status: 401, code: 'cookie_blocked', ref: body.ref };
       }
 
       // Full diagnostic to the console regardless of what we render. The
