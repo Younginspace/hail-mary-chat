@@ -30,4 +30,10 @@ export type SecretKey =
   | "MINIMAX_CODING_PLAN_KEY"
   // Gate admin-only endpoints (rapport recalibration, stuck-job retry).
   // Pass as `X-Admin-Token: <value>` header. Set via `edgespark secret set ADMIN_TOKEN`.
-  | "ADMIN_TOKEN";
+  | "ADMIN_TOKEN"
+  // Aliyun DashScope (百炼) API key. Used by:
+  //   #07 voice input — Paraformer-v2 async transcription (/api/asr)
+  //   #06 image input — Qwen-VL-Max chat completions
+  // Both endpoints share this single key. Bearer-token auth, no
+  // signing complexity. Set via `edgespark secret set DASHSCOPE_API_KEY`.
+  | "DASHSCOPE_API_KEY";

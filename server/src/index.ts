@@ -240,6 +240,29 @@ async function tryConsumeChatSlot(user_id: string): Promise<boolean> {
   return ret.length > 0;
 }
 
+// Per-user daily ASR slot. Reuses daily_api_usage (api='asr', scope=user_id)
+// instead of a new table. Same CAS pattern as register: insert-or-bump
+// guarded by setWhere so two concurrent /api/asr calls can't both sneak
+// past the ceiling. Cap is also defended at the global level: a single
+// user maxing out only drains 1/N of the shared DashScope free quota
+// (36000 sec/month ≈ 7200 short clips total), so the per-user fence is
+// the primary brake.
+const ASR_DAILY_PER_USER_CAP = 50;
+async function tryConsumeAsrSlot(user_id: string): Promise<boolean> {
+  const now = Date.now();
+  const today = utc8DateString(now);
+  const ret = await db
+    .insert(daily_api_usage)
+    .values({ date: today, api: "asr", scope: user_id, count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} < ${ASR_DAILY_PER_USER_CAP}`,
+    })
+    .returning({ count: daily_api_usage.count });
+  return ret.length > 0;
+}
+
 // If this user signed up ≥ IDLE_ZERO_DAYS ago and still has 0 sessions,
 // zero their voice_credits (if any). Fires lazily from /api/me so we
 // don't need a cron. Idempotent.
@@ -1934,6 +1957,373 @@ function buildGiftStrippingTransform(
     },
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  #07 — /api/asr  (Aliyun DashScope Paraformer-v2 voice input)
+//
+//  Async transcription pipeline:
+//    1. Client POSTs base64-encoded audio (webm/opus from MediaRecorder
+//       on most browsers, mp4/aac on iOS Safari).
+//    2. Worker decodes, uploads to R2 (rocky-audio bucket, asr-tmp/
+//       prefix), creates a presigned GET URL with 10-minute TTL.
+//    3. Worker calls DashScope async transcription, passes the URL,
+//       polls task status every 250ms (max 30 attempts ≈ 7.5s).
+//    4. Returns { transcript } on success, error code otherwise.
+//    5. Cleanup: the R2 object is deleted via ctx.runInBackground
+//       after the response is sent.
+//
+//  Vendor: Aliyun DashScope (百炼) — chosen over Volcengine /
+//  iFlytek for ¥0.288/hour pricing (vs ¥1.7+/hour) and clean Bearer
+//  auth. 36k seconds/month free quota covers ≤500 active users free.
+//  Same DASHSCOPE_API_KEY is reused by /api/chat-with-image (#06).
+//
+//  Privacy / retention: audio is uploaded to R2 with a 10-minute
+//  presigned GET URL (only DashScope can fetch it, single-use in
+//  practice) and DELETED on every exit path via ctx.runInBackground
+//  (success / error / timeout / submit-failed). No audio is persisted;
+//  no transcripts are logged; the API key is never sent to the client
+//  and never appears in error responses. Per-user daily cap is
+//  ASR_DAILY_PER_USER_CAP transcriptions.
+// ═══════════════════════════════════════════════════════════════════
+
+const ASR_DEFAULT_API_URL = "https://dashscope.aliyuncs.com";
+const ASR_MODEL = "paraformer-v2";
+const ASR_MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5 MB ≈ 5+ min of opus
+// Reject the request before we even parse the body if Content-Length
+// already exceeds what 5 MB of audio could plausibly base64-encode into
+// (5 MB × 4/3 + a few KB of JSON wrap). Catches the 100 MB-payload-OOM
+// scenario where atob would explode after c.req.json() materialized
+// the whole string in memory.
+const ASR_MAX_REQUEST_BODY_BYTES = 7_500_000; // 5 MB × ~1.34 base64 + wrap
+// Global daily ASR ceiling — operator-side money-stop, mirroring the TTS
+// __global__ cap. The per-user cap (50/day) alone doesn't bound TOTAL
+// vendor spend: ~145 daily-maxed users would exhaust the 36000-sec/month
+// free quota, after which DashScope bills per-second with no ceiling. This
+// is a hard circuit-breaker no normal day of legit traffic reaches. On hit
+// we refund the per-user slot (the user didn't cause the global limit).
+const ASR_DAILY_GLOBAL_CAP = 3000;
+const ASR_POLL_INTERVAL_MS = 250;
+const ASR_POLL_MAX_ATTEMPTS = 30; // 30 × 250ms = 7.5 s timeout
+// Allowlist of hosts the transcription_url is allowed to point at.
+// DashScope's signed result URL is supposed to live on aliyuncs.com;
+// anything else means either a vendor-side bug or a compromised key
+// pointing us at attacker-controlled SSRF target. Either way: bail.
+const ASR_TRANSCRIPT_URL_ALLOWED_HOSTS = [
+  "dashscope-result.oss-cn-beijing.aliyuncs.com",
+  "dashscope-result.oss-ap-southeast-1.aliyuncs.com",
+];
+const ASR_TRANSCRIPT_URL_ALLOWED_SUFFIX = ".aliyuncs.com"; // broader fallback
+const ASR_TRANSCRIPT_MAX_BYTES = 1_000_000; // 1 MB cap on the result JSON
+const ASR_TRANSCRIPT_FETCH_TIMEOUT_MS = 5000;
+
+app.post("/api/asr", async (c) => {
+  const user = await getAuthedUser();
+  if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  // B1: Per-user daily ASR cap. Defend the shared DASHSCOPE_API_KEY
+  // quota (36000 sec/month free, ≈ 7200 short clips total) from any
+  // single account draining it. Atomic CAS — see tryConsumeAsrSlot.
+  const slotOk = await tryConsumeAsrSlot(user.user_id);
+  if (!slotOk) {
+    return c.json({ error: "asr_daily_cap_reached", cap: ASR_DAILY_PER_USER_CAP }, 429);
+  }
+
+  // Global daily ceiling (CAS) — hard money-stop across ALL users, mirroring
+  // /api/tts. On hit, refund the per-user slot just consumed (the user isn't
+  // at fault for our operator-side limit) and 429.
+  {
+    const nowMs = Date.now();
+    const today = utc8DateString(nowMs);
+    const globalUsage = await db
+      .insert(daily_api_usage)
+      .values({ date: today, api: "asr", scope: "__global__", count: 1, updated_at: nowMs })
+      .onConflictDoUpdate({
+        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+        set: { count: sql`${daily_api_usage.count} + 1`, updated_at: nowMs },
+        setWhere: sql`${daily_api_usage.count} < ${ASR_DAILY_GLOBAL_CAP}`,
+      })
+      .returning({ count: daily_api_usage.count });
+    if (globalUsage.length === 0) {
+      // Refund the per-user slot so a global-cap day doesn't eat the user's
+      // personal quota. count was just incremented to ≥1 by tryConsumeAsrSlot.
+      await db
+        .update(daily_api_usage)
+        .set({ count: sql`${daily_api_usage.count} - 1`, updated_at: nowMs })
+        .where(
+          and(
+            eq(daily_api_usage.date, today),
+            eq(daily_api_usage.api, "asr"),
+            eq(daily_api_usage.scope, user.user_id)
+          )
+        );
+      return c.json({ error: "global_quota_exceeded" }, 429);
+    }
+  }
+
+  // B3: Size pre-check before we hand the body to JSON.parse. Without
+  // this, a 100 MB base64 payload would fully materialize in memory
+  // (atob would still be the OOM trigger, but c.req.json() also does a
+  // string copy) before line ~1823's binary.length check ever ran.
+  const contentLength = Number(c.req.header("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > ASR_MAX_REQUEST_BODY_BYTES) {
+    return c.json(
+      { error: "audio_too_large", maxBytes: ASR_MAX_AUDIO_BYTES },
+      413
+    );
+  }
+
+  const apiKey = secret.get("DASHSCOPE_API_KEY");
+  if (!apiKey) {
+    return c.json({ error: "missing_secret", detail: "DASHSCOPE_API_KEY not set" }, 500);
+  }
+  // Endpoint hardcoded — DashScope only exposes this one URL for
+  // transcription (no domestic-vs-international split for this product).
+  // If we ever need a fallback, add DASHSCOPE_API_URL to VarKey first.
+  const apiBase = ASR_DEFAULT_API_URL;
+
+  // Body: { audioBase64: string, mimeType: string, lang?: 'zh'|'en'|'ja' }
+  // We accept base64-in-JSON rather than multipart because Workers'
+  // body-size limit on multipart is harsher and SSR streaming JSON is
+  // the path-of-least-resistance for the existing client fetch wrapper.
+  let body: { audioBase64?: unknown; mimeType?: unknown; lang?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  const { audioBase64, mimeType, lang: rawLang } = body;
+  if (typeof audioBase64 !== "string" || !audioBase64) {
+    return c.json({ error: "audio_required" }, 400);
+  }
+  if (typeof mimeType !== "string" || !mimeType) {
+    return c.json({ error: "mime_required" }, 400);
+  }
+  // Whitelist what we can plausibly hand to DashScope. opus/webm are
+  // the MediaRecorder defaults; mp4/aac are iOS Safari's preference.
+  // wav/mp3 are rare from a browser but harmless. Reject anything else
+  // before burning a vendor call.
+  const ext = (() => {
+    if (mimeType.includes("webm")) return "webm";
+    if (mimeType.includes("ogg")) return "ogg";
+    if (mimeType.includes("mp4") || mimeType.includes("aac")) return "m4a";
+    if (mimeType.includes("mpeg") || mimeType === "audio/mpeg") return "mp3";
+    if (mimeType.includes("wav")) return "wav";
+    return null;
+  })();
+  if (!ext) {
+    return c.json({ error: "unsupported_audio_format", detail: mimeType }, 400);
+  }
+  const lang = rawLang === "zh" || rawLang === "en" || rawLang === "ja" ? rawLang : "en";
+
+  // Decode + size-cap before we touch storage. atob will throw if the
+  // input isn't valid base64; treat that as 400 instead of 500.
+  let audioBytes: Uint8Array;
+  try {
+    const binary = atob(audioBase64);
+    if (binary.length > ASR_MAX_AUDIO_BYTES) {
+      return c.json({ error: "audio_too_large", maxBytes: ASR_MAX_AUDIO_BYTES }, 413);
+    }
+    audioBytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) audioBytes[i] = binary.charCodeAt(i);
+  } catch {
+    return c.json({ error: "invalid_base64" }, 400);
+  }
+
+  // Upload to R2. Path includes user id so per-user listing is sane;
+  // crypto.randomUUID() avoids collisions when the same user sends two
+  // clips back-to-back. The asr-tmp/ prefix is reserved — DON'T expose
+  // public access, presigned GET URL is the only way DashScope reaches it.
+  const r2Key = `asr-tmp/${user.user_id}/${crypto.randomUUID()}.${ext}`;
+  try {
+    await storage.from(buckets.rockyAudio).put(r2Key, audioBytes);
+  } catch (err) {
+    console.error("ASR R2 upload failed:", err);
+    return c.json({ error: "storage_failed" }, 502);
+  }
+
+  // Schedule cleanup regardless of how this request returns. ctx.runInBackground
+  // lets the delete finish after we've responded.
+  const cleanup = () => {
+    ctx.runInBackground(
+      storage.from(buckets.rockyAudio).delete(r2Key).catch((err) => {
+        console.warn("ASR R2 cleanup failed (non-fatal):", err);
+      })
+    );
+  };
+
+  let signedUrl: string;
+  try {
+    const presigned = await storage.from(buckets.rockyAudio).createPresignedGetUrl(r2Key, 600);
+    signedUrl = presigned.downloadUrl;
+  } catch (err) {
+    console.error("ASR presign failed:", err);
+    cleanup();
+    return c.json({ error: "presign_failed" }, 502);
+  }
+
+  // Submit async transcription task.
+  let taskId: string;
+  try {
+    const submitResp = await fetch(`${apiBase}/api/v1/services/audio/asr/transcription`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+      },
+      body: JSON.stringify({
+        model: ASR_MODEL,
+        input: { file_urls: [signedUrl] },
+        parameters: { language_hints: [lang] },
+      }),
+    });
+    if (!submitResp.ok) {
+      const text = await submitResp.text();
+      console.error(`ASR submit failed (${submitResp.status}):`, text);
+      cleanup();
+      return c.json({ error: "asr_submit_failed", detail: text }, 502);
+    }
+    const submitJson = (await submitResp.json()) as {
+      output?: { task_id?: string; task_status?: string };
+      message?: string;
+    };
+    // Defensive: DashScope occasionally returns task_status=FAILED
+    // synchronously on submit (e.g., the file URL was unreachable
+    // from their region). Bail now rather than burn the polling window.
+    const submitStatus = submitJson.output?.task_status;
+    if (submitStatus === "FAILED" || submitStatus === "REJECTED") {
+      console.error("ASR submit returned terminal status:", JSON.stringify(submitJson));
+      cleanup();
+      return c.json({ error: "asr_submit_failed", detail: submitJson.message ?? submitStatus }, 502);
+    }
+    const id = submitJson.output?.task_id;
+    if (!id) {
+      console.error("ASR submit missing task_id:", JSON.stringify(submitJson));
+      cleanup();
+      return c.json({ error: "asr_submit_no_task_id" }, 502);
+    }
+    taskId = id;
+  } catch (err) {
+    console.error("ASR submit fetch threw:", err);
+    cleanup();
+    return c.json({ error: "asr_submit_threw" }, 502);
+  }
+
+  // Poll. 30 × 250ms = 7.5s ceiling. Most short utterances (≤30s)
+  // resolve in 1-3s based on DashScope's published latency.
+  for (let attempt = 0; attempt < ASR_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((r) => setTimeout(r, ASR_POLL_INTERVAL_MS));
+    type StatusShape = {
+      output?: {
+        task_status?: string;
+        results?: Array<{ transcripts?: Array<{ text?: string }>; transcription_url?: string }>;
+        transcripts?: Array<{ text?: string }>;
+      };
+    };
+    let statusJson: StatusShape;
+    try {
+      const statusResp = await fetch(`${apiBase}/api/v1/tasks/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!statusResp.ok) continue;
+      statusJson = (await statusResp.json()) as StatusShape;
+    } catch {
+      continue;
+    }
+    const status = statusJson.output?.task_status;
+    if (status === "SUCCEEDED") {
+      // Per Aliyun Paraformer-v2 docs the transcript lives ONLY at
+      // output.results[0].transcription_url — an external JSON URL
+      // valid for 24h. There is no inline transcript in the polling
+      // response. Fetch + parse with explicit error paths: a missing
+      // URL or fetch failure must not silently degrade to "empty
+      // transcript" (which would look identical to "user said nothing").
+      const transcriptionUrl = statusJson.output?.results?.[0]?.transcription_url;
+      if (typeof transcriptionUrl !== "string") {
+        console.error("ASR SUCCEEDED but no transcription_url:", JSON.stringify(statusJson));
+        cleanup();
+        return c.json({ error: "asr_no_transcript_url" }, 502);
+      }
+      // B2: SSRF + DoS guard on the external transcript URL. DashScope's
+      // signed result URL is supposed to live on aliyuncs.com. Reject
+      // anything else — if a compromised or mis-configured upstream ever
+      // hands us an attacker URL, we don't want the Worker to follow it
+      // anywhere. Also enforce a hard size cap (1 MB is generous for
+      // transcript JSON; real responses are <10 KB) and a 5s timeout
+      // (Worker subrequest budget catches runaway calls eventually, but
+      // we want to fail fast and predictably).
+      let parsedTranscriptUrl: URL;
+      try {
+        parsedTranscriptUrl = new URL(transcriptionUrl);
+      } catch {
+        console.error("ASR transcription_url not a valid URL:", transcriptionUrl);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_invalid" }, 502);
+      }
+      const host = parsedTranscriptUrl.hostname.toLowerCase();
+      const protocol = parsedTranscriptUrl.protocol;
+      const hostOk =
+        protocol === "https:" &&
+        (ASR_TRANSCRIPT_URL_ALLOWED_HOSTS.includes(host) ||
+          host.endsWith(ASR_TRANSCRIPT_URL_ALLOWED_SUFFIX));
+      if (!hostOk) {
+        console.error("ASR transcription_url host not allowed:", host);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_invalid" }, 502);
+      }
+      let transcript = "";
+      try {
+        const tRes = await fetch(parsedTranscriptUrl.toString(), {
+          signal: AbortSignal.timeout(ASR_TRANSCRIPT_FETCH_TIMEOUT_MS),
+        });
+        if (!tRes.ok) {
+          console.error(`ASR transcription_url ${tRes.status}:`, await tRes.text().catch(() => ""));
+          cleanup();
+          return c.json({ error: "asr_transcript_url_failed", status: tRes.status }, 502);
+        }
+        // Read as text first so we can cap the body size before paying
+        // JSON.parse cost. tRes.json() would happily inhale a billion
+        // rows. Content-Length is advisory only (the server can lie or
+        // omit it), so we double-check the actual payload length.
+        const advertised = Number(tRes.headers.get("content-length"));
+        if (Number.isFinite(advertised) && advertised > ASR_TRANSCRIPT_MAX_BYTES) {
+          console.error(`ASR transcription_url body too large: ${advertised}`);
+          cleanup();
+          return c.json({ error: "asr_transcript_url_too_large" }, 502);
+        }
+        const tText = await tRes.text();
+        if (tText.length > ASR_TRANSCRIPT_MAX_BYTES) {
+          console.error(`ASR transcription_url body too large (actual): ${tText.length}`);
+          cleanup();
+          return c.json({ error: "asr_transcript_url_too_large" }, 502);
+        }
+        const tJson = JSON.parse(tText) as { transcripts?: Array<{ text?: string }> };
+        transcript = (tJson.transcripts?.[0]?.text ?? "").trim();
+      } catch (err) {
+        console.error("ASR transcription_url fetch threw:", err);
+        cleanup();
+        return c.json({ error: "asr_transcript_url_failed" }, 502);
+      }
+      cleanup();
+      if (!transcript) {
+        return c.json({ error: "asr_empty_transcript" }, 502);
+      }
+      return c.json({ transcript });
+    }
+    if (status === "FAILED" || status === "CANCELED" || status === "REJECTED") {
+      console.error("ASR task failed:", JSON.stringify(statusJson));
+      cleanup();
+      return c.json({ error: "asr_failed", status }, 502);
+    }
+    // PENDING / RUNNING → continue polling
+  }
+
+  // Timed out — DashScope task may still complete in the background,
+  // but we won't wait. Caller should retry from scratch.
+  cleanup();
+  return c.json({ error: "asr_timeout" }, 504);
+});
 
 // ═══════════════════════════════════════════════════════════════════
 //  P5 F2 — /api/voice-credits  (GET balance)
