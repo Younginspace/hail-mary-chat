@@ -117,6 +117,17 @@ function utc8DateString(nowMs: number = Date.now()): string {
 // confusion, simpler code, same global $$ ceiling.
 const TTS_DAILY_GLOBAL_CHAR_CAP = 10000;
 
+// Global daily ceilings on paid media generation. Per-user volume is
+// already bounded by scarce gift credits (granted only at level-up
+// milestones), but the GLOBAL vendor spend was telemetry-only — a
+// coordinated cohort could blow the daily vendor cap with no backpressure.
+// These enforce a hard daily ceiling across ALL users via daily_api_usage
+// CAS (scope='__global__'), mirroring the TTS global cap. A credit-bearing
+// user who hits the global ceiling is refunded (see the generate-media
+// refund path) so they aren't punished for our operator-side limit.
+const IMAGE_DAILY_GLOBAL_CAP = 120;
+const MUSIC_DAILY_GLOBAL_CAP = 100;
+
 // ─── Bot defenses (P5 Review compensation, no Turnstile) ───
 
 // Max new `users` rows a single IP may adopt per rolling UTC hour.
@@ -202,6 +213,30 @@ async function tryConsumeRegisterSlot(ip: string): Promise<boolean> {
       setWhere: sql`${register_rate_limit.count} < ${REGISTER_HOURLY_CAP}`,
     })
     .returning({ count: register_rate_limit.count });
+  return ret.length > 0;
+}
+
+// Per-user daily cap on /api/chat. Chat is the core (free) loop — voice
+// credits gate TTS, gift credits gate media, but nothing gated the LLM
+// proxy itself, so one authenticated cookie could fan out unbounded
+// MiniMax completions (and was the user-side source of the 429 storms).
+// This is a volume governor, not a paywall: the cap is set high enough no
+// real human reaches it, but a script is bounded to CHAT_DAILY_PER_USER_CAP
+// turns/day instead of infinity. Atomic CAS via daily_api_usage
+// (api='chat', scope=user_id), same pattern as the global TTS char cap.
+const CHAT_DAILY_PER_USER_CAP = 300;
+async function tryConsumeChatSlot(user_id: string): Promise<boolean> {
+  const now = Date.now();
+  const today = utc8DateString(now);
+  const ret = await db
+    .insert(daily_api_usage)
+    .values({ date: today, api: "chat", scope: user_id, count: 1, updated_at: now })
+    .onConflictDoUpdate({
+      target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+      set: { count: sql`${daily_api_usage.count} + 1`, updated_at: now },
+      setWhere: sql`${daily_api_usage.count} < ${CHAT_DAILY_PER_USER_CAP}`,
+    })
+    .returning({ count: daily_api_usage.count });
   return ret.length > 0;
 }
 
@@ -1357,6 +1392,13 @@ app.post("/api/session/message", async (c) => {
 app.post("/api/chat", async (c) => {
   const user = await getAuthedUser();
   if (!user) return c.json({ error: "not_authenticated" }, 401);
+
+  // Per-user daily volume governor on the (otherwise unmetered) LLM proxy.
+  // Returns 429 past CHAT_DAILY_PER_USER_CAP turns/day — see helper.
+  const chatSlotOk = await tryConsumeChatSlot(user.user_id);
+  if (!chatSlotOk) {
+    return c.json({ error: "chat_daily_cap_reached", cap: CHAT_DAILY_PER_USER_CAP }, 429);
+  }
 
   const body = await c.req.json<{
     messages: Array<{ role: string; content: string }>;
@@ -2674,28 +2716,33 @@ app.get("/api/tts", async (c) => {
     buf[i] = parseInt(hexAudio.substr(i * 2, 2), 16);
   }
 
-  // ── 5. Persist to R2 + insert cache row (background — don't block user) ──
+  // ── 5. Persist to R2 + insert cache row BEFORE responding ──
+  // Previously this was ctx.runInBackground (fire-and-forget). The hazard:
+  // the user is charged a credit synchronously at step 2, but if the Worker
+  // was torn down after the response flushed yet before the background put
+  // completed, the cache row never landed — so the NEXT identical request
+  // cache-missed and charged the user AGAIN. Awaiting the persist closes
+  // that double-billing window: in the common (success) case the cache row
+  // is guaranteed committed before we return. We still swallow errors so a
+  // transient R2/D1 blip doesn't deny the user the audio they paid for —
+  // worst case degrades to the old re-charge risk, only on actual failure.
   const r2Key = `audio/${contentHash.slice(0, 2)}/${contentHash}.mp3`;
-  ctx.runInBackground(
-    (async () => {
-      try {
-        await storage.from(buckets.rockyAudio).put(r2Key, buf);
-        await db
-          .insert(audio_cache)
-          .values({
-            content_hash: contentHash,
-            lang,
-            voice_id: voiceId,
-            r2_key: r2Key,
-            byte_length: buf.byteLength,
-            created_at: Date.now(),
-          })
-          .onConflictDoNothing();
-      } catch (err) {
-        console.warn("audio cache persist failed:", err);
-      }
-    })()
-  );
+  try {
+    await storage.from(buckets.rockyAudio).put(r2Key, buf);
+    await db
+      .insert(audio_cache)
+      .values({
+        content_hash: contentHash,
+        lang,
+        voice_id: voiceId,
+        r2_key: r2Key,
+        byte_length: buf.byteLength,
+        created_at: Date.now(),
+      })
+      .onConflictDoNothing();
+  } catch (err) {
+    console.warn("audio cache persist failed:", err);
+  }
   if (messageId) ctx.runInBackground(linkMessageTts(messageId, contentHash, user.user_id));
 
   return new Response(buf, {
@@ -2854,6 +2901,30 @@ app.post("/api/generate-media", async (c) => {
       }
     } catch (err) {
       console.error(`refund failed (${reason}):`, err);
+    }
+  }
+
+  // ── 1b. Global daily ceiling (CAS) — operator-side vendor-spend fence ──
+  // Per-user volume is already capped by scarce gift credits; this is the
+  // ALL-USERS daily ceiling that was previously telemetry-only. CAS so two
+  // concurrent generations can't both slip past the last slot. On cap-hit,
+  // refund the credit just deducted (the user shouldn't eat our limit) and
+  // return 429.
+  {
+    const cap = type === "image" ? IMAGE_DAILY_GLOBAL_CAP : MUSIC_DAILY_GLOBAL_CAP;
+    const today = utc8DateString(Date.now());
+    const globalUsage = await db
+      .insert(daily_api_usage)
+      .values({ date: today, api: type, scope: "__global__", count: 1, updated_at: Date.now() })
+      .onConflictDoUpdate({
+        target: [daily_api_usage.date, daily_api_usage.api, daily_api_usage.scope],
+        set: { count: sql`${daily_api_usage.count} + 1`, updated_at: Date.now() },
+        setWhere: sql`${daily_api_usage.count} < ${cap}`,
+      })
+      .returning({ count: daily_api_usage.count });
+    if (globalUsage.length === 0) {
+      await refund("global_daily_cap");
+      return c.json({ error: "global_quota_exceeded", type }, 429);
     }
   }
 
