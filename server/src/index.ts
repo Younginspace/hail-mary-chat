@@ -788,24 +788,39 @@ app.post("/api/adopt-device", async (c) => {
 
   if (existing.length === 0) {
     const id = crypto.randomUUID();
-    await db.insert(users).values({
-      id,
-      device_id,
-      email: authUser.email,
-      callsign: resolvedCallsign,
-      auth_user_id: authUser.id,
-      created_at: now,
-      last_seen_at: now,
-      // voice_credits defaults to 10 via schema.
-    });
-    await db.insert(voice_credit_ledger).values({
-      id: crypto.randomUUID(),
-      user_id: id,
-      delta: 10,
-      reason: "register_bonus",
-      session_id: null,
-      created_at: now,
-    });
+    // Idempotent under the uq_users_auth_user_id partial unique index: if a
+    // concurrent adopt-device for the SAME auth account already inserted the
+    // row, this insert throws a UNIQUE violation. That's not an error — skip
+    // the register bonus (the winner already granted it) and fall through to
+    // resolve the existing row below, instead of 500ing the user. (Added
+    // 2026-05-30 with the auth-race fix; the single-provider client change
+    // makes this rare, the guard makes it safe.)
+    let created = true;
+    try {
+      await db.insert(users).values({
+        id,
+        device_id,
+        email: authUser.email,
+        callsign: resolvedCallsign,
+        auth_user_id: authUser.id,
+        created_at: now,
+        last_seen_at: now,
+        // voice_credits defaults to 10 via schema.
+      });
+    } catch (err) {
+      console.warn("adopt-device concurrent create (auth-first path won):", err);
+      created = false;
+    }
+    if (created) {
+      await db.insert(voice_credit_ledger).values({
+        id: crypto.randomUUID(),
+        user_id: id,
+        delta: 10,
+        reason: "register_bonus",
+        session_id: null,
+        created_at: now,
+      });
+    }
     await mergeUsersByAuthId(authUser.id);
     const primaryRow = await db
       .select({ id: users.id })
@@ -835,23 +850,34 @@ app.post("/api/adopt-device", async (c) => {
     // synthetic device_id so downstream getAuthedUser() works normally.
     const syntheticDeviceId = `synth-${authUser.id}-${now}`;
     const id = crypto.randomUUID();
-    await db.insert(users).values({
-      id,
-      device_id: syntheticDeviceId,
-      email: authUser.email,
-      callsign: resolvedCallsign,
-      auth_user_id: authUser.id,
-      created_at: now,
-      last_seen_at: now,
-    });
-    await db.insert(voice_credit_ledger).values({
-      id: crypto.randomUUID(),
-      user_id: id,
-      delta: 10,
-      reason: "register_bonus",
-      session_id: null,
-      created_at: now,
-    });
+    // Same idempotency guard as the first-time path above: a concurrent
+    // adopt for this auth account may have already created the row (now
+    // unique-enforced). Don't double-grant the bonus; don't 500.
+    let created = true;
+    try {
+      await db.insert(users).values({
+        id,
+        device_id: syntheticDeviceId,
+        email: authUser.email,
+        callsign: resolvedCallsign,
+        auth_user_id: authUser.id,
+        created_at: now,
+        last_seen_at: now,
+      });
+    } catch (err) {
+      console.warn("adopt-device concurrent create (synthetic path won):", err);
+      created = false;
+    }
+    if (created) {
+      await db.insert(voice_credit_ledger).values({
+        id: crypto.randomUUID(),
+        user_id: id,
+        delta: 10,
+        reason: "register_bonus",
+        session_id: null,
+        created_at: now,
+      });
+    }
     await mergeUsersByAuthId(authUser.id);
     const primaryRow = await db
       .select({ id: users.id })

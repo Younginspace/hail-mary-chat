@@ -4,8 +4,29 @@
 // the callsign surfaced by /api/me (defaults to the email local-part), and
 // sign-in / sign-up / sign-out helpers that also trigger device adoption so
 // Rocky's memory follows the account.
+//
+// 2026-05-30 — converted from a per-component hook to a single AuthProvider
+// + context consumer. Previously FIVE components (StartScreen, LoginModal,
+// DialInScreen, ChatInterface, EchoInterface) each instantiated this hook,
+// so each had its own onSessionChange subscription → up to ~6 concurrent
+// adopt-device POSTs fired on a single login. Some of those raced ahead of
+// the just-set session cookie being attached, hit the EdgeSpark platform
+// auth gate (which 401s /api/* BEFORE our handler with body
+// {"error":"UNAUTHENTICATED"}), and the client mapped that unknown code to
+// the generic "通讯节点拒绝". This was the root of the WebKit stuck-login
+// incident. One provider + the in-flight dedupe below = exactly one adopt
+// per login, eliminating the race.
 
-import { useEffect, useState, useCallback } from 'react';
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { esClient } from '../lib/edgespark';
 import type { AuthSession } from '@edgespark/web';
 import { getDeviceId, resetDeviceId } from '../utils/deviceId';
@@ -50,12 +71,13 @@ async function adoptDevice(callsign?: string, _attempt = 0): Promise<AdoptResult
     if (!res.ok) {
       // Read the body as TEXT first, then try JSON. The whole point of the
       // 2026-05-30 stuck-login investigation: when the failure is a
-      // framework-level 401 or a Hono default 500, the body is NOT our
-      // {error} JSON — it's plain text the old `await res.json()` silently
-      // discarded, collapsing every distinct failure into code='unknown'
-      // → the generic "通讯节点拒绝". Capturing the raw text + status +
-      // content-type is the source of truth the server logs can't provide
-      // for framework-level failures (which never reach our handler).
+      // framework-level 401 ({"error":"UNAUTHENTICATED"}) or a Hono default
+      // 500, the body may not be our {error} JSON — the old `await
+      // res.json()` either threw or yielded an unmapped code, collapsing
+      // every distinct failure into the generic "通讯节点拒绝". Capturing
+      // the raw text + status + content-type is the source of truth the
+      // server logs can't provide for framework-level failures (which never
+      // reach our handler).
       let rawText = '';
       try {
         rawText = await res.text();
@@ -124,7 +146,10 @@ async function fetchMe(): Promise<AdoptedMe | null> {
   }
 }
 
-export function useAuthSession() {
+// The actual state + behavior. Instantiated EXACTLY ONCE by <AuthProvider>;
+// every component reads the result via the useAuthSession() context consumer
+// below. Do not call this directly from components.
+function useAuthSessionState() {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [me, setMe] = useState<AdoptedMe | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,16 +160,46 @@ export function useAuthSession() {
   // adoption round-trip and the server will see no user context yet.
   const [adopted, setAdopted] = useState(false);
 
+  // Coalesce concurrent adopt-device calls into a single in-flight request.
+  // With a single provider there is one onSessionChange subscription, but
+  // signIn/signUp adopt explicitly AND onSessionChange can fire — this
+  // guarantees they share one network call instead of racing. Cleared on
+  // settle so the next genuine login/restore starts fresh.
+  const adoptInFlight = useRef<Promise<AdoptResult> | null>(null);
+  const runAdopt = useCallback((callsign?: string) => {
+    if (adoptInFlight.current) return adoptInFlight.current;
+    const p = adoptDevice(callsign).finally(() => {
+      adoptInFlight.current = null;
+    });
+    adoptInFlight.current = p;
+    return p;
+  }, []);
+
+  // Set by signInEmail/signUpEmail so the onSessionChange subscription (which
+  // fires when signIn establishes the session) does NOT also adopt — the
+  // explicit path owns adoption on login and carries the callsign on signup.
+  // onSessionChange only self-adopts for the page-load session-restore case.
+  const explicitAdoptPending = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
     const unsubscribe = esClient.auth.onSessionChange(async (next) => {
       if (cancelled) return;
       if (next) {
+        if (explicitAdoptPending.current) {
+          // An explicit signIn/signUp is in flight and owns adoption; just
+          // reflect the session so gating UI updates. The explicit path
+          // sets me/adopted when its single adopt resolves.
+          setSession(next);
+          setLoading(false);
+          return;
+        }
+        // Page-load session restore — adopt here.
         // Keep isAuthenticated=false until adoption completes, so UI
         // gated on `ready`/`isAuthenticated` can't fire chat before the
         // server has our users row.
         setAdopted(false);
-        const result = await adoptDevice();
+        const result = await runAdopt();
         if (cancelled) return;
         if (result.ok) setMe(result.me);
         else setMe(await fetchMe());
@@ -163,7 +218,7 @@ export function useAuthSession() {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [runAdopt]);
 
   // Build a better-auth-shaped synthetic error from an AdoptResult so
   // signIn/signUp callers (LoginModal, DialInScreen) can treat adoption
@@ -183,58 +238,71 @@ export function useAuthSession() {
     },
   });
 
-  const signInEmail = useCallback(async (email: string, password: string) => {
-    const res = await esClient.auth.signIn.email({ email, password });
-    if (res.error) return res;
-    rememberEmail(email);
-    // Synchronously adopt so the caller can show success UI with a real
-    // callsign rather than waiting for onSessionChange to race.
-    const result = await adoptDevice();
-    if (result.ok) {
-      setMe(result.me);
-      setAdopted(true);
-      return res;
-    }
-    // Adoption failed — surface to caller as if it were an auth error so
-    // they show a real message instead of silently treating signin as
-    // success.
-    console.warn('adoptDevice after signIn failed', result.code, result.status);
-    return adoptionError(result);
-  }, []);
+  const signInEmail = useCallback(
+    async (email: string, password: string) => {
+      explicitAdoptPending.current = true;
+      try {
+        const res = await esClient.auth.signIn.email({ email, password });
+        if (res.error) return res;
+        rememberEmail(email);
+        // Synchronously adopt so the caller can show success UI with a real
+        // callsign rather than waiting for onSessionChange to race.
+        const result = await runAdopt();
+        if (result.ok) {
+          setMe(result.me);
+          setAdopted(true);
+          return res;
+        }
+        // Adoption failed — surface to caller as if it were an auth error so
+        // they show a real message instead of silently treating signin as
+        // success.
+        console.warn('adoptDevice after signIn failed', result.code, result.status);
+        return adoptionError(result);
+      } finally {
+        explicitAdoptPending.current = false;
+      }
+    },
+    [runAdopt]
+  );
 
   const signUpEmail = useCallback(
     async (email: string, password: string, callsign?: string) => {
-      const res = await esClient.auth.signUp.email({
-        email,
-        password,
-        name: callsign ?? email.split('@')[0],
-      });
-      if (res.error) return res;
-      rememberEmail(email);
-      // EdgeSpark/better-auth doesn't always auto-establish a session after
-      // signUp (autoSignIn config can be off). Explicitly sign in so the
-      // cookie is guaranteed before adopt-device / startSession run.
-      // Safe to call even if already signed in.
-      const signInRes = await esClient.auth.signIn.email({ email, password });
-      if (signInRes.error) {
-        console.warn('auto-signIn after signUp failed', signInRes.error);
-        return signInRes;
+      explicitAdoptPending.current = true;
+      try {
+        const res = await esClient.auth.signUp.email({
+          email,
+          password,
+          name: callsign ?? email.split('@')[0],
+        });
+        if (res.error) return res;
+        rememberEmail(email);
+        // EdgeSpark/better-auth doesn't always auto-establish a session after
+        // signUp (autoSignIn config can be off). Explicitly sign in so the
+        // cookie is guaranteed before adopt-device / startSession run.
+        // Safe to call even if already signed in.
+        const signInRes = await esClient.auth.signIn.email({ email, password });
+        if (signInRes.error) {
+          console.warn('auto-signIn after signUp failed', signInRes.error);
+          return signInRes;
+        }
+        const result = await runAdopt(callsign);
+        if (result.ok) {
+          setMe(result.me);
+          setAdopted(true);
+          return res;
+        }
+        // Adoption failed AFTER auth.signUp + signIn succeeded. The auth
+        // account exists (this is precisely the orphan case the 2026-05-22
+        // incident report covers). Caller will display a real message;
+        // server has telemetry to track the failure pattern; the retry path
+        // is rate-limit-exempt via adoption_failures lookup.
+        console.warn('adoptDevice after signUp failed', result.code, result.status);
+        return adoptionError(result);
+      } finally {
+        explicitAdoptPending.current = false;
       }
-      const result = await adoptDevice(callsign);
-      if (result.ok) {
-        setMe(result.me);
-        setAdopted(true);
-        return res;
-      }
-      // Adoption failed AFTER auth.signUp + signIn succeeded. The auth
-      // account exists (this is precisely the orphan case the 2026-05-22
-      // incident report covers). Caller will display a real message;
-      // server has telemetry to track the failure pattern; the retry path
-      // is rate-limit-exempt via adoption_failures lookup.
-      console.warn('adoptDevice after signUp failed', result.code, result.status);
-      return adoptionError(result);
     },
-    []
+    [runAdopt]
   );
 
   const signOut = useCallback(async () => {
@@ -268,4 +336,29 @@ export function useAuthSession() {
     signOut,
     refreshMe,
   };
+}
+
+// Single shared auth state for the whole app. The value shape is exactly
+// what useAuthSessionState returns, so existing consumers keep working
+// unchanged after the provider refactor.
+type AuthContextValue = ReturnType<typeof useAuthSessionState>;
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+// Mount once at the app root. Runs the ONE onSessionChange subscription and
+// holds the shared session/me/adopted state. Written with createElement so
+// this file stays a plain .ts (no JSX) and existing import paths are intact.
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const value = useAuthSessionState();
+  return createElement(AuthContext.Provider, { value }, children);
+}
+
+// Consumer hook — identical return shape to the old per-component hook, so
+// the 5 call sites need no changes beyond being wrapped in <AuthProvider>.
+export function useAuthSession(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error('useAuthSession must be used within <AuthProvider>');
+  }
+  return ctx;
 }

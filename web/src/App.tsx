@@ -5,6 +5,7 @@ import EchoInterface from './components/EchoInterface';
 import FavoritesScreen from './components/FavoritesScreen';
 import StartScreen from './components/StartScreen';
 import { LangProvider } from './i18n/LangContext';
+import { AuthProvider } from './hooks/useAuthSession';
 import { preloadAllRockyAudio } from './utils/rockyAudio';
 import type { ChatMode } from './utils/playLimit';
 import type { LevelUpPayload, RecentHistoryMessage } from './utils/sessionApi';
@@ -78,6 +79,7 @@ export default function App() {
   }, []);
 
   return (
+    <AuthProvider>
     <LangProvider>
       {phase === 'start' && (
         <StartScreen
@@ -102,5 +104,6 @@ export default function App() {
       {phase === 'favorites' && <FavoritesScreen onBack={handleBackFromFavorites} />}
       {phase === 'companion' && <CompanionScreen onDone={handleCompanionDone} />}
     </LangProvider>
+    </AuthProvider>
   );
 }

@@ -18,6 +18,14 @@ const PREFIX = 'adoption_failed:';
 // falls back to login.errorGeneric.
 const CODE_TO_KEY: Record<string, TranslationKey> = {
   not_authenticated: 'login.adopt.notAuthenticated',
+  // EdgeSpark platform auth gate (returned BEFORE our handler when a /api/*
+  // request arrives without an attached session cookie) responds with
+  // {"error":"UNAUTHENTICATED"}. Discovered 2026-05-30 as the actual root
+  // of the WebKit stuck-login bug: concurrent adopt-device calls racing the
+  // cookie commit hit this gate, the unmapped uppercase code fell through to
+  // the generic "通讯节点拒绝". Map it to the same "session didn't stick,
+  // retry" message so it reads correctly even if the 401-retry doesn't heal.
+  UNAUTHENTICATED: 'login.adopt.notAuthenticated',
   missing_device_id: 'login.adopt.server',
   invalid_callsign: 'login.adopt.invalidCallsign',
   callsign_taken: 'dialin.callsignTaken',

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `uq_users_auth_user_id` ON `users` (`auth_user_id`) WHERE "users"."auth_user_id" IS NOT NULL;

@@ -73,6 +73,16 @@ export const users = sqliteTable(
   (t) => [
     index("idx_users_device_id").on(t.device_id),
     index("idx_users_auth_user_id").on(t.auth_user_id),
+    // Partial UNIQUE index — at most ONE app users row per auth account.
+    // Added 2026-05-30 to kill the orphan/duplicate-row class at the storage
+    // layer (prod verified zero existing dups before adding). Partial WHERE
+    // auth_user_id IS NOT NULL so the 11 anonymous device rows (auth_user_id
+    // NULL) are exempt. The adopt-device create paths catch the UNIQUE
+    // violation and resolve to the existing row, so concurrent first-time
+    // adopts can no longer produce duplicates — they converge on one row.
+    uniqueIndex("uq_users_auth_user_id")
+      .on(t.auth_user_id)
+      .where(sql`${t.auth_user_id} IS NOT NULL`),
   ]
 );
 
