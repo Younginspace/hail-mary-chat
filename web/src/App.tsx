@@ -1,9 +1,15 @@
-import { useState, useCallback, useEffect } from 'react';
-import ChatInterface from './components/ChatInterface';
-import CompanionScreen from './components/CompanionScreen';
-import EchoInterface from './components/EchoInterface';
-import FavoritesScreen from './components/FavoritesScreen';
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
 import StartScreen from './components/StartScreen';
+// Non-entry screens are code-split (2026-05-30). StartScreen is the entry/
+// login surface and stays eager so first paint isn't gated on a chunk
+// fetch. ChatInterface drags in the heaviest tail — RockyModel (three +
+// GLTF loader), ShareCard, GiftBubble, html2canvas, the export utils — none
+// of which the login path needs; lazy-loading it (and the other post-login
+// screens) pulls all of that out of the entry bundle.
+const ChatInterface = lazy(() => import('./components/ChatInterface'));
+const CompanionScreen = lazy(() => import('./components/CompanionScreen'));
+const EchoInterface = lazy(() => import('./components/EchoInterface'));
+const FavoritesScreen = lazy(() => import('./components/FavoritesScreen'));
 import { LangProvider } from './i18n/LangContext';
 import { AuthProvider } from './hooks/useAuthSession';
 import { preloadAllRockyAudio } from './utils/rockyAudio';
@@ -81,28 +87,33 @@ export default function App() {
   return (
     <AuthProvider>
     <LangProvider>
-      {phase === 'start' && (
-        <StartScreen
-          onConnected={handleConnected}
-          onEcho={handleEcho}
-          onFavorites={handleFavorites}
-          onCompanion={handleStayConnected}
-        />
-      )}
-      {phase === 'chat' && sessionId && (
-        <ChatInterface
-          mode={chatMode}
-          sessionId={sessionId}
-          onBack={handleBackToStart}
-          initialLevelUp={pendingLevelUp}
-          onLevelUpDismiss={() => setPendingLevelUp(null)}
-          initialHistory={pendingHistory}
-          onStayOnLine={handleStayOnLine}
-        />
-      )}
-      {phase === 'echo' && <EchoInterface onBack={handleBackToStart} />}
-      {phase === 'favorites' && <FavoritesScreen onBack={handleBackFromFavorites} />}
-      {phase === 'companion' && <CompanionScreen onDone={handleCompanionDone} />}
+      {/* Fallback matches the app's dark background so a lazy screen's
+          brief chunk-fetch doesn't flash white. StartScreen is eager so
+          it never suspends. */}
+      <Suspense fallback={<div style={{ position: 'fixed', inset: 0, background: '#050a12' }} />}>
+        {phase === 'start' && (
+          <StartScreen
+            onConnected={handleConnected}
+            onEcho={handleEcho}
+            onFavorites={handleFavorites}
+            onCompanion={handleStayConnected}
+          />
+        )}
+        {phase === 'chat' && sessionId && (
+          <ChatInterface
+            mode={chatMode}
+            sessionId={sessionId}
+            onBack={handleBackToStart}
+            initialLevelUp={pendingLevelUp}
+            onLevelUpDismiss={() => setPendingLevelUp(null)}
+            initialHistory={pendingHistory}
+            onStayOnLine={handleStayOnLine}
+          />
+        )}
+        {phase === 'echo' && <EchoInterface onBack={handleBackToStart} />}
+        {phase === 'favorites' && <FavoritesScreen onBack={handleBackFromFavorites} />}
+        {phase === 'companion' && <CompanionScreen onDone={handleCompanionDone} />}
+      </Suspense>
     </LangProvider>
     </AuthProvider>
   );
