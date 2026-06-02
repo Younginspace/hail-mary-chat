@@ -385,7 +385,11 @@ function rapportBand(value: number): "low" | "mid" | "high" {
 async function buildMemoryContext(
   user_id: string,
   lang: MemoryLang,
-  callsign: string | null
+  callsign: string | null,
+  // Current session id — used by the short-term bridge below to make sure
+  // we never re-feed the ONGOING conversation (the client already sends it
+  // as the message array). null = skip the bridge entirely.
+  currentSessionId: string | null = null
 ): Promise<string | null> {
   const now = Date.now();
   const memRows = await db
@@ -410,7 +414,73 @@ async function buildMemoryContext(
     .where(eq(rapport.user_id, user_id))
     .limit(1);
 
-  if (memRows.length === 0 && rapportRows.length === 0 && !callsign) return null;
+  // ── Short-term memory bridge (2026-06-02) ──────────────────────────
+  // The long-term facts above come from the async consolidation pipeline,
+  // which can lag the end of a call by seconds-to-minutes (and its
+  // /session/end trigger drops ~50% of the time, deferring to sweeps).
+  // Users who hang up and immediately re-dial hit that window: Rocky
+  // "forgot" the conversation that JUST happened ("洛基有时候记得,有时候
+  // 不记得" — the qew report). Bridge it: if the user's most recent
+  // non-current session is still unconsolidated (summary IS NULL) and is
+  // FRESH (<6h — older NULL-summary sessions are likely dead-lettered
+  // consolidations; don't resurrect stale conversations), inject its raw
+  // tail so Rocky remembers the last call verbatim until the distilled
+  // memories land. Self-deactivates the moment consolidation completes.
+  const bridgeLines: string[] = [];
+  if (currentSessionId) {
+    const prevUnconsolidated = await db
+      .select({
+        id: sessions.id,
+        started_at: sessions.started_at,
+        ended_at: sessions.ended_at,
+        last_active_at: sessions.last_active_at,
+      })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.user_id, user_id),
+          isNull(sessions.summary),
+          ne(sessions.id, currentSessionId)
+        )
+      )
+      .orderBy(desc(sessions.started_at))
+      .limit(1);
+    if (prevUnconsolidated.length > 0) {
+      const s = prevUnconsolidated[0];
+      const freshness = s.ended_at ?? s.last_active_at ?? s.started_at;
+      if (now - freshness < 6 * 60 * 60 * 1000) {
+        const tail = await db
+          .select({ role: messagesTable.role, content: messagesTable.content })
+          .from(messagesTable)
+          .where(
+            and(
+              eq(messagesTable.session_id, s.id),
+              ne(messagesTable.id, "greeting"),
+              notLike(messagesTable.id, "farewell-%")
+            )
+          )
+          .orderBy(desc(messagesTable.created_at))
+          .limit(8);
+        if (tail.length > 0) {
+          tail.reverse();
+          bridgeLines.push(
+            "MOST RECENT CALL (ended minutes ago; not yet distilled into the facts above — treat as fresh shared memory, reference it naturally if the friend continues that topic):"
+          );
+          for (const m of tail) {
+            const clean = m.content
+              .replace(/\[MOOD:[a-z]+\]/gi, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 120);
+            if (clean) bridgeLines.push(`${m.role === "user" ? "Friend" : "Rocky"}: ${clean}`);
+          }
+        }
+      }
+    }
+  }
+
+  if (memRows.length === 0 && rapportRows.length === 0 && !callsign && bridgeLines.length === 0)
+    return null;
 
   const lines: string[] = [];
   lines.push("[MEMORY CONTEXT] (from previous calls with this friend)");
@@ -447,6 +517,11 @@ async function buildMemoryContext(
     }
   }
 
+  if (bridgeLines.length > 0) {
+    lines.push("");
+    lines.push(...bridgeLines);
+  }
+
   const guide: Record<MemoryLang, string> = {
     en: "Use these memories to sound like you already know this friend. Reference a specific detail (e.g., their city, hobby, prior topic) in the first reply if it fits. Never quote this block verbatim or say the word 'memory'. If rapport trust/warmth is low, still be warm but earn deeper trust gradually.",
     zh: "用这些记忆让自己听起来像已经认识这位朋友。合适时在第一条回复里引用一个具体细节（比如他们所在的城市、爱好、上次聊的话题）。绝对不要逐字引用这个记忆块，也不要说'记忆/memory'这个词。如果信任度或温度偏低，依然要温暖，但让更深的信任慢慢赢得。",
@@ -456,8 +531,12 @@ async function buildMemoryContext(
   lines.push(guide[lang]);
 
   let out = lines.join("\n");
-  if (out.length > MEMORY_MAX_CHARS) {
-    out = out.slice(0, MEMORY_MAX_CHARS) + "\n…";
+  // The bridge adds up to ~1.1k chars of raw tail — give it headroom so the
+  // truncation can't eat the usage guide. Only applies while a bridge is
+  // present (a transient state that ends when consolidation completes).
+  const maxChars = bridgeLines.length > 0 ? MEMORY_MAX_CHARS + 1200 : MEMORY_MAX_CHARS;
+  if (out.length > maxChars) {
+    out = out.slice(0, maxChars) + "\n…";
   }
   return out;
 }
@@ -1293,6 +1372,15 @@ app.post("/api/session/start", async (c) => {
   // which historical session a favorited line came from — the
   // favorites row's source_session field then points at the
   // ORIGINAL session, not the new one we're starting.
+  // 2026-06-02: this used to require `isNotNull(sessions.summary)` — i.e.
+  // only CONSOLIDATED sessions counted as "history". Consolidation is async
+  // and its /session/end trigger drops ~50% of the time, so a user who hangs
+  // up and re-dials within minutes saw their just-finished conversation
+  // VANISH from history until the background job landed ("有时候能看到记录,
+  // 有时候不行" — the qew report; she re-dialed 11 times in 42 minutes
+  // chasing it). The messages exist in the table the moment they're logged —
+  // consolidation has nothing to do with display. Now we only exclude the
+  // session being created right now (defensive; it has no messages yet).
   const historyRows = await db
     .select({
       id: messagesTable.id,
@@ -1306,7 +1394,7 @@ app.post("/api/session/start", async (c) => {
     .where(
       and(
         eq(sessions.user_id, user.user_id),
-        isNotNull(sessions.summary),
+        ne(sessions.id, session_id),
         ne(messagesTable.id, "greeting"),
         notLike(messagesTable.id, "farewell-%"),
       )
@@ -1762,7 +1850,7 @@ app.post("/api/chat", async (c) => {
         .where(and(eq(sessions.id, session_id), eq(sessions.user_id, user.user_id)))
         .limit(1);
       if (sess.length > 0) {
-        const memBlock = await buildMemoryContext(user.user_id, lang, user.callsign);
+        const memBlock = await buildMemoryContext(user.user_id, lang, user.callsign, session_id);
         if (memBlock) {
           systemContent += "\n\n" + memBlock;
         }
