@@ -156,6 +156,28 @@ async function fetchMe(): Promise<AdoptedMe | null> {
   }
 }
 
+// Server-side purge of stale/legacy auth-cookie variants. ROOT CAUSE of the
+// 2026-05/06 "returning users can't log in" incident: long-time users carry a
+// GHOST auth cookie from an earlier era (pre-__Secure-prefix name, interim
+// hostname, or the sibling savemoss.com project) that shadows the fresh one —
+// the platform gate reads the stale token first and 401s forever. The cookies
+// are HttpOnly, so only a server Set-Cookie can delete them — hence this
+// endpoint call. Returns true when the purge responded OK. Full story +
+// empirical proof: server route /api/public/auth-cookie-reset.
+async function purgeAuthCookies(): Promise<boolean> {
+  try {
+    const res = await esClient.api.fetch('/api/public/auth-cookie-reset', { method: 'POST' });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { diagnostic?: unknown };
+    // The diagnostic (cookie names in order, redacted) confirms/refutes the
+    // ghost-cookie diagnosis per-device — surfaced in console for support.
+    console.info('[auth] ghost-cookie purge', body.diagnostic ?? body);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // The actual state + behavior. Instantiated EXACTLY ONCE by <AuthProvider>;
 // every component reads the result via the useAuthSession() context consumer
 // below. Do not call this directly from components.
@@ -212,7 +234,13 @@ function useAuthSessionState() {
         const result = await runAdopt();
         if (cancelled) return;
         if (result.ok) setMe(result.me);
-        else setMe(await fetchMe());
+        else {
+          // Can't re-sign-in here (no credentials in scope), but if the
+          // failure is the ghost-cookie 401, purge the stale variants NOW
+          // so the user's next manual login starts from a clean jar.
+          if (result.code === 'cookie_blocked') void purgeAuthCookies();
+          setMe(await fetchMe());
+        }
         if (cancelled) return;
         setSession(next);
         setAdopted(true);
@@ -263,6 +291,24 @@ function useAuthSessionState() {
           setAdopted(true);
           return res;
         }
+        // Ghost-cookie recovery (2026-06-02). A 401 that survived the
+        // retry means a stale legacy cookie is shadowing the fresh one.
+        // Purge every variant server-side, re-sign-in into the clean jar
+        // (credentials are still in scope), adopt once more. Self-heals
+        // affected long-time users on their next login — no manual steps.
+        if (result.code === 'cookie_blocked' && (await purgeAuthCookies())) {
+          const res2 = await esClient.auth.signIn.email({ email, password });
+          if (!res2.error) {
+            const result2 = await runAdopt();
+            if (result2.ok) {
+              setMe(result2.me);
+              setAdopted(true);
+              return res2;
+            }
+            console.warn('adopt still failing after cookie purge', result2.code, result2.status);
+            return adoptionError(result2);
+          }
+        }
         // Adoption failed — surface to caller as if it were an auth error so
         // they show a real message instead of silently treating signin as
         // success.
@@ -300,6 +346,22 @@ function useAuthSessionState() {
           setMe(result.me);
           setAdopted(true);
           return res;
+        }
+        // Ghost-cookie recovery — same as signInEmail. The account exists
+        // (signUp + signIn succeeded), so purge the stale variants and
+        // re-establish a clean session, then adopt with the callsign.
+        if (result.code === 'cookie_blocked' && (await purgeAuthCookies())) {
+          const res2 = await esClient.auth.signIn.email({ email, password });
+          if (!res2.error) {
+            const result2 = await runAdopt(callsign);
+            if (result2.ok) {
+              setMe(result2.me);
+              setAdopted(true);
+              return res2;
+            }
+            console.warn('adopt still failing after cookie purge', result2.code, result2.status);
+            return adoptionError(result2);
+          }
         }
         // Adoption failed AFTER auth.signUp + signIn succeeded. The auth
         // account exists (this is precisely the orphan case the 2026-05-22

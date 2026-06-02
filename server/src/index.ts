@@ -669,6 +669,96 @@ app.get("/api/public/check-callsign", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+//  POST /api/public/auth-cookie-reset — ghost-cookie purge (2026-06-02)
+//
+//  ROOT CAUSE of the "returning users can't log in / 通讯节点拒绝 /
+//  cookie_blocked" incident (3 confirmed users, all accounts from late
+//  April, broken since ~2026-05-15): a STALE auth cookie planted in an
+//  earlier era (pre-__Secure-prefix name, an interim hostname, the apex,
+//  or the sibling rockystory.savemoss.com project's better-auth — all
+//  share the savemoss.com registrable domain) coexists with the fresh
+//  cookie. Three independent reviews converged on this; the mechanism
+//  was proven empirically against this very platform:
+//    Cookie: session_token=STALE; session_token=FRESH  → 401
+//    Cookie: session_token=FRESH; session_token=STALE  → 200
+//  (the gate takes the FIRST match) — and bundled better-auth reads the
+//  UNPREFIXED `better-auth.session_token` BEFORE the `__Secure-` one, so
+//  a legacy unprefixed cookie shadows a valid prefixed one by NAME, too.
+//  RFC6265: a host-only Set-Cookie can never evict a same-named cookie
+//  with a different Domain/Path — so the shadow persists for weeks.
+//
+//  Fix: expire EVERY plausible variant (6 names × {host-only,
+//  rocky.savemoss.com, .savemoss.com} × {/, /api}) so the next sign-in
+//  writes exactly ONE fresh cookie into a clean jar. HttpOnly cookies
+//  can only be deleted by the SERVER, hence this endpoint. Called by
+//  the client when adopt-device 401s persistently, then it re-signs-in.
+//
+//  Also logs a REDACTED diagnostic (cookie names in order + value
+//  lengths, never values) — one hit from an affected device shows the
+//  duplicate/legacy name and proves the diagnosis in prod logs.
+//
+//  Abuse surface: none — it only deletes auth cookies on the CALLER's
+//  own browser (worst case: someone logs themselves out).
+// ═══════════════════════════════════════════════════════════════════
+app.post("/api/public/auth-cookie-reset", (c) => {
+  // Redacted diagnostic of what this browser actually sent.
+  const rawCookie = c.req.header("cookie") ?? "";
+  const sent = rawCookie
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      const eq_ = p.indexOf("=");
+      const name = eq_ === -1 ? p : p.slice(0, eq_);
+      const valLen = eq_ === -1 ? 0 : p.length - eq_ - 1;
+      return { name, valLen };
+    });
+  const sessionTokenCount = sent.filter((s) => s.name.endsWith("session_token")).length;
+  const hasLegacyUnprefixed = sent.some((s) => s.name === "better-auth.session_token");
+  console.log(
+    `[cookie-reset] ua=${(c.req.header("user-agent") ?? "").slice(0, 70)} ` +
+      `names=[${sent.map((s) => `${s.name}(${s.valLen})`).join(", ")}] ` +
+      `sessionTokenCount=${sessionTokenCount} legacyUnprefixed=${hasLegacyUnprefixed}`
+  );
+
+  // Expire every plausible ghost variant. NOTE: deletion only matches a
+  // cookie when name+Domain+Path all match, so we sweep the grid.
+  // __Secure- prefixed deletions MUST carry Secure (we add it to all).
+  const names = [
+    "better-auth.session_token",
+    "better-auth.session_data",
+    "better-auth.account_data",
+    "__Secure-better-auth.session_token",
+    "__Secure-better-auth.session_data",
+    "__Secure-better-auth.account_data",
+  ];
+  const domains = [null, "rocky.savemoss.com", ".savemoss.com"];
+  const paths = ["/", "/api"];
+  for (const name of names) {
+    for (const domain of domains) {
+      for (const path of paths) {
+        const parts = [
+          `${name}=`,
+          "Max-Age=0",
+          "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+          `Path=${path}`,
+          "Secure",
+          "HttpOnly",
+          "SameSite=Lax",
+        ];
+        if (domain) parts.push(`Domain=${domain}`);
+        c.header("Set-Cookie", parts.join("; "), { append: true });
+      }
+    }
+  }
+  return c.json({
+    ok: true,
+    purgedVariants: names.length * domains.length * paths.length,
+    diagnostic: { sent: sent.map((s) => s.name), sessionTokenCount, hasLegacyUnprefixed },
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 //  Device adoption — auth required
 // ═══════════════════════════════════════════════════════════════════
 
