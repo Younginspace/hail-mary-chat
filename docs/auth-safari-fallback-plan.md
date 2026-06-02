@@ -1,8 +1,10 @@
 # Plan: Safari-proof auth fallback (token-in-header) + adaptation if EdgeSpark fixes the cookie
 
-**Status:** contingency plan — DO NOT implement yet. Build only if EdgeSpark
-doesn't fix the iOS-Safari session-cookie regression (see
-`docs/edgespark-safari-cookie-bug.md`).
+**Status:** contingency plan — ⚠️ **the §1 login-proxy mechanism was PROBED on
+2026-05-31 and is NOT viable** (see §7 RESULT). The remaining self-rescue
+options are heavier; **EdgeSpark fixing the cookie is now clearly the preferred
+path.** Build only if EdgeSpark won't fix it AND you accept §11's heavier
+options. See `docs/edgespark-safari-cookie-bug.md`.
 **Author:** (Claude) 2026-05-31
 **Owner decision needed before building:** yes (security tradeoff §6 + the §7
 prototype gate).
@@ -192,8 +194,25 @@ The whole plan hinges on TWO unknowns — verify cheaply first:
    2026-05-31.** `esSystemAuthSession` is exported in
    `src/__generated__/sys_schema.ts` with `token` (notNull, **UNIQUE-indexed**
    → O(1) lookup), `userId`, `expiresAt`. So `getAuthedUserByToken` is viable.
-If #1 passes too → green-light the migration (§2–§3). If #1 fails, the only path
-is the platform fix.
+### ⛔ §7 RESULT (2026-05-31) — unknown #1 FAILED
+
+A temporary probe (`/api/webhooks/probe-login-Z7K2M9`, since removed) had the
+worker server-side-`fetch()` the better-auth sign-up endpoint on every hostname
+that routes to this project and tried to read the `Set-Cookie`:
+
+| origin fetched by the worker | result |
+|---|---|
+| `teaching-collie-6315.edgespark.app` (self) | **HTTP 522** (Cloudflare won't loop a Worker back to its own route) |
+| `rocky.savemoss.com` (cross-host, same worker) | **HTTP 530** (also routes back to this worker → loop) |
+
+**Both hostnames route to this Worker, and Cloudflare blocks a Worker from
+subrequesting its own routes** → the worker can never reach `/api/_es/auth/*`
+to harvest the token. **The §1 server-side login proxy is dead.** (db→
+`es_system__auth_session` lookup — unknown #2 — is still fine; that's not the
+blocker.)
+
+→ The clean self-rescue is not buildable as designed. See §11 for the heavier
+remaining options. **Strong recommendation: get EdgeSpark to fix the cookie.**
 
 ## 8. Effort & rollback
 - **Effort:** ~1 day (½ day server: helper + login proxy + re-home ~12 routes;
@@ -249,5 +268,48 @@ platform's built-in protections (Case C/B2) or stay on the dual-carrier
 ## 10. Decision checklist before building
 - [ ] EdgeSpark has had a fair chance to fix it (give them the bug report + ~a few days).
 - [ ] Owner accepts the localStorage-token security tradeoff (§6).
-- [ ] §7 prototype passes (worker→auth fetch reads Set-Cookie; db reads auth_session).
+- [ ] ~~§7 prototype passes~~ ❌ FAILED — §1 proxy is dead (worker can't reach auth). See §11.
 - [ ] Confirm the markdown/chat renderer has no XSS sink (§6).
+
+---
+
+## 11. Revised self-rescue options (after §7 failed)
+
+The §1 login proxy can't work (Worker can't subrequest its own auth routes).
+The token still has to be obtained **somewhere the Worker-loop doesn't apply,**
+or minted without better-auth. Remaining options, roughly best→worst:
+
+### Option A — External relay (separate from this project) ★ most viable self-rescue
+A tiny service that is NOT this EdgeSpark Worker proxies the login:
+`client → relay → fetch rocky.savemoss.com/api/_es/auth/sign-in → reads
+Set-Cookie → returns token to client`. Because the relay is a *different*
+origin/worker, fetching `rocky.savemoss.com` does NOT loop. Host it on:
+- a Cloudflare Worker on a **different** zone/account (the owner has Cloudflare
+  skills), or a Vercel/Deno/Node function, or a Pages Function.
+Then the client uses the token as `X-Session-Token` against our `/api/public/*`
+endpoints (§2a/§2c unchanged — those parts are fine; only the token-minting
+step moves off-Worker). Cost: +1 tiny external service to deploy & maintain.
+
+### Option B — Direct session minting (no better-auth call) — fragile, NOT recommended
+Our `/api/public/login` verifies the password **itself** against the hash in
+`es_system__auth_account`, then INSERTs a row into `es_system__auth_session`
+(token, userId, expiresAt) and returns the token. Problems:
+- Must replicate better-auth's password hashing. better-auth defaults to
+  **scrypt**, which **Web Crypto does not provide** → bundle a JS scrypt impl
+  and match better-auth's exact params/format. Brittle; breaks silently if the
+  platform changes hashing.
+- We'd be writing into a platform-managed system table. Risky.
+Only consider if Option A is impossible and EdgeSpark refuses.
+
+### Option C — Platform fix (still the best overall) ★★
+EdgeSpark adjusts the cookie (e.g. `Partitioned`/SameSite) or offers a
+redirect/navigation login. No app re-architecture, no security downgrade, fixes
+ALL their apps. The §7 result strengthens this: even our best self-rescue
+(Option A) needs extra infra and a security tradeoff, for something that is
+fundamentally a platform auth-cookie issue.
+
+### Recommendation
+1. Push EdgeSpark on the bug report (Option C). This is now clearly the right
+   fix, not just the convenient one.
+2. If they won't, build **Option A** (external relay + the §2a/§2c token path).
+   Skip Option B unless desperate.
