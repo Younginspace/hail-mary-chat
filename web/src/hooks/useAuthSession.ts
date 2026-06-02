@@ -301,6 +301,7 @@ function useAuthSessionState() {
           if (!res2.error) {
             const result2 = await runAdopt();
             if (result2.ok) {
+              console.info('[auth] ghost-cookie recovery SUCCEEDED — stale cookie purged, clean session established');
               setMe(result2.me);
               setAdopted(true);
               return res2;
@@ -355,6 +356,7 @@ function useAuthSessionState() {
           if (!res2.error) {
             const result2 = await runAdopt(callsign);
             if (result2.ok) {
+              console.info('[auth] ghost-cookie recovery SUCCEEDED — stale cookie purged, clean session established');
               setMe(result2.me);
               setAdopted(true);
               return res2;

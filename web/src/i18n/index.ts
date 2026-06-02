@@ -668,14 +668,17 @@ const translations = {
     en: "Session didn't stick — please try again",
     ja: 'セッション切れ、もう一度お試しください',
   },
-  // Shown when the session cookie is persistently not delivered (survived
-  // the auto-retry). Almost always an in-app browser (微信/QQ/抖音 内置浏览器)
-  // or a browser with cookies / cross-site-tracking locked down. Give the
-  // user a concrete way out rather than an endless "try again".
+  // Shown only when the FULL ghost-cookie auto-recovery (purge stale auth
+  // cookies → re-sign-in → re-adopt) ALSO failed. Root cause of the original
+  // incident was a stale legacy auth cookie shadowing the fresh one (see
+  // /api/public/auth-cookie-reset) — NOT browser settings, so don't send
+  // users to toggle Safari privacy options. Correct advice now: one more
+  // attempt starts from the freshly-purged cookie jar and usually succeeds;
+  // otherwise fall back to another browser/device + report.
   'login.adopt.cookieBlocked': {
-    zh: '当前浏览器拦截了登录所需的 Cookie。请点右上角「···」选「在浏览器中打开」，或直接用系统自带 Safari/Chrome 访问；若已在浏览器中，请关闭「阻止跨网站跟踪」后重试。',
-    en: 'This browser is blocking the login cookie. Open the page in your system browser (Safari/Chrome) instead of an in-app browser, or turn off "Prevent Cross-Site Tracking", then try again.',
-    ja: 'このブラウザがログイン用Cookieをブロックしています。アプリ内ブラウザではなくSafari/Chromeで開くか、「サイト越えトラッキングを防ぐ」をオフにして再試行してください。',
+    zh: '登录状态异常，已自动清理旧的登录数据 —— 请再点一次「登录」试试。若连续失败，可先用电脑或其他浏览器登录（数据不受影响），并把此提示截图反馈给我们。',
+    en: "Login state was abnormal — stale login data has been cleared automatically. Please tap Sign In once more. If it keeps failing, log in from a computer or another browser (your data is safe) and send us a screenshot of this message.",
+    ja: 'ログイン状態に異常があり、古いログインデータを自動消去しました。もう一度「ログイン」を押してください。続けて失敗する場合は、PCや別のブラウザでログインし（データは無事です）、このメッセージのスクリーンショットをお送りください。',
   },
   'login.adopt.rateLimited': {
     zh: '当前网络注册过频繁，请几分钟后再试',
