@@ -182,7 +182,13 @@ export function useChat(
   }, [lang, userTurns]);
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      // #06 Optional image attached to the user's turn. When present,
+      // server routes this turn through DashScope Qwen-VL-Max. Caller
+      // is responsible for compress/encoding (utils/imageCompress).
+      image?: { base64: string; mime: string },
+    ) => {
       if (isLoading || isEnded) return;
 
       const newTurnCount = userTurns + 1;
@@ -198,10 +204,18 @@ export function useChat(
         return;
       }
 
+      // #06 If user attached an image with no caption, the locally
+      // rendered user bubble would otherwise be empty. Show a "📷"
+      // placeholder so the bubble has shape; the actual photo + real
+      // caption (or empty caption) goes to the server. Future work:
+      // attach `imagePreviewUrl` here and render the thumbnail in
+      // MessageBubble — non-trivial component change deferred to a
+      // follow-up.
+      const localContent = text || (image ? '📷' : '');
       const userMsg: DisplayMessage = {
         id: `user-${Date.now()}`,
         role: 'user',
-        content: text,
+        content: localContent,
       };
 
       // === 检查是否预置对话 ===
@@ -385,6 +399,8 @@ export function useChat(
           lang,
           last_turn: newTurnCount === MAX_TURNS,
           teaching_mode: teachingMode,
+          image_base64: image?.base64,
+          image_mime: image?.mime,
         },
         // Server-side gift_trigger event: preferred path. Fires mid-
         // stream as soon as the tag is fully received server-side.
